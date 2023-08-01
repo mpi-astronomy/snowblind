@@ -1,22 +1,17 @@
 import skimage
 import numpy as np
 from stdatamodels.jwst import datamodels
-from jwst.stpipe import Step
+from jwst.stpipe.core import JwstStep
 
 
 JUMP_DET = datamodels.dqflags.group["JUMP_DET"]
 
-class SnowblindStep(Step):
+class SnowblindStep(JwstStep):
     spec = """
         growth_factor = float(default=2.5)
-        output_ext = string(default=".fits")
     """
     
     class_alias = "snowblind"
-
-    @classmethod
-    def _datamodels_open(cls, init, **kwargs):
-        return datamodels.open(init, **kwargs)
 
     def process(self, input_image):
         with datamodels.open(input_image) as jump:
