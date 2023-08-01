@@ -1,16 +1,15 @@
 import skimage
 import numpy as np
 from stdatamodels.jwst import datamodels
-from jwst.stpipe.core import JwstStep
+from jwst.stpipe import Step
 
 
 JUMP_DET = datamodels.dqflags.group["JUMP_DET"]
 
 
-class SnowblindStep(JwstStep):
+class SnowblindStep(Step):
     spec = """
         growth_factor = float(default=2.5)
-        output_ext = string(default='.ecsv')  # Output file type
     """
 
     class_alias = "snowblind"
@@ -49,7 +48,7 @@ class SnowblindStep(JwstStep):
                     radius = np.ceil(np.sqrt(region.area / np.pi) * self.growth_factor)
                     # Warn if there are very large snowballs or showers detected
                     if region.area > 200:
-                        self.log(f"Warning: snowball with radius={radius} in slice({integ},{grp}) with label {label} at {region.centroid}")
+                        self.log.warning(f"Large snowball with radius={radius} in slice({integ},{grp}) with label {label} at {region.centroid}")
                     segment_dilated = skimage.morphology.isotropic_dilation(segmentation_slice, radius=radius)
                     dq_iso_dilate = dq_iso_dilate | segment_dilated
 
