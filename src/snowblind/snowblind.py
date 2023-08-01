@@ -9,6 +9,7 @@ JUMP_DET = datamodels.dqflags.group["JUMP_DET"]
 class SnowblindStep(Step):
     spec = """
         growth_factor = float(default=2.5)
+        output_ext = string(default=".fits")
     """
     
     class_alias = "snowblind"
