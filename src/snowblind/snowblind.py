@@ -13,6 +13,10 @@ class SnowblindStep(Step):
     
     class_alias = "snowblind"
 
+    @classmethod
+    def _datamodels_open(cls, init, **kwargs):
+        return datamodels.open(init, **kwargs)
+
     def process(self, input_image):
         with datamodels.open(input_image) as jump:
             outimage = jump.copy()
