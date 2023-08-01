@@ -1,7 +1,7 @@
 import skimage
 import numpy as np
-from stdatamodels.jwst import datamodels
-from stpipe import Step
+from jwst import datamodels
+from jwst.stpipe import Step
 
 
 JUMP_DET = datamodels.dqflags.group["JUMP_DET"]

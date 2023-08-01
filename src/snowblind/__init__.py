@@ -1,4 +1,3 @@
-import sys
 from importlib import metadata
 
 from .snowblind import SnowblindStep
