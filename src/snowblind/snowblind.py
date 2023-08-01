@@ -1,6 +1,6 @@
 import skimage
 import numpy as np
-from jwst import datamodels
+from stdatamodels.jwst import datamodels
 from jwst.stpipe import Step
 
 
