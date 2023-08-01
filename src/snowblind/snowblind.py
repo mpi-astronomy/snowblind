@@ -6,11 +6,13 @@ from jwst.stpipe.core import JwstStep
 
 JUMP_DET = datamodels.dqflags.group["JUMP_DET"]
 
+
 class SnowblindStep(JwstStep):
     spec = """
         growth_factor = float(default=2.5)
+        output_ext = string(default='.ecsv')  # Output file type
     """
-    
+
     class_alias = "snowblind"
 
     def process(self, input_image):
@@ -52,6 +54,6 @@ class SnowblindStep(JwstStep):
                     dq_iso_dilate = dq_iso_dilate | segment_dilated
 
                 # Add the new expanded halo JUMP_DET masks to the groupdq mask
-                outimage.groupdq[integ,grp] = (dq_iso_dilate * JUMP_DET) | outimage.groupdq[integ,grp]
-            
+                outimage.groupdq[integ, grp] = (dq_iso_dilate * JUMP_DET) | outimage.groupdq[integ, grp]
+
             return outimage
