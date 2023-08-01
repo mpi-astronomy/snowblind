@@ -6,6 +6,10 @@ jobs:
   test:
 
     runs-on: ubuntu-latest
+    env:
+      OBSERVATORY: jwst
+      CRDS_PATH: /tmp/crds_cache
+      CRDS_SERVER_URL: https://jwst-crds.stsci.edu
     strategy:
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11"]
