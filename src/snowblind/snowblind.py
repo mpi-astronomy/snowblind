@@ -18,7 +18,6 @@ class SnowblindStep(Step):
         with datamodels.open(input_image) as jump:
             outimage = jump.copy()
             bool_jump = (jump.groupdq & JUMP_DET) == JUMP_DET
-            bool_sat = (jump.groupdq & SATURATED) == SATURATED
             filename = jump.meta.filename
 
         # Loop over integrations and groups, ignoring first group of each integration
@@ -60,4 +59,4 @@ class SnowblindStep(Step):
                 # Add the new expanded halo JUMP_DET masks to the groupdq mask
                 outimage.groupdq[integ, grp] = (jumps_expanded * JUMP_DET) | outimage.groupdq[integ, grp]
 
-            return outimage
+        return outimage
