@@ -1,5 +1,6 @@
-from snowblind import SnowblindStep
 from stdatamodels.jwst import datamodels
+
+from snowblind import SnowblindStep
 
 
 JUMP_DET = datamodels.dqflags.group['JUMP_DET']

@@ -5,45 +5,77 @@ from jwst.stpipe import Step
 
 
 JUMP_DET = datamodels.dqflags.group["JUMP_DET"]
+SATURATED = datamodels.dqflags.group["SATURATED"]
 
 
 class SnowblindStep(Step):
     spec = """
-        growth_factor = float(default=2.0)
+        growth_factor = float(default=2.0) # scale factor to dilate large CR events
     """
 
     class_alias = "snowblind"
 
-    def process(self, input_image):
-        with datamodels.open(input_image) as jump:
-            outimage = jump.copy()
+    def process(self, input_data):
+        with datamodels.open(input_data) as jump:
+            result = jump.copy()
             bool_jump = (jump.groupdq & JUMP_DET) == JUMP_DET
-            filename = jump.meta.filename
+            # bool_sat = (jump.groupdq & SATURATED) == SATURATED
 
-        # Loop over integrations and groups, ignoring first group of each integration
-        # which will not have any jumps flagged.
-        # Note, these are all boolean masks in this block
-        for integ in range(bool_jump.shape[0]):
-            for grp in range(bool_jump.shape[1]):
-                jump_slice = bool_jump[integ, grp]
+        # Expand jumps with large areas by self.growth_factor
+        dilated_jumps = self._dilate_large_area_jumps(bool_jump)
+
+        # # Expand saturated cores by 2 pixels
+        # dilated_sats = self._dilate_saturated_cores(bool_sat, bool_jump)
+
+        # bitwise OR together the dilated masks with the original GROUPDQ mask
+        result.groupdq |= (dilated_jumps * JUMP_DET).astype(np.uint32)
+        # result.groupdq |= (dilated_sats * SATURATED).astype(np.uint32)
+
+        # Update the metadata with the step completion status
+        setattr(result.meta.cal_step, self.class_alias, "COMPLETE")
+
+        return result
+
+    def _dilate_large_area_jumps(self, bool_jump):
+        """Dilate a boolean mask with contiguous large areas by a self.growth_factor
+
+        Parameters
+        ----------
+        bool_jump : array-like, bool
+
+        Returns
+        -------
+        array-like, bool
+        """
+        dilated_jumps = np.zeros_like(bool_jump, dtype=bool)
+
+        # Create a mask to remove small CR events, used by binary_opening()
+        disk = skimage.morphology.disk(radius=4)
+
+        # Loop over integrations and groups so we are dealing with one group slice at a time
+        # Note, these are boolean masks in this block
+        for i, integration in enumerate(bool_jump):
+            for g, group in enumerate(integration):
+                jump_slice = group
 
                 # If there are no JUMP_DET in this group, skip it
+                # Always? true for the first group of an integration
                 if not jump_slice.any():
                     continue
 
-                # Fill holes in the JUMP_DET flagged areas (i.e. the saturated cores)
+                # Fill holes in the flagged areas (i.e. the saturated cores)
                 cores_filled = skimage.morphology.remove_small_holes(jump_slice, area_threshold=200)
 
                 # Get rid of the small-area jumps, leaving only large area CR events
-                footprint = skimage.morphology.disk(radius=4)
-                big_events = skimage.morphology.binary_opening(cores_filled, footprint=footprint)
+                big_events = skimage.morphology.binary_opening(cores_filled, footprint=disk)
 
-                # Label and get properites of each snowball/shower
+                # Label and get properites of each large area event
                 event_labels, nlabels = skimage.measure.label(big_events, return_num=True)
                 region_properties = skimage.measure.regionprops(event_labels)
 
-                # For each snowball/shower, measure its size, and dilate by <growth_factor> * size
-                jumps_expanded = np.zeros_like(jump_slice, dtype=bool)
+                # Break up the segmentation map <event_labels> into a slice for each labeled event
+                # For each labeled event, measure its size, and dilate by <growth_factor> * size
+                jumps_dilated = np.zeros_like(jump_slice, dtype=bool)
                 # zero-indexed loop, but labels are 1-indexed
                 for label, region in zip(range(1, nlabels + 1), region_properties):
                     # make a boolean slice for each labelled event
@@ -52,11 +84,19 @@ class SnowblindStep(Step):
                     radius = np.ceil(np.sqrt(region.area / np.pi) * self.growth_factor)
                     # Warn if there are very large snowballs or showers detected
                     if region.area > 600:
-                        self.log.warning(f"Large CR event with masked radius={radius} in {filename}[{integ},{grp}] at {region.centroid}")
-                    segment_dilated = skimage.morphology.isotropic_dilation(segmentation_slice, radius=radius)
-                    jumps_expanded |= segment_dilated
+                        self.log.warning(f"Large CR event with masked radius={radius} in slice [{i},{g},{region.centroid}]")
+                    event_dilated = skimage.morphology.isotropic_dilation(segmentation_slice, radius=radius)
 
-                # Add the new expanded halo JUMP_DET masks to the groupdq mask
-                outimage.groupdq[integ, grp] = (jumps_expanded * JUMP_DET) | outimage.groupdq[integ, grp]
+                    # logical OR together the dilated mask for each large CR event
+                    dilated_jumps[i, g] |= event_dilated
 
-        return outimage
+                    # If multiple frames are averaged per group, flag the subsequent group too
+                    if g < bool_jump.shape[1]:
+                        dilated_jumps[i, g] |= event_dilated
+
+        return dilated_jumps
+
+    def _dilate_saturated_cores(self, bool_sat, bool_jump):
+        """Dilate the saturated cores of large CR events and propogate to subsequent groups
+        """
+        pass
