@@ -14,7 +14,8 @@ class JumpPlusStep(Step):
     the successive group, as CR hit within a group effects the slope of
     the one before and the one after.
     """
-    spec = ""
+    spec = """
+    """
 
     class_alias = "jump_plus"
 

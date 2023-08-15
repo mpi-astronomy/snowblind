@@ -11,6 +11,7 @@ SATURATED = datamodels.dqflags.group["SATURATED"]
 class SnowblindStep(Step):
     spec = """
         growth_factor = float(default=2.0) # scale factor to dilate large CR events
+        after_jumps = integer(default=2) # number of groups to flag around saturated cores after a jump
     """
 
     class_alias = "snowblind"
@@ -19,24 +20,25 @@ class SnowblindStep(Step):
         with datamodels.open(input_data) as jump:
             result = jump.copy()
             bool_jump = (jump.groupdq & JUMP_DET) == JUMP_DET
-            # bool_sat = (jump.groupdq & SATURATED) == SATURATED
+            bool_sat = (jump.groupdq & SATURATED) == SATURATED
 
         # Expand jumps with large areas by self.growth_factor
-        dilated_jumps = self._dilate_large_area_jumps(bool_jump)
+        dilated_jumps = self.dilate_large_area_jumps(bool_jump)
 
-        # # Expand saturated cores by 2 pixels
-        # dilated_sats = self._dilate_saturated_cores(bool_sat, bool_jump)
+        # Expand saturated cores within large event jumps by 2 pixels
+        dilated_sats = self.dilate_saturated_cores(bool_sat, dilated_jumps)
 
         # bitwise OR together the dilated masks with the original GROUPDQ mask
+        # We set the dilated saturated cores as jumps, as they are not saturated
         result.groupdq |= (dilated_jumps * JUMP_DET).astype(np.uint32)
-        # result.groupdq |= (dilated_sats * SATURATED).astype(np.uint32)
+        result.groupdq |= (dilated_sats * JUMP_DET).astype(np.uint32)
 
         # Update the metadata with the step completion status
         setattr(result.meta.cal_step, self.class_alias, "COMPLETE")
 
         return result
 
-    def _dilate_large_area_jumps(self, bool_jump):
+    def dilate_large_area_jumps(self, bool_jump):
         """Dilate a boolean mask with contiguous large areas by a self.growth_factor
 
         Parameters
@@ -58,8 +60,8 @@ class SnowblindStep(Step):
             for g, group in enumerate(integration):
                 jump_slice = group
 
-                # If there are no JUMP_DET in this group, skip it
-                # Always? true for the first group of an integration
+                # If there are no JUMP_DET in this group, skip it. True for the first group
+                # of an integration
                 if not jump_slice.any():
                     continue
 
@@ -75,7 +77,7 @@ class SnowblindStep(Step):
 
                 # Break up the segmentation map <event_labels> into a slice for each labeled event
                 # For each labeled event, measure its size, and dilate by <growth_factor> * size
-                jumps_dilated = np.zeros_like(jump_slice, dtype=bool)
+
                 # zero-indexed loop, but labels are 1-indexed
                 for label, region in zip(range(1, nlabels + 1), region_properties):
                     # make a boolean slice for each labelled event
@@ -90,13 +92,31 @@ class SnowblindStep(Step):
                     # logical OR together the dilated mask for each large CR event
                     dilated_jumps[i, g] |= event_dilated
 
-                    # If multiple frames are averaged per group, flag the subsequent group too
-                    if g < bool_jump.shape[1]:
-                        dilated_jumps[i, g] |= event_dilated
-
         return dilated_jumps
 
-    def _dilate_saturated_cores(self, bool_sat, bool_jump):
+    def dilate_saturated_cores(self, bool_sat, bool_jump):
         """Dilate the saturated cores of large CR events and propogate to subsequent groups
         """
-        pass
+        dilated_sats = np.zeros_like(bool_sat, dtype=bool)
+
+        sat_from_jump = bool_sat & bool_jump
+
+        # Propogate the saturated jump core flags to self.after_jumps subsequent group
+        for integration in sat_from_jump:
+            for i in range(self.after_jumps):
+                shifted_flags = np.roll(integration, axis=0, shift=1)
+                # Clean up the first group flags, which now have the last group
+                shifted_flags[0] = False
+                integration |= shifted_flags
+
+        # Now that the booleans mask shows the saturated cores when the jump occurs
+        # plus self.after_groups subsequent groups, dilate all of these by 2 pixels
+
+        for i, integ in enumerate(sat_from_jump):
+            for g, grp in enumerate(integ):
+                sat_slice = grp
+                dilated_slice = skimage.morphology.isotropic_dilation(sat_slice, radius=2)
+
+                dilated_sats[i, g] = dilated_slice
+        
+        return dilated_sats
