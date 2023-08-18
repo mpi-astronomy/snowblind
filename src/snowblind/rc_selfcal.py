@@ -27,12 +27,12 @@ class RcSelfCalStep(Step):
     insert it anywhere in the level3 pipeline before resample.
     """
     spec = """
-        glob_pattern = string(default=None) # glob pattern of files used to generate mask
-        mask = is_string_or_datamodel(default=None) # boolean mask identifying RC-affected pixels
         threshold = float(default=3.0) # threshold in sigma to flag hot pixels above median
     """
 
     class_alias = "rc_selfcal"
+
+    output_use_model = True
 
     def process(self, input_data):
         with datamodels.open(input_data) as images:

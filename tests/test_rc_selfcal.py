@@ -11,10 +11,9 @@ GOOD = datamodels.dqflags.pixel["GOOD"]
 
 
 def test_init():
-    glob_pattern = "jw*_nrclong_rate.fits"
-    step = RcSelfCalStep(glob_pattern=glob_pattern)
+    step = RcSelfCalStep(threshold=4.5)
 
-    assert step.glob_pattern == glob_pattern
+    assert step.threshold == 4.5
 
 
 def test_call():
@@ -38,7 +37,7 @@ def test_call():
         image.data[8, 8] = mean + 3 * stddev
 
     # Run the step and see if they're recovered
-    results = RcSelfCalStep.call(images)
+    results = RcSelfCalStep.call(images, threshold=3.0)
 
     for image in images:
         assert image.dq[2, 2] == RC & DO_NOT_USE
