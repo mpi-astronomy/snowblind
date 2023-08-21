@@ -27,9 +27,9 @@ class RcSelfCalStep(Step):
     insert it anywhere in the level3 pipeline before resample.
     """
     spec = """
-        threshold = float(default=3.0) # threshold in sigma to flag hot pixels above median
-        search_output_file = boolean(default=False)
-        suffix = string(default='rcflag')
+        threshold = float(default=3.0)  # threshold in sigma to flag hot pixels above median
+        write_mask = boolean(default=False)  # write out per-detector bad-pixel masks
+        output_use_model = boolean(default=True)
     """
 
     class_alias = "rc_selfcal"
@@ -37,24 +37,6 @@ class RcSelfCalStep(Step):
 
     def process(self, input_data):
         with datamodels.open(input_data) as images:
-
-            # Setup output path naming if associations are involved.
-            asn_id = None
-            try:
-                asn_id = images.meta.asn_table.asn_id
-            except (AttributeError, KeyError):
-                pass
-            if asn_id is None:
-                asn_id = self.search_attr('asn_id')
-            if asn_id is not None:
-                _make_output_path = self.search_attr(
-                    '_make_output_path', parent_first=True
-                )
-
-                self._make_output_path = partial(
-                    _make_output_path,
-                    asn_id=asn_id
-                )
 
             # Sort into a dict of lists, grouped by detector
             images_grouped_by_detector = {}
