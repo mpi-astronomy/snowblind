@@ -1,6 +1,7 @@
 from functools import partial
 
 from astropy.stats import sigma_clipped_stats
+from astropy.io import fits
 import numpy as np
 from stdatamodels.jwst import datamodels
 from jwst.stpipe import Step
@@ -30,6 +31,7 @@ class RcSelfCalStep(Step):
         threshold = float(default=3.0)  # threshold in sigma to flag hot pixels above median
         write_mask = boolean(default=False)  # write out per-detector bad-pixel masks
         output_use_model = boolean(default=True)
+        output_use_index = boolean(default=False)
     """
 
     class_alias = "rc_selfcal"
@@ -43,7 +45,7 @@ class RcSelfCalStep(Step):
             detector_names = set([image.meta.instrument.detector for image in images])
             for detector in detector_names:
                 det_list = [i for i in images if i.meta.instrument.detector == detector]
-                images_grouped_by_detector.update(dict(detector=det_list))
+                images_grouped_by_detector.update({detector: det_list})
 
             results = images.copy()
 
@@ -52,14 +54,15 @@ class RcSelfCalStep(Step):
         for detector, dm in images_grouped_by_detector.items():
             image_stack = self.get_selfcal_stack(dm)
             self.log.info(f"Creating mask for detector {detector}")
-            mask = self.create_hotpixel_mask(image_stack)
+            mask, median = self.create_hotpixel_mask(image_stack)
             self.log.info(f"Flagged {mask.sum()} pixels with {self.threshold} sigma")
             if self.write_mask:
-                pass
+                fits.HDUList(fits.PrimaryHDU(data=mask.astype(np.uint8))).writeto(f"{detector.lower()}_mask.fits", overwrite=True)
+                fits.HDUList(fits.PrimaryHDU(data=median)).writeto(f"{detector.lower()}_median.fits", overwrite=True)
 
             for result in results:
                 if result.meta.instrument.detector == detector:
-                    result.dq |= mask * (DO_NOT_USE + RC)
+                    result.dq |= (mask * (DO_NOT_USE | RC)).astype(np.uint32)
 
         return results
 
@@ -75,14 +78,11 @@ class RcSelfCalStep(Step):
 
     def create_hotpixel_mask(self, image_stack):
         # Median collapse the stack of images
-        stack_median = np.nanmedian(image_stack, axis=0)
-
-        # Subtract background
-        stack_median -= np.nanmedian(stack_median)
+        median2d = np.nanmedian(image_stack, axis=0)
 
         # Clip to threshold
-        _, median, std = sigma_clipped_stats(stack_median)
-        mask = stack_median > median + self.threshold * std
-        mask |= stack_median < median + self.threshold * std
+        _, med, std = sigma_clipped_stats(median2d)
+        mask = median2d > med + self.threshold * std
+        mask |= median2d < med - self.threshold * std
 
-        return mask
+        return mask, median2d

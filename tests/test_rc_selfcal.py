@@ -1,6 +1,5 @@
-from stdatamodels.jwst import datamodels
 import numpy as np
-from jwst.datamodels import ModelContainer
+from jwst import datamodels
 
 from snowblind import RcSelfCalStep
 
@@ -17,31 +16,36 @@ def test_init():
 
 
 def test_call():
-    images = ModelContainer()
+    images = datamodels.ModelContainer()
     rng = np.random.default_rng()
 
-    mean = 0.02
-    stddev = 0.05
+    mean = 0.0
+    stddev = 0.08
     shape = (10, 10)
-    for _ in range(10):
+    for _ in range(40):
         image = rng.normal(loc=mean, scale=stddev, size=shape)
         images.append(datamodels.ImageModel(image))
 
-    for image in images:
-        # We need to know the detector
-        image.meta.instrument.detector = "NRCALONG"
+    for i, image in enumerate(images):
+        # Populate detector meta, half A module, half B
+        if i < 20:
+            image.meta.instrument.detector = "NRCALONG"
+            image.meta.filename = f"jw001234_{i}_nrcalong.fits"
+        else:
+            image.meta.instrument.detector = "NRCBLONG"
+            image.meta.filename = f"jw001234_{i}_nrcblong.fits"
 
         # Drop some hot and dead pixels in
-        image.data[2, 2] = mean - 10 * stddev
-        image.data[3, 5] = mean + 5 * stddev
-        image.data[8, 8] = mean + 3 * stddev
-
+        image.data[2, 2] -= 10 * stddev
+        image.data[3, 5] += 5 * stddev
+        image.data[8, 8] += 3 * stddev
+    
     # Run the step and see if they're recovered
     results = RcSelfCalStep.call(images, threshold=3.0)
 
-    for image in images:
-        assert image.dq[2, 2] == RC & DO_NOT_USE
-        assert image.dq[3, 5] == RC & DO_NOT_USE
-        assert image.dq[8, 8] == RC & DO_NOT_USE
+    for result in results:
+        assert result.dq[2, 2] == RC | DO_NOT_USE
+        assert result.dq[3, 5] == RC | DO_NOT_USE
+        assert result.dq[8, 8] == RC | DO_NOT_USE
 
-        assert image.dq[5, 5] == GOOD
+        assert result.dq[5, 5] == GOOD
