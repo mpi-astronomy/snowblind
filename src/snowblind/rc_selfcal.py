@@ -1,4 +1,5 @@
 from functools import partial
+import warnings
 
 from astropy.stats import sigma_clipped_stats
 from astropy.io import fits
@@ -78,10 +79,12 @@ class RcSelfCalStep(Step):
 
     def create_hotpixel_mask(self, image_stack):
         # Median collapse the stack of images
-        median2d = np.nanmedian(image_stack, axis=0)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(action="ignore", message="All-NaN slice encountered")
+            median2d = np.nanmedian(image_stack, axis=0)
 
         # Clip to threshold
-        _, med, std = sigma_clipped_stats(median2d)
+        _, med, std = sigma_clipped_stats(median2d, mask_value=np.nan)
         mask = median2d > med + self.threshold * std
         mask |= median2d < med - self.threshold * std
 
