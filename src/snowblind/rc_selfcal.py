@@ -51,7 +51,11 @@ class RcSelfCalStep(Step):
         # np.bitwise_or() it with each input image for that detector
         for detector, dm in images_grouped_by_detector.items():
             image_stack = self.get_selfcal_stack(dm)
+            self.log.info(f"Creating mask for detector {detector}")
             mask = self.create_hotpixel_mask(image_stack)
+            self.log.info(f"Flagged {mask.sum()} pixels with {self.threshold} sigma")
+            if self.write_mask:
+                pass
 
             for result in results:
                 if result.meta.instrument.detector == detector:
