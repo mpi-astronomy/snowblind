@@ -86,6 +86,6 @@ class RcSelfCalStep(Step):
         # Clip to threshold
         _, med, std = sigma_clipped_stats(median2d, mask_value=np.nan)
         mask = median2d > med + self.threshold * std
-        mask |= median2d < med - self.threshold * std
+        # mask |= median2d < med - self.threshold * std
 
         return mask, median2d

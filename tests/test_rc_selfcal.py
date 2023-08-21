@@ -36,7 +36,7 @@ def test_call():
             image.meta.filename = f"jw001234_{i}_nrcblong.fits"
 
         # Drop some hot and dead pixels in
-        image.data[2, 2] -= 10 * stddev
+        image.data[2, 2] += 10 * stddev
         image.data[3, 5] += 5 * stddev
         image.data[8, 8] += 3 * stddev
     
