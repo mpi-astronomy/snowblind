@@ -33,6 +33,7 @@ class RcSelfCalStep(Step):
     class_alias = "rc_selfcal"
 
     output_use_model = True
+    suffix = "rcflag"
 
     def process(self, input_data):
         with datamodels.open(input_data) as images:
@@ -55,6 +56,10 @@ class RcSelfCalStep(Step):
             for result in results:
                 if result.meta.instrument.detector == detector:
                     result.dq |= mask * (DO_NOT_USE + RC)
+        
+                # Modify the output name to include the association ID
+                result.meta.filename = self.make_output_path(basepath=result.meta.filename,
+                                                             suffix=self.suffix)
 
         return results
 
