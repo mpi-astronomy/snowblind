@@ -1,4 +1,4 @@
-from glob import glob
+from functools import partial
 
 from astropy.stats import sigma_clipped_stats
 import numpy as np
@@ -28,15 +28,33 @@ class RcSelfCalStep(Step):
     """
     spec = """
         threshold = float(default=3.0) # threshold in sigma to flag hot pixels above median
+        search_output_file = boolean(default=False)
+        suffix = string(default='rcflag')
     """
 
     class_alias = "rc_selfcal"
 
-    output_use_model = True
-    suffix = "rcflag"
 
     def process(self, input_data):
         with datamodels.open(input_data) as images:
+
+            # Setup output path naming if associations are involved.
+            asn_id = None
+            try:
+                asn_id = images.meta.asn_table.asn_id
+            except (AttributeError, KeyError):
+                pass
+            if asn_id is None:
+                asn_id = self.search_attr('asn_id')
+            if asn_id is not None:
+                _make_output_path = self.search_attr(
+                    '_make_output_path', parent_first=True
+                )
+
+                self._make_output_path = partial(
+                    _make_output_path,
+                    asn_id=asn_id
+                )
 
             # Sort into a dict of lists, grouped by detector
             images_grouped_by_detector = {}
@@ -56,10 +74,6 @@ class RcSelfCalStep(Step):
             for result in results:
                 if result.meta.instrument.detector == detector:
                     result.dq |= mask * (DO_NOT_USE + RC)
-        
-                # Modify the output name to include the association ID
-                result.meta.filename = self.make_output_path(basepath=result.meta.filename,
-                                                             suffix=self.suffix)
 
         return results
 
