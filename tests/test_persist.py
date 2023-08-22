@@ -18,14 +18,14 @@ def test_init():
 
 def test_call():
     images = datamodels.ModelContainer()
-    for _ in range(40):
+    for _ in range(10):
         images.append(datamodels.ImageModel((10, 10)))
 
     time0 = Time(60122.0226664904, format="mjd")
 
     for i, image in enumerate(images):
         # Populate detector meta, half A module, half B
-        if i < 20:
+        if i < 5:
             image.meta.instrument.detector = "NRCALONG"
             image.meta.filename = f"jw001234_{i}_nrcalong.fits"
         else:
@@ -47,4 +47,5 @@ def test_call():
     assert results[2].dq[3, 5] & (PERSISTENCE | DO_NOT_USE)
     assert results[3].dq[8, 8] & (PERSISTENCE | DO_NOT_USE)
 
-    # assert results[0].dq[2, 2] | PERSISTENCE
+    assert results[8].dq[2, 2] == GOOD
+    assert results[1].dq[0, 0] == GOOD

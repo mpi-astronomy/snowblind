@@ -43,12 +43,14 @@ class PersistenceFlagStep(Step):
             # Get the time series of DQ arrays in observation order as (time, dq) tuple
             dq_list, time_deltas = self.sort_by_start_times(models)
 
+            self.log.info(f"Time deltas [sec] between {detector} exposures are {time_deltas}")
+
             # Get boolean cube of persistence pixels
             persist_bool = self.flag_saturated_in_subsequent(dq_list, time_deltas)
 
             # Convert bool cube into PERSISTENCE flags for each image dq array
             for i, model in enumerate(models):
-                model.dq |= (persist_bool[i] * DO_NOT_USE | PERSISTENCE).astype(np.uint32)
+                model.dq |= persist_bool[i].astype(np.uint32) * (DO_NOT_USE | PERSISTENCE)
 
         return results
 
@@ -77,7 +79,7 @@ class PersistenceFlagStep(Step):
         # Find how man subsequent slices need to be flagged for each slice
         n_after = []
         for i, tdelt in enumerate(time_deltas):
-            n_after.append(np.sum((np.cumsum(time_deltas[i:]) - tdelt) < 2500) - 1)
+            n_after.append(np.sum((np.cumsum(time_deltas[i:]) - tdelt) < self.time) - 1)
 
         # Make boolean array cube of saturated pixels
         satur_cube = (np.array(dq_list) & SATURATED) ==  SATURATED
@@ -86,7 +88,7 @@ class PersistenceFlagStep(Step):
         for i, (sat_slice, n) in enumerate(zip(satur_cube, n_after)):
             for iter in range(n):
                 try:
-                    persist_cube[i + 1 + n] |= sat_slice
+                    persist_cube[i + 1 + iter] |= sat_slice
                 except IndexError:
                     pass
         

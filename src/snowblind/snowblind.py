@@ -109,7 +109,7 @@ class SnowblindStep(Step):
                 shifted_flags[0] = False
                 integration |= shifted_flags
 
-        # Now that the booleans mask shows the saturated cores when the jump occurs
+        # Now that the boolean mask shows the saturated cores when the jump occurs
         # plus self.after_groups subsequent groups, dilate all of these by 2 pixels
 
         for i, integ in enumerate(sat_from_jump):
