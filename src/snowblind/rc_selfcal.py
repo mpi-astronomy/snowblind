@@ -4,7 +4,7 @@ import warnings
 from astropy.stats import sigma_clipped_stats
 from astropy.io import fits
 import numpy as np
-from stdatamodels.jwst import datamodels
+from jwst import datamodels
 from jwst.stpipe import Step
 from astropy.io import fits
 
@@ -30,7 +30,7 @@ class RcSelfCalStep(Step):
     """
     spec = """
         threshold = float(default=3.0)  # threshold in sigma to flag hot pixels above median
-        write_mask = boolean(default=False)  # write out per-detector bad-pixel masks
+        save_mask = boolean(default=False)  # write out per-detector bad-pixel masks
         output_use_model = boolean(default=True)
         output_use_index = boolean(default=False)
     """
@@ -52,14 +52,14 @@ class RcSelfCalStep(Step):
 
         # For each detector represented in the association, compute a hot pixel mask and
         # np.bitwise_or() it with each input image for that detector
-        for detector, dm in images_grouped_by_detector.items():
-            image_stack = self.get_selfcal_stack(dm)
+        for detector, models in images_grouped_by_detector.items():
+            image_stack = self.get_selfcal_stack(models)
             self.log.info(f"Creating mask for detector {detector}")
             mask, median = self.create_hotpixel_mask(image_stack)
             self.log.info(f"Flagged {mask.sum()} pixels with {self.threshold} sigma")
-            if self.write_mask:
-                fits.HDUList(fits.PrimaryHDU(data=mask.astype(np.uint8))).writeto(f"{detector.lower()}_mask.fits", overwrite=True)
-                fits.HDUList(fits.PrimaryHDU(data=median)).writeto(f"{detector.lower()}_median.fits", overwrite=True)
+            if self.save_mask:
+                fits.HDUList(fits.PrimaryHDU(data=mask.astype(np.uint8))).writeto(f"{detector.lower()}_rcflag_mask.fits", overwrite=True)
+                fits.HDUList(fits.PrimaryHDU(data=median)).writeto(f"{detector.lower()}_rcflag_median.fits", overwrite=True)
 
             for result in results:
                 if result.meta.instrument.detector == detector:
@@ -84,7 +84,10 @@ class RcSelfCalStep(Step):
             median2d = np.nanmedian(image_stack, axis=0)
 
         # Clip to threshold
-        _, med, std = sigma_clipped_stats(median2d, mask_value=np.nan)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(action="ignore",
+                                    message="Input data contains invalid values")
+            _, med, std = sigma_clipped_stats(median2d, mask_value=np.nan)
         mask = median2d > med + self.threshold * std
         # mask |= median2d < med - self.threshold * std
 

@@ -3,6 +3,7 @@ from importlib import metadata
 from .snowblind import SnowblindStep
 from .jump_plus import JumpPlusStep
 from .rc_selfcal import RcSelfCalStep
+from .persist import PersistenceFlagStep
 
 
 try:
@@ -11,7 +12,8 @@ except Exception:
     __version__ = "dev"
 
 
-__all__ = ['SnowblindStep', 'JumpPlusStep', 'RcSelfCalStep', '__version__']
+__all__ = ['SnowblindStep', 'JumpPlusStep', 'RcSelfCalStep', 'PersistenceFlagStep',
+           '__version__']
 
 
 def _get_steps():
@@ -21,4 +23,5 @@ def _get_steps():
         ("snowblind.SnowblindStep", 'snowblind', False),
         ("snowblind.JumpPlusStep", 'jump_plus', False),
         ("snowblind.RcSelfCalStep", 'rc_selfcal', False),
+        ("snowblind.PersistenceFlagStep", 'persist', False),
     ]
