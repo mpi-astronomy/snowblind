@@ -40,7 +40,7 @@ class PersistenceFlagStep(Step):
 
         # For each detector represented in the association
         for detector, models in images_grouped_by_detector.items():
-            # Get the time series of DQ arrays in observation order as (time, dq) tuple
+            # Get DQ arrays sorted by observation start time, and difference in time between
             dq_list, time_deltas = self.sort_by_start_times(models)
 
             self.log.info(f"Time deltas [sec] between {detector} exposures are {time_deltas}")
@@ -49,8 +49,9 @@ class PersistenceFlagStep(Step):
             persist_bool = self.flag_saturated_in_subsequent(dq_list, time_deltas)
 
             # Convert bool cube into PERSISTENCE flags for each image dq array
-            for i, model in enumerate(models):
-                model.dq |= persist_bool[i].astype(np.uint32) * (DO_NOT_USE | PERSISTENCE)
+            for model, persist_bool_slice in zip(models, persist_bool):
+                self.log.info(f"Pixels flagged: {model.meta.filename} {persist_bool_slice.sum()}")
+                model.dq |= persist_bool_slice.astype(np.uint32) * (DO_NOT_USE | PERSISTENCE)
 
         return results
 
