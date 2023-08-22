@@ -41,26 +41,26 @@ class PersistenceFlagStep(Step):
         # For each detector represented in the association
         for detector, models in images_grouped_by_detector.items():
             # Get DQ arrays sorted by observation start time, and difference in time between
-            dq_list, time_deltas = self.sort_by_start_times(models)
+            models_sorted, time_deltas = self.sort_by_start_times(models)
 
             self.log.info(f"Time deltas [sec] between {detector} exposures are {time_deltas}")
 
             # Get boolean cube of persistence pixels
-            persist_bool = self.flag_saturated_in_subsequent(dq_list, time_deltas)
+            persist_bool = self.flag_saturated_in_subsequent(models_sorted, time_deltas)
 
             # Convert bool cube into PERSISTENCE flags for each image dq array
-            for model, persist_bool_slice in zip(models, persist_bool):
-                self.log.info(f"Pixels flagged: {model.meta.filename} {persist_bool_slice.sum()}")
-                model.dq |= persist_bool_slice.astype(np.uint32) * (DO_NOT_USE | PERSISTENCE)
+            for model, mask in zip(models_sorted, persist_bool):
+                self.log.info(f"Pixels flagged: {model.meta.filename} {mask.sum()}")
+                model.dq |= (mask * (DO_NOT_USE | PERSISTENCE)).astype(np.uint32)
 
         return results
 
     def sort_by_start_times(self, images):
-        """Returns sorted lists of dq and time_delta [sec]
+        """Returns sorted lists of datamodels and time_deltas between them [sec]
         """
         start_times = []
         for image in images:
-            start_times.append((image.meta.exposure.start_time, image.dq))
+            start_times.append((image.meta.exposure.start_time, image))
 
         # Sort all exposures by MJD
         start_times.sort()
@@ -72,9 +72,9 @@ class PersistenceFlagStep(Step):
         # Fix the first time delta due to np.roll() putting last item first
         time_deltas_seconds[0] = 0.
 
-        return [dq for _, dq in start_times], time_deltas_seconds
+        return [m for _, m in start_times], time_deltas_seconds
 
-    def flag_saturated_in_subsequent(self, dq_list, time_deltas):
+    def flag_saturated_in_subsequent(self, models_sorted, time_deltas):
         """Flag as many subsequent SATURATED exposures as allowed by self.time
         """
         # Find how man subsequent slices need to be flagged for each slice
@@ -83,7 +83,7 @@ class PersistenceFlagStep(Step):
             n_after.append(np.sum((np.cumsum(time_deltas[i:]) - tdelt) < self.time) - 1)
 
         # Make boolean array cube of saturated pixels
-        satur_cube = (np.array(dq_list) & SATURATED) ==  SATURATED
+        satur_cube = (np.array([m.dq for m in models_sorted]) & SATURATED) ==  SATURATED
         persist_cube = np.zeros_like(satur_cube, dtype=bool)
 
         for i, (sat_slice, n) in enumerate(zip(satur_cube, n_after)):
