@@ -1,3 +1,4 @@
+import numpy as np
 from jwst import datamodels
 from astropy.time import Time
 
@@ -18,22 +19,25 @@ def test_init():
 
 def test_call():
     images = datamodels.ModelContainer()
-    for _ in range(10):
-        images.append(datamodels.ImageModel((10, 10)))
 
     time0 = Time(60122.0226664904, format="mjd")
+    start_times = []
+    for i in range(12):
+        images.append(datamodels.ImageModel((10, 10)))
+
+        # Populate start times
+        start_time = time0.value + i * 0.0132
+        start_times.append(start_time)
+
+    # Make the start times not in order.
+    start_times = np.roll(start_times, shift=4)
 
     for i, image in enumerate(images):
-        # Populate detector meta, half A module, half B
-        if i < 5:
-            image.meta.instrument.detector = "NRCALONG"
-            image.meta.filename = f"jw001234_{i}_nrcalong.fits"
-        else:
-            image.meta.instrument.detector = "NRCBLONG"
-            image.meta.filename = f"jw001234_{i}_nrcblong.fits"
+        # Populate detector meta
+        image.meta.instrument.detector = "NRCALONG"
+        image.meta.filename = f"jw001234_{i}_nrcalong.fits"
         
-        # Populate start times
-        image.meta.exposure.start_time = time0.value + i * 0.0132
+        image.meta.exposure.start_time = start_times[i]
 
     # Drop saturated pixels into the images
     images[0].dq[2, 2] = SATURATED
