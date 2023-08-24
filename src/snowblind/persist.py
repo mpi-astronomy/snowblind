@@ -83,10 +83,7 @@ class PersistenceFlagStep(Step):
             n_after.append(np.sum((np.cumsum(time_deltas[i:]) - tdelt) < self.time) - 1)
 
         # Make boolean array cube of saturated pixels
-        try:
-            satur_cube = self.get_saturation_masks(models_sorted)
-        except FileNotFoundError:  # This branch for unit tests
-            satur_cube = (np.array([m.dq for m in models_sorted]) & SATURATED) ==  SATURATED
+        satur_cube = self.get_saturation_masks(models_sorted)
         persist_cube = np.zeros_like(satur_cube, dtype=bool)
 
         for i, (sat_slice, n) in enumerate(zip(satur_cube, n_after)):
@@ -105,15 +102,15 @@ class PersistenceFlagStep(Step):
 
         masks = []
         for f in file_names:
-            with datamodels.open(f) as model:
-                sat_mask = (model.groupdq & SATURATED) == SATURATED
+            try:
+                with datamodels.open(f) as model:
+                    sat_mask = (model.groupdq & SATURATED) == SATURATED
+            except FileNotFoundError as e:
+                self.log.warning(str(e))
+                return (np.array([m.dq for m in models_sorted]) & SATURATED) ==  SATURATED
 
-            # Collapse 4D boolean cube into a 2D mask
-            final_mask = np.zeros((sat_mask.shape[-2:]), dtype=bool)
-            for integration in sat_mask:
-                # The last group should have the cumulative sat flags
-                final_mask |= integration[-1]
-
-            masks.append(final_mask)
+            # Get the last group of the last integration, as this will have the
+            # cummulative, uncorrected saturated pixels flagged.
+            masks.append(sat_mask[-1, -1])
 
         return np.array(masks)
