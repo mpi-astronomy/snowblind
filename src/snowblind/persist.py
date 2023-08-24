@@ -106,7 +106,7 @@ class PersistenceFlagStep(Step):
         masks = []
         for f in file_names:
             with datamodels.open(f) as model:
-                sat_mask = (model.dq & SATURATED) == SATURATED
+                sat_mask = (model.groupdq & SATURATED) == SATURATED
 
             # Collapse 4D boolean cube into a 2D mask
             final_mask = np.zeros((sat_mask.shape[-2:]), dtype=bool)
