@@ -1,4 +1,5 @@
 from astropy.time import Time
+from astropy.io import fits
 import numpy as np
 from jwst import datamodels
 from jwst.stpipe import Step
@@ -18,7 +19,7 @@ class PersistenceFlagStep(Step):
 
     spec = """
         time = float(default=2500.0)  # amount of time after exposure to flag [seconds]
-        save_mask = boolean(default=False)  # write out masks for each exposure
+        save_mask = boolean(default=False)  # write out persistence mask for each exposure
         output_use_model = boolean(default=True)
         output_use_index = boolean(default=False)
     """
@@ -102,15 +103,21 @@ class PersistenceFlagStep(Step):
 
         masks = []
         for f in file_names:
-            try:
-                with datamodels.open(f) as model:
-                    sat_mask = (model.groupdq & SATURATED) == SATURATED
-            except FileNotFoundError as e:
-                self.log.warning(str(e))
-                return (np.array([m.dq for m in models_sorted]) & SATURATED) == SATURATED
+            with datamodels.open(f) as model:
+                mask = (model.groupdq & SATURATED) == SATURATED
+                filename = model.meta.filename
 
             # Get the last group of the last integration, as this will have the
             # cummulative, uncorrected saturated pixels flagged.
-            masks.append(sat_mask[-1, -1])
+            masks.append(mask[-1, -1])
+
+            if self.save_mask:
+                sat_mask_name = filename.replace("_ramp", "_satmask")
+                fits.HDUList(
+                    fits.PrimaryHDU(
+                        data=mask.astype(np.uint8)
+                    )
+                ).writeto(sat_mask_name, overwrite=True)
+                self.log.info(f"Writing out saturation mask {sat_mask_name}")
 
         return np.array(masks)
