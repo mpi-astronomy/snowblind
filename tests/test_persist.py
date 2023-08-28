@@ -17,13 +17,14 @@ def test_init():
     assert step.time == 1000
 
 
-def test_call():
+def test_call(tmp_cwd):
     images = datamodels.ModelContainer()
 
     time0 = Time(60122.0226664904, format="mjd")
     start_times = []
     for i in range(12):
-        images.append(datamodels.ImageModel((10, 10)))
+        image = datamodels.ImageModel((10, 10))
+        images.append(image)
 
         # Populate start times
         start_time = time0.value + i * 0.0132
@@ -35,7 +36,7 @@ def test_call():
     for i, image in enumerate(images):
         # Populate detector meta
         image.meta.instrument.detector = "NRCALONG"
-        image.meta.filename = f"jw001234_{i}_nrcalong.fits"
+        image.meta.filename = f"jw001234_{i}_nrcalong_cal.fits"
 
         image.meta.exposure.start_time = start_times[i]
 
@@ -43,6 +44,12 @@ def test_call():
     images[0].dq[2, 2] = SATURATED
     images[1].dq[3, 5] = SATURATED
     images[2].dq[8, 8] = SATURATED
+
+    # Write out a _jump version of these images:
+    for image in images:
+        jump = datamodels.RampModel((1, 5, *image.data.shape))
+        jump.groupdq[0, -1] = image.dq
+        jump.save(image.meta.filename.replace("_cal", "_jump"))
 
     # Run the step and see if they're recovered
     results = PersistenceFlagStep.call(images)
