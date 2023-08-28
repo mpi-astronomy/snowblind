@@ -99,7 +99,7 @@ class PersistenceFlagStep(Step):
     def get_saturation_masks(self, models_sorted):
         """Get boolean SATURATION mask from output of JumpStep
         """
-        file_names = [m.meta.filename.replace("_cal", "_ramp") for m in models_sorted]
+        file_names = [m.meta.filename.replace("_cal", "_jump") for m in models_sorted]
 
         masks = []
         for f in file_names:
@@ -112,7 +112,7 @@ class PersistenceFlagStep(Step):
             masks.append(mask[-1, -1])
 
             if self.save_mask:
-                sat_mask_name = filename.replace("_ramp", "_satmask")
+                sat_mask_name = filename.replace("_jump", "_satmask")
                 fits.HDUList(
                     fits.PrimaryHDU(
                         data=mask.astype(np.uint8)
