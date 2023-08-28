@@ -1,5 +1,6 @@
 from importlib import metadata
 
+from . import _version
 from .snowblind import SnowblindStep
 from .jump_plus import JumpPlusStep
 from .rc_selfcal import RcSelfCalStep
@@ -7,7 +8,7 @@ from .persist import PersistenceFlagStep
 
 
 try:
-    __version__ = metadata.version(__package__ or __name__)
+    __version__ = _version.version
 except Exception:
     __version__ = "dev"
 

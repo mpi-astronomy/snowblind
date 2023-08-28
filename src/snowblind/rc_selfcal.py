@@ -1,4 +1,3 @@
-from functools import partial
 import warnings
 
 from astropy.stats import sigma_clipped_stats
@@ -6,7 +5,6 @@ from astropy.io import fits
 import numpy as np
 from jwst import datamodels
 from jwst.stpipe import Step
-from astropy.io import fits
 
 
 RC = datamodels.dqflags.pixel["RC"]
@@ -37,7 +35,6 @@ class RcSelfCalStep(Step):
 
     class_alias = "rc_selfcal"
 
-
     def process(self, input_data):
         with datamodels.open(input_data) as images:
 
@@ -58,8 +55,16 @@ class RcSelfCalStep(Step):
             mask, median = self.create_hotpixel_mask(image_stack)
             self.log.info(f"Flagged {mask.sum()} pixels with {self.threshold} sigma")
             if self.save_mask:
-                fits.HDUList(fits.PrimaryHDU(data=mask.astype(np.uint8))).writeto(f"{detector.lower()}_rcflag_mask.fits", overwrite=True)
-                fits.HDUList(fits.PrimaryHDU(data=median)).writeto(f"{detector.lower()}_rcflag_median.fits", overwrite=True)
+                fits.HDUList(
+                    fits.PrimaryHDU(
+                        data=mask.astype(np.uint8)
+                    )
+                ).writeto(f"{detector.lower()}_rcflag_mask.fits", overwrite=True)
+                fits.HDUList(
+                    fits.PrimaryHDU(
+                        data=median
+                    )
+                ).writeto(f"{detector.lower()}_rcflag_median.fits", overwrite=True)
 
             for result in results:
                 if result.meta.instrument.detector == detector:

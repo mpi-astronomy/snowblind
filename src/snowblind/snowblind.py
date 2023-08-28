@@ -118,5 +118,5 @@ class SnowblindStep(Step):
                 dilated_slice = skimage.morphology.isotropic_dilation(sat_slice, radius=2)
 
                 dilated_sats[i, g] = dilated_slice
-        
+
         return dilated_sats

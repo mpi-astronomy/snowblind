@@ -39,7 +39,7 @@ def test_call():
         image.data[2, 2] += 10 * stddev
         image.data[3, 5] += 5 * stddev
         image.data[8, 8] += 3 * stddev
-    
+
     # Run the step and see if they're recovered
     results = RcSelfCalStep.call(images, threshold=3.0)
 

@@ -29,7 +29,7 @@ class JumpPlusStep(Step):
                 frame_averaging = False
 
             result = jump.copy()
-        
+
         if not frame_averaging:
             # Update step meta
             self.log.info("No frame averaging in this readout mode")
@@ -49,7 +49,7 @@ class JumpPlusStep(Step):
 
             # Add the new JUMP_DET flags for the integration
             integration_dq |= after_jump_dq
-        
+
         setattr(result.meta.cal_step, self.class_alias, "COMPLETE")
 
         return result

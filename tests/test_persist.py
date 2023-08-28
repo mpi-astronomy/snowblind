@@ -36,14 +36,14 @@ def test_call():
         # Populate detector meta
         image.meta.instrument.detector = "NRCALONG"
         image.meta.filename = f"jw001234_{i}_nrcalong.fits"
-        
+
         image.meta.exposure.start_time = start_times[i]
 
     # Drop saturated pixels into the images
     images[0].dq[2, 2] = SATURATED
     images[1].dq[3, 5] = SATURATED
     images[2].dq[8, 8] = SATURATED
-    
+
     # Run the step and see if they're recovered
     results = PersistenceFlagStep.call(images)
 

@@ -92,7 +92,7 @@ class PersistenceFlagStep(Step):
                     persist_cube[i + 1 + iter] |= sat_slice
                 except IndexError:
                     pass
-        
+
         return persist_cube
 
     def get_saturation_masks(self, models_sorted):
@@ -107,7 +107,7 @@ class PersistenceFlagStep(Step):
                     sat_mask = (model.groupdq & SATURATED) == SATURATED
             except FileNotFoundError as e:
                 self.log.warning(str(e))
-                return (np.array([m.dq for m in models_sorted]) & SATURATED) ==  SATURATED
+                return (np.array([m.dq for m in models_sorted]) & SATURATED) == SATURATED
 
             # Get the last group of the last integration, as this will have the
             # cummulative, uncorrected saturated pixels flagged.
