@@ -1,5 +1,3 @@
-from importlib import metadata
-
 from . import _version
 from .snowblind import SnowblindStep
 from .jump_plus import JumpPlusStep
