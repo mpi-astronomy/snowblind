@@ -87,8 +87,9 @@ class SnowblindStep(Step):
                     # Compute radius from equal-area circle
                     radius = np.ceil(np.sqrt(region.area / np.pi) * self.growth_factor)
                     # Warn if there are very large snowballs or showers detected
-                    if region.area > 600:
-                        self.log.warning(f"Large CR event with masked radius={radius} in slice [{i},{g},{region.centroid}]")
+                    if region.area > 900:
+                        y, x = region.centroid
+                        self.log.warning(f"Large CR event with masked radius={radius} in slice [{i}, {g}, {y}, {x}]")
                     event_dilated = skimage.morphology.isotropic_dilation(segmentation_slice, radius=radius)
 
                     # logical OR together the dilated mask for each large CR event
