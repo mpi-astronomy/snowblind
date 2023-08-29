@@ -4,15 +4,19 @@ from jwst.stpipe import Step
 
 
 JUMP_DET = datamodels.dqflags.group["JUMP_DET"]
+SATURATED = datamodels.dqflags.group["SATURATED"]
 
 
 class JumpPlusStep(Step):
-    """Updates groupdq by copying jumps in group N to group N+1
+    """Updates groupdq by propagating jumps in group N to group N+1
 
     For NIR readout modes that average together more than one frames
     per group, i.e NFRAMES > 1, this propagates the detected JUMPS to
     the successive group, as CR hit within a group effects the slope of
-    the one before and the one after.
+    the one before and potentially the one after.
+
+    Frame-averaged groups that are saturated often got saturated in a
+    frame in a previous group, so flag those as jumps as well.
     """
     spec = """
     """
@@ -42,13 +46,19 @@ class JumpPlusStep(Step):
             # Make jump DQ for the integration where flagged jumps in group N
             # propagate to the group N+1
             after_jump_dq = np.roll(integration_dq & JUMP_DET, axis=0, shift=1)
-
-            # np.roll() wraps the last image slice back to the first.  Restore
-            # the original first slice
+            # Restore the original first slice
             after_jump_dq[0] = integration_dq[0] & JUMP_DET
 
             # Add the new JUMP_DET flags for the integration
             integration_dq |= after_jump_dq
+
+            # Flag saturated groups as jumps in the group before
+            before_sat_dq = np.roll(integration_dq & SATURATED, axis=0, shift=-1)
+            # Restore the original last slice
+            before_sat_dq[-1] = integration_dq[-1] & SATURATED
+
+            # Add the new JUMP_DET flags for the integration
+            integration_dq |= ((before_sat_dq == SATURATED) * JUMP_DET).astype(np.uint32)
 
         setattr(result.meta.cal_step, self.class_alias, "COMPLETE")
 

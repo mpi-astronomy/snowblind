@@ -12,6 +12,7 @@ class SnowblindStep(Step):
     spec = """
         growth_factor = float(default=2.0) # scale factor to dilate large CR events
         after_jumps = integer(default=2) # number of groups to flag around saturated cores after a jump
+        ring_width = float(default=2.0) # number of pixels to dilate around saturated cores
     """
 
     class_alias = "snowblind"
@@ -39,7 +40,8 @@ class SnowblindStep(Step):
         return result
 
     def dilate_large_area_jumps(self, bool_jump):
-        """Dilate a boolean mask with contiguous large areas by a self.growth_factor
+        """
+        Dilate a boolean mask with contiguous large areas by a self.growth_factor
 
         Parameters
         ----------
@@ -95,7 +97,8 @@ class SnowblindStep(Step):
         return dilated_jumps
 
     def dilate_saturated_cores(self, bool_sat, bool_jump):
-        """Dilate the saturated cores of large CR events and propogate to subsequent groups
+        """
+        Dilate the saturated cores of large CR events and propogate to subsequent groups
         """
         dilated_sats = np.zeros_like(bool_sat, dtype=bool)
 
@@ -111,11 +114,10 @@ class SnowblindStep(Step):
 
         # Now that the boolean mask shows the saturated cores when the jump occurs
         # plus self.after_groups subsequent groups, dilate all of these by 2 pixels
-
         for i, integ in enumerate(sat_from_jump):
             for g, grp in enumerate(integ):
                 sat_slice = grp
-                dilated_slice = skimage.morphology.isotropic_dilation(sat_slice, radius=2)
+                dilated_slice = skimage.morphology.isotropic_dilation(sat_slice, radius=self.ring_width)
 
                 dilated_sats[i, g] = dilated_slice
 
