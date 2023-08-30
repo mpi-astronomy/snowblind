@@ -31,7 +31,7 @@ def test_call():
     assert result.groupdq[0, 2, 15, 15] == JUMP_DET
 
     # Verify that for saturated group at N, that N-1 is now jump
-    assert result.groupdq[0, 1, 20, 20] == JUMP_DET
+    assert result.groupdq[0, 1, 20, 20] == SATURATED
 
     # Verify that jumps in last slice didn't end up in the first slice
     assert result.groupdq[0, 0, 5, 5] == GOOD

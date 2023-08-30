@@ -57,8 +57,8 @@ class JumpPlusStep(Step):
             # Restore the original last slice
             before_sat_dq[-1] = integration_dq[-1] & SATURATED
 
-            # Add the new JUMP_DET flags for the integration
-            integration_dq |= ((before_sat_dq == SATURATED) * JUMP_DET).astype(np.uint32)
+            # Add the new SATURADED flags for the integration
+            integration_dq |= before_sat_dq
 
         setattr(result.meta.cal_step, self.class_alias, "COMPLETE")
 
