@@ -54,7 +54,7 @@ class SnowblindStep(Step):
         dilated_jumps = np.zeros_like(bool_jump, dtype=bool)
 
         # Create a mask to remove small CR events, used by binary_opening()
-        disk = skimage.morphology.disk(radius=4)
+        disk = skimage.morphology.disk(radius=3)
 
         # Loop over integrations and groups so we are dealing with one group slice at a time
         # Note, these are boolean masks in this block
