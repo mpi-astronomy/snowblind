@@ -10,6 +10,7 @@ SATURATED = datamodels.dqflags.group["SATURATED"]
 
 class SnowblindStep(Step):
     spec = """
+        min_radius = integer(default=4) # Minimum radius of connected pixels in CR
         growth_factor = float(default=2.0) # scale factor to dilate large CR events
         after_jumps = integer(default=2) # number of groups to flag around saturated cores after a jump
         ring_width = float(default=2.0) # number of pixels to dilate around saturated cores
@@ -54,8 +55,7 @@ class SnowblindStep(Step):
         dilated_jumps = np.zeros_like(bool_jump, dtype=bool)
 
         # Create a mask to remove small CR events, used by binary_opening()
-        disk = skimage.morphology.disk(radius=2)
-        # disk = skimage.morphology.disk(radius=4)  # radius=4 is good for NIRCam long
+        disk = skimage.morphology.disk(radius=self.min_radius)
 
         # Loop over integrations and groups so we are dealing with one group slice at a time
         # Note, these are boolean masks in this block
@@ -90,7 +90,7 @@ class SnowblindStep(Step):
                     # Warn if there are very large snowballs or showers detected
                     if region.area > 900:
                         y, x = region.centroid
-                        self.log.warning(f"Large CR masked with radius={radius} at [{i}, {g}, {round()}, {round(x)}]")
+                        self.log.warning(f"Large CR masked with radius={radius} at [{i}, {g}, {round(y)}, {round(x)}]")
                     event_dilated = skimage.morphology.isotropic_dilation(segmentation_slice, radius=radius)
 
                     # logical OR together the dilated mask for each large CR event
