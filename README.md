@@ -1,19 +1,25 @@
-Mask cosmic ray showers and snowballs in JWST data
+Algorithms for cleaning JWST data.
+
+ - `SnowBlindStep`: mask cosmic ray showers and snowballs
+ - `JumpPlusStep`: flag jumps and saturated pixels caused by cosmic rays properly
+                 when there are frame-averaged groups
+ - `PersistenceFlagStep`: flag pixels due to persistence between exposures
+ - `RcSelfCalStep`: flag new hot pixels
 
 
 ## Installation
 
 
-    pip install git+https://github.com/jdavies-st/snowblind
+    pip install git+https://github.com/mpi-astronomy/snowblind
 
 
 ## Usage
 
 The steps in snowblind run like any other pipeline steps.  From the command line:
 
-    $ strun snowblind jw001234_010203_00001_nrcalong_jump.fits --suffix=snowblind
+    strun snowblind jw001234_010203_00001_nrcalong_jump.fits --suffix=snowblind
 
-or from within python:
+In Python:
 
     from snowblind import SnowblindStep
     from jwst.pipeline import Detector1Pipeline
@@ -34,4 +40,4 @@ or from within python:
     rate, rateints = RampFitStep.call("jw001234_010203_00001_nrcalong_snowblind.fits")
     rate.save(cal.meta.filename.replace("snowblind", "rate"))
 
-More to come.
+More to come on the other steps available.
