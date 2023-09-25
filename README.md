@@ -10,7 +10,7 @@ Algorithms for cleaning JWST data.
 ## Installation
 
 
-    pip install git+https://github.com/mpi-astronomy/snowblind
+    pip install snowblind
 
 
 ## Usage
