@@ -115,7 +115,7 @@ class SnowblindStep(Step):
                 integration |= shifted_flags
 
         # Now that the boolean mask shows the saturated cores when the jump occurs
-        # plus self.after_groups subsequent groups, dilate all of these by 2 pixels
+        # plus self.after_groups subsequent groups, dilate all of these by ring width
         for i, integ in enumerate(sat_from_jump):
             for g, grp in enumerate(integ):
                 sat_slice = grp
