@@ -99,7 +99,12 @@ class PersistenceFlagStep(Step):
     def get_saturation_masks(self, models_sorted):
         """Get boolean SATURATION mask from output of JumpStep
         """
-        file_names = [m.meta.filename.replace("_cal", "_jump") for m in models_sorted]
+        # For the list of input files, convert them to the _jump.fits filenames
+        def jumpify(filename):
+            return filename[:26] + filename[26:26+filename[26:].find("_")] + \
+                "_jump.fits"
+
+        file_names = [jumpify(m.meta.filename) for m in models_sorted]
 
         masks = []
         for f in file_names:
