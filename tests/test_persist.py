@@ -22,7 +22,7 @@ def test_call(tmp_cwd):
 
     time0 = Time(60122.0226664904, format="mjd")
     start_times = []
-    for i in range(12):
+    for i in range(9):
         image = datamodels.ImageModel((10, 10))
         images.append(image)
 
@@ -36,7 +36,7 @@ def test_call(tmp_cwd):
     for i, image in enumerate(images):
         # Populate detector meta
         image.meta.instrument.detector = "NRCALONG"
-        image.meta.filename = f"jw001234_{i}_nrcalong_cal.fits"
+        image.meta.filename = f"jw01125002001_03101_0000{i}_nrcalong_cal.fits"
 
         image.meta.exposure.start_time = start_times[i]
 
