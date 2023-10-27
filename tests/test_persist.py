@@ -17,7 +17,7 @@ def test_init():
     assert step.time == 1000
 
 
-def test_call(tmp_cwd):
+def test_input_dir(tmp_path):
     images = datamodels.ModelContainer()
 
     time0 = Time(60122.0226664904, format="mjd")
@@ -49,10 +49,10 @@ def test_call(tmp_cwd):
     for image in images:
         jump = datamodels.RampModel((1, 5, *image.data.shape))
         jump.groupdq[0, -1] = image.dq
-        jump.save(image.meta.filename.replace("_cal", "_jump"))
+        jump.save(tmp_path / image.meta.filename.replace("_cal", "_jump"))
 
     # Run the step and see if they're recovered
-    results = PersistenceFlagStep.call(images)
+    results = PersistenceFlagStep.call(images, input_dir=str(tmp_path))
 
     assert results[1].dq[2, 2] & (PERSISTENCE | DO_NOT_USE)
     assert results[2].dq[3, 5] & (PERSISTENCE | DO_NOT_USE)

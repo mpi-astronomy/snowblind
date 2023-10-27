@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from astropy.time import Time
 from astropy.io import fits
 import numpy as np
@@ -108,7 +110,7 @@ class PersistenceFlagStep(Step):
 
         masks = []
         for f in file_names:
-            with datamodels.open(f) as model:
+            with datamodels.open(Path(self.input_dir) / f) as model:
                 mask = (model.groupdq & SATURATED) == SATURATED
                 filename = model.meta.filename
 
