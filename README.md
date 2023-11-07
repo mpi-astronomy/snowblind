@@ -23,21 +23,26 @@ In Python:
 
     from snowblind import SnowblindStep
     from jwst.pipeline import Detector1Pipeline
-    from jwst.ramp_fitting import RampFitStep
+    from jwst.step import RampFitStep
+    from jwst.step import GainScaleStep
 
 
     steps = {
         "jump": {
             "save_results": True,
-        }
+        },
         "ramp_fit": {
-            "skip": True
-        }
+            "skip": True,
+        },
+        "gain_scale": {
+            "skip": True,
+        },
     }
 
     Detector1Pipeline.call("jw001234_010203_00001_nrcalong_uncal.fits", steps=steps)
     SnowblindStep.call("jw001234_010203_00001_nrcalong_jump.fits", save_results=True, suffix="snowblind")
     rate, rateints = RampFitStep.call("jw001234_010203_00001_nrcalong_snowblind.fits")
+    rate = GainScaleStep.call(rate)
     rate.save(cal.meta.filename.replace("snowblind", "rate"))
 
 More to come on the other steps available.
