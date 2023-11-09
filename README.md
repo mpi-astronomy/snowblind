@@ -1,6 +1,6 @@
 Algorithms for cleaning JWST data.
 
- - `SnowBlindStep`: mask cosmic ray showers and snowballs
+ - `SnowblindStep`: mask cosmic ray showers and snowballs
  - `JumpPlusStep`: flag jumps and saturated pixels caused by cosmic rays properly
                  when there are frame-averaged groups
  - `PersistenceFlagStep`: flag pixels due to persistence between exposures
@@ -43,6 +43,6 @@ In Python:
     SnowblindStep.call("jw001234_010203_00001_nrcalong_jump.fits", save_results=True, suffix="snowblind")
     rate, rateints = RampFitStep.call("jw001234_010203_00001_nrcalong_snowblind.fits")
     rate = GainScaleStep.call(rate)
-    rate.save(cal.meta.filename.replace("snowblind", "rate"))
+    rate.save(rate.meta.filename.replace("snowblind", "rate"))
 
 More to come on the other steps available.
