@@ -21,25 +21,87 @@ class SnowblindStep(Step):
     def process(self, input_data):
         with datamodels.open(input_data) as jump:
             result = jump.copy()
-            bool_jump = (jump.groupdq & JUMP_DET) == JUMP_DET
-            bool_sat = (jump.groupdq & SATURATED) == SATURATED
-
+            if hasattr(jump, 'groupdq'):
+                self._has_groups = True
+                bool_jump = (jump.groupdq & JUMP_DET) == JUMP_DET
+                bool_sat = (jump.groupdq & SATURATED) == SATURATED
+            else:
+                self._has_groups = False
+                bool_jump = (jump.dq & JUMP_DET) == JUMP_DET
+                bool_sat = (jump.dq & SATURATED) == SATURATED
+                
         # Expand jumps with large areas by self.growth_factor
         dilated_jumps = self.dilate_large_area_jumps(bool_jump)
 
-        # Expand saturated cores within large event jumps by 2 pixels
-        dilated_sats = self.dilate_saturated_cores(bool_sat, dilated_jumps)
-
         # bitwise OR together the dilated masks with the original GROUPDQ mask
         # We set the dilated saturated cores as jumps, as they are not saturated
-        result.groupdq |= (dilated_jumps * JUMP_DET).astype(np.uint32)
-        result.groupdq |= (dilated_sats * JUMP_DET).astype(np.uint32)
-
+        if self._has_groups:
+            # Expand saturated cores within large event jumps by 2 pixels
+            dilated_sats = self.dilate_saturated_cores(bool_sat, dilated_jumps)
+            
+            result.groupdq |= (dilated_jumps * JUMP_DET).astype(np.uint32)
+            result.groupdq |= (dilated_sats * JUMP_DET).astype(np.uint32)
+        else:
+            result.dq |= (dilated_jumps * JUMP_DET).astype(np.uint32)
+            
         # Update the metadata with the step completion status
         setattr(result.meta.cal_step, self.class_alias, "COMPLETE")
 
         return result
+    
+    def dilate_jump_slice(self, jump_slice, ig=None):
+        """
+        Dilate a boolean mask with contiguous large areas by a self.growth_factor
 
+        Parameters
+        ----------
+        bool_jump : array-like, bool
+        
+        ig : (int, int) or None
+            Integer indices of ``(integer, group)`` for logging
+        
+        Returns
+        -------
+        array-like, bool
+        """
+        # Create a mask to remove small CR events, used by binary_opening()
+        disk = skimage.morphology.disk(radius=self.min_radius)
+
+        # Fill holes in the flagged areas (i.e. the saturated cores)
+        cores_filled = skimage.morphology.remove_small_holes(jump_slice, area_threshold=200)
+
+        # Get rid of the small-area jumps, leaving only large area CR events
+        big_events = skimage.morphology.binary_opening(cores_filled, footprint=disk)
+
+        # Label and get properites of each large area event
+        event_labels, nlabels = skimage.measure.label(big_events, return_num=True)
+        region_properties = skimage.measure.regionprops(event_labels)
+
+        # Break up the segmentation map <event_labels> into a slice for each labeled event
+        # For each labeled event, measure its size, and dilate by <growth_factor> * size
+        
+        event_dilated = np.zeros_like(jump_slice)
+        
+        # zero-indexed loop, but labels are 1-indexed
+        for label, region in zip(range(1, nlabels + 1), region_properties):
+            # make a boolean slice for each labelled event
+            segmentation_slice = event_labels == label
+            # Compute radius from equal-area circle
+            radius = np.ceil(np.sqrt(region.area / np.pi) * self.growth_factor)
+            # Warn if there are very large snowballs or showers detected
+            if region.area > 900:
+                y, x = region.centroid
+                if ig is None:
+                    msg = f"Large CR masked with radius={radius} at [{round(y)}, {round(x)}]"
+
+                else:
+                    msg = f"Large CR masked with radius={radius} at [{ig[0]}, {ig[0]}, {round(y)}, {round(x)}]"
+                    
+                self.log.warning(msg)
+            event_dilated |= skimage.morphology.isotropic_dilation(segmentation_slice, radius=radius)
+        
+        return event_dilated
+    
     def dilate_large_area_jumps(self, bool_jump):
         """
         Dilate a boolean mask with contiguous large areas by a self.growth_factor
@@ -54,48 +116,22 @@ class SnowblindStep(Step):
         """
         dilated_jumps = np.zeros_like(bool_jump, dtype=bool)
 
-        # Create a mask to remove small CR events, used by binary_opening()
-        disk = skimage.morphology.disk(radius=self.min_radius)
-
         # Loop over integrations and groups so we are dealing with one group slice at a time
         # Note, these are boolean masks in this block
-        for i, integration in enumerate(bool_jump):
-            for g, group in enumerate(integration):
-                jump_slice = group
+        if self._has_groups:
+            for i, integration in enumerate(bool_jump):
+                for g, group in enumerate(integration):
+                    jump_slice = group
 
-                # If there are no JUMP_DET in this group, skip it. True for the first group
-                # of an integration
-                if not jump_slice.any():
-                    continue
-
-                # Fill holes in the flagged areas (i.e. the saturated cores)
-                cores_filled = skimage.morphology.remove_small_holes(jump_slice, area_threshold=200)
-
-                # Get rid of the small-area jumps, leaving only large area CR events
-                big_events = skimage.morphology.binary_opening(cores_filled, footprint=disk)
-
-                # Label and get properites of each large area event
-                event_labels, nlabels = skimage.measure.label(big_events, return_num=True)
-                region_properties = skimage.measure.regionprops(event_labels)
-
-                # Break up the segmentation map <event_labels> into a slice for each labeled event
-                # For each labeled event, measure its size, and dilate by <growth_factor> * size
-
-                # zero-indexed loop, but labels are 1-indexed
-                for label, region in zip(range(1, nlabels + 1), region_properties):
-                    # make a boolean slice for each labelled event
-                    segmentation_slice = event_labels == label
-                    # Compute radius from equal-area circle
-                    radius = np.ceil(np.sqrt(region.area / np.pi) * self.growth_factor)
-                    # Warn if there are very large snowballs or showers detected
-                    if region.area > 900:
-                        y, x = region.centroid
-                        self.log.warning(f"Large CR masked with radius={radius} at [{i}, {g}, {round(y)}, {round(x)}]")
-                    event_dilated = skimage.morphology.isotropic_dilation(segmentation_slice, radius=radius)
-
-                    # logical OR together the dilated mask for each large CR event
-                    dilated_jumps[i, g] |= event_dilated
-
+                    # If there are no JUMP_DET in this group, skip it. True for the first group
+                    # of an integration
+                    if not jump_slice.any():
+                        continue
+                
+                    dilated_jumps[i, g] |= self.dilate_jump_slice(jump_slice, ig=(i,g))
+        else:
+            dilated_jumps |= self.dilate_jump_slice(bool_jump)
+            
         return dilated_jumps
 
     def dilate_saturated_cores(self, bool_sat, bool_jump):

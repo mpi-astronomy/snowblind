@@ -32,3 +32,17 @@ def test_call():
     assert result.groupdq[0, 2, 21, 20] == JUMP_DET
     assert result.groupdq[0, 3, 22, 20] == JUMP_DET
     assert result.groupdq[0, 4, 22, 20] == GOOD
+    
+    # Image mode, e.g., rate products
+    im = datamodels.ImageModel((40, 40))
+    im.dq[15:26, 15:26] = JUMP_DET
+    im.dq[20, 20] = SATURATED
+    im.dq[5, 5] = JUMP_DET
+
+    result = SnowblindStep.call(im)
+
+    # Verify large area got expanded
+    assert result.dq[14, 14] == JUMP_DET
+
+    # Verify single pixel area did not get expanded
+    assert result.dq[6, 6] == GOOD
