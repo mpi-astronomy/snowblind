@@ -9,11 +9,12 @@ SATURATED = datamodels.dqflags.group["SATURATED"]
 
 
 class SnowblindStep(Step):
-    spec = """
+    spec = f"""
         min_radius = integer(default=4) # Minimum radius of connected pixels in CR
         growth_factor = float(default=2.0) # scale factor to dilate large CR events
         after_jumps = integer(default=2) # number of groups to flag around saturated cores after a jump
         ring_width = float(default=2.0) # number of pixels to dilate around saturated cores
+        new_jump_flag = integer(default={JUMP_DET}) # DQ flag to set for dilated jumps
     """
 
     class_alias = "snowblind"
@@ -39,10 +40,10 @@ class SnowblindStep(Step):
             # Expand saturated cores within large event jumps by 2 pixels
             dilated_sats = self.dilate_saturated_cores(bool_sat, dilated_jumps)
             
-            result.groupdq |= (dilated_jumps * JUMP_DET).astype(np.uint32)
-            result.groupdq |= (dilated_sats * JUMP_DET).astype(np.uint32)
+            result.groupdq |= (dilated_jumps * self.new_jump_flag).astype(np.uint32)
+            result.groupdq |= (dilated_sats * self.new_jump_flag).astype(np.uint32)
         else:
-            result.dq |= (dilated_jumps * JUMP_DET).astype(np.uint32)
+            result.dq |= (dilated_jumps * self.new_jump_flag).astype(np.uint32)
             
         # Update the metadata with the step completion status
         setattr(result.meta.cal_step, self.class_alias, "COMPLETE")
@@ -130,7 +131,13 @@ class SnowblindStep(Step):
                 
                     dilated_jumps[i, g] |= self.dilate_jump_slice(jump_slice, ig=(i,g))
         else:
-            dilated_jumps |= self.dilate_jump_slice(bool_jump)
+            if bool_jump.ndim == 3:
+                # e.g., rateints
+                for g in range(bool_jump.shape[0]):
+                    dilated_jumps[g,:,:] |= self.dilate_jump_slice(bool_jump[g,:,:], ig=(0,g))
+            else:
+                # e.g., rate
+                dilated_jumps |= self.dilate_jump_slice(bool_jump, ig=None)
             
         return dilated_jumps
 
