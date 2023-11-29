@@ -92,22 +92,23 @@ class SnowblindStep(Step):
             # make a boolean slice for each labelled event
             segmentation_slice = event_labels == label
             # Compute radius from equal-area circle
-            radius = np.ceil(np.sqrt(region.area / np.pi) * self.growth_factor)
+            radius = np.sqrt(region.area / np.pi)
+            dilate_radius = np.ceil(radius * self.growth_factor)
             # Warn if there are very large snowballs or showers detected
             if region.area > 900:
                 y, x = region.centroid
                 if ig is None:
-                    msg = f"Large CR masked with radius={radius} at [{round(y)}, {round(x)}]"
+                    msg = f"Large CR masked with radius={radius:.1f} at [{round(y)}, {round(x)}]"
 
                 else:
-                    msg = f"Large CR masked with radius={radius} at [{ig[0]}, {ig[1]}, {round(y)}, {round(x)}]"
+                    msg = f"Large CR masked with radius={radius:.1f} at [{ig[0]}, {ig[1]}, {round(y)}, {round(x)}]"
 
                 self.log.warning(msg)
 
-            if radius > 0:
-                event_dilated |= skimage.morphology.isotropic_dilation(segmentation_slice, radius=radius)
+            if dilate_radius > 0:
+                event_dilated |= skimage.morphology.isotropic_dilation(segmentation_slice, radius=dilate_radius)
             else:
-                event_dilated |= skimage.morphology.isotropic_erosion(segmentation_slice, radius=radius)
+                event_dilated |= skimage.morphology.isotropic_erosion(segmentation_slice, radius=-dilate_radius)
 
         return event_dilated
 
