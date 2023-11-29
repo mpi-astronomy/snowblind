@@ -83,6 +83,10 @@ class SnowblindStep(Step):
         
         event_dilated = np.zeros_like(jump_slice)
         
+        if self.growth_factor == 0:
+            event_dilated |= big_events
+            return event_dilated
+            
         # zero-indexed loop, but labels are 1-indexed
         for label, region in zip(range(1, nlabels + 1), region_properties):
             # make a boolean slice for each labelled event
@@ -99,10 +103,15 @@ class SnowblindStep(Step):
                     msg = f"Large CR masked with radius={radius} at [{ig[0]}, {ig[1]}, {round(y)}, {round(x)}]"
                     
                 self.log.warning(msg)
-            event_dilated |= skimage.morphology.isotropic_dilation(segmentation_slice, radius=radius)
-        
+
+            if radius > 0:
+                event_dilated |= skimage.morphology.isotropic_dilation(segmentation_slice, radius=radius)
+            else:
+                event_dilated |= skimage.morphology.isotropic_erosion(segmentation_slice, radius=radius)
+
+
         return event_dilated
-    
+
     def dilate_large_area_jumps(self, bool_jump):
         """
         Dilate a boolean mask with contiguous large areas by a self.growth_factor
