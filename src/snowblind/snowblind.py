@@ -30,7 +30,7 @@ class SnowblindStep(Step):
                 self._has_groups = False
                 bool_jump = (jump.dq & JUMP_DET) == JUMP_DET
                 bool_sat = (jump.dq & SATURATED) == SATURATED
-                
+
         # Expand jumps with large areas by self.growth_factor
         dilated_jumps = self.dilate_large_area_jumps(bool_jump)
 
@@ -39,17 +39,17 @@ class SnowblindStep(Step):
         if self._has_groups:
             # Expand saturated cores within large event jumps by 2 pixels
             dilated_sats = self.dilate_saturated_cores(bool_sat, dilated_jumps)
-            
+
             result.groupdq |= (dilated_jumps * self.new_jump_flag).astype(np.uint32)
             result.groupdq |= (dilated_sats * self.new_jump_flag).astype(np.uint32)
         else:
             result.dq |= (dilated_jumps * self.new_jump_flag).astype(np.uint32)
-            
+
         # Update the metadata with the step completion status
         setattr(result.meta.cal_step, self.class_alias, "COMPLETE")
 
         return result
-    
+
     def dilate_jump_slice(self, jump_slice, ig=None):
         """
         Dilate a boolean mask with contiguous large areas by a self.growth_factor
@@ -57,10 +57,10 @@ class SnowblindStep(Step):
         Parameters
         ----------
         bool_jump : array-like, bool
-        
+
         ig : (int, int) or None
             Integer indices of ``(integer, group)`` for logging
-        
+
         Returns
         -------
         array-like, bool
@@ -80,13 +80,13 @@ class SnowblindStep(Step):
 
         # Break up the segmentation map <event_labels> into a slice for each labeled event
         # For each labeled event, measure its size, and dilate by <growth_factor> * size
-        
+
         event_dilated = np.zeros_like(jump_slice)
-        
+
         if self.growth_factor == 0:
             event_dilated |= big_events
             return event_dilated
-            
+
         # zero-indexed loop, but labels are 1-indexed
         for label, region in zip(range(1, nlabels + 1), region_properties):
             # make a boolean slice for each labelled event
@@ -101,14 +101,13 @@ class SnowblindStep(Step):
 
                 else:
                     msg = f"Large CR masked with radius={radius} at [{ig[0]}, {ig[1]}, {round(y)}, {round(x)}]"
-                    
+
                 self.log.warning(msg)
 
             if radius > 0:
                 event_dilated |= skimage.morphology.isotropic_dilation(segmentation_slice, radius=radius)
             else:
                 event_dilated |= skimage.morphology.isotropic_erosion(segmentation_slice, radius=radius)
-
 
         return event_dilated
 
@@ -137,17 +136,17 @@ class SnowblindStep(Step):
                     # of an integration
                     if not jump_slice.any():
                         continue
-                
-                    dilated_jumps[i, g] |= self.dilate_jump_slice(jump_slice, ig=(i,g))
+
+                    dilated_jumps[i, g] |= self.dilate_jump_slice(jump_slice, ig=(i, g))
         else:
             if bool_jump.ndim == 3:
                 # e.g., rateints
                 for g in range(bool_jump.shape[0]):
-                    dilated_jumps[g,:,:] |= self.dilate_jump_slice(bool_jump[g,:,:], ig=(0,g))
+                    dilated_jumps[g, :, :] |= self.dilate_jump_slice(bool_jump[g, :, :], ig=(0, g))
             else:
                 # e.g., rate
                 dilated_jumps |= self.dilate_jump_slice(bool_jump, ig=None)
-            
+
         return dilated_jumps
 
     def dilate_saturated_cores(self, bool_sat, bool_jump):

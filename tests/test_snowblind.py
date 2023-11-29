@@ -46,8 +46,7 @@ def test_call():
 
     # Verify single pixel area did not get expanded
     assert result.dq[1, 6, 6] == GOOD
-    
-    #------------
+
     # Image mode, e.g., rate products
     im = datamodels.ImageModel((40, 40))
     im.dq[15:26, 15:26] = JUMP_DET
@@ -61,9 +60,7 @@ def test_call():
 
     # Verify single pixel area did not get expanded
     assert result.dq[6, 6] == GOOD
-    
+
     # Set different flag value
     result = SnowblindStep.call(im, new_jump_flag=4096)
     assert result.dq[14, 14] & 4096 == 4096
-    
-    
