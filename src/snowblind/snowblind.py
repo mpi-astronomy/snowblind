@@ -96,7 +96,7 @@ class SnowblindStep(Step):
                     msg = f"Large CR masked with radius={radius} at [{round(y)}, {round(x)}]"
 
                 else:
-                    msg = f"Large CR masked with radius={radius} at [{ig[0]}, {ig[0]}, {round(y)}, {round(x)}]"
+                    msg = f"Large CR masked with radius={radius} at [{ig[0]}, {ig[1]}, {round(y)}, {round(x)}]"
                     
                 self.log.warning(msg)
             event_dilated |= skimage.morphology.isotropic_dilation(segmentation_slice, radius=radius)
