@@ -1,10 +1,9 @@
 Algorithms for cleaning JWST data.
 
  - `SnowblindStep`: mask cosmic ray showers and snowballs
- - `JumpPlusStep`: flag jumps and saturated pixels caused by cosmic rays properly
-                 when there are frame-averaged groups
- - `PersistenceFlagStep`: flag pixels due to persistence between exposures
- - `RcSelfCalStep`: flag new hot pixels
+ - `JumpPlusStep`: Propagate JUMP_DET and SATURATED flags in GROUPDQ properly for frame-averaged groups
+ - `PersistenceFlagStep`: flag pixels effected by persistence exposure-to-exposure
+ - `RcSelfCalStep`: flag new hot pixels, open pixels or RC pixels
 
 
 ## Installation
