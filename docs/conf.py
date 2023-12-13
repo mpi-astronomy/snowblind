@@ -27,8 +27,7 @@ author = 'Author Name'
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
-extensions = ['sphinx_automodapi.automodapi'
-]
+extensions = ['sphinx_automodapi.automodapi']
 numpydoc_show_class_members = False
 
 # Add any paths that contain templates here, relative to this directory.
