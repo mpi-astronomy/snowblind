@@ -1,4 +1,5 @@
-from . import _version
+from importlib.metadata import version, PackageNotFoundError
+
 from .snowblind import SnowblindStep
 from .jump_plus import JumpPlusStep
 from .rc_selfcal import RcSelfCalStep
@@ -6,13 +7,18 @@ from .persist import PersistenceFlagStep
 
 
 try:
-    __version__ = _version.version
-except Exception:
+    __version__ = version(__package__ or __name__)
+except PackageNotFoundError:
     __version__ = "dev"
 
 
-__all__ = ['SnowblindStep', 'JumpPlusStep', 'RcSelfCalStep', 'PersistenceFlagStep',
-           '__version__']
+__all__ = [
+    '__version__',
+    'SnowblindStep',
+    'JumpPlusStep',
+    'RcSelfCalStep',
+    'PersistenceFlagStep',
+]
 
 
 def _get_steps():
