@@ -2,7 +2,7 @@ from importlib.metadata import version, PackageNotFoundError
 
 from .snowblind import SnowblindStep
 from .jump_plus import JumpPlusStep
-from .rc_selfcal import RcSelfCalStep
+from .selfcal import OpenPixelStep
 from .persist import PersistenceFlagStep
 
 
@@ -16,7 +16,7 @@ __all__ = [
     '__version__',
     'SnowblindStep',
     'JumpPlusStep',
-    'RcSelfCalStep',
+    'OpenPixelStep',
     'PersistenceFlagStep',
 ]
 
@@ -27,6 +27,6 @@ def _get_steps():
     return [
         ("snowblind.SnowblindStep", 'snowblind', False),
         ("snowblind.JumpPlusStep", 'jump_plus', False),
-        ("snowblind.RcSelfCalStep", 'rc_selfcal', False),
+        ("snowblind.OpenPixelStep", 'open_pixel', False),
         ("snowblind.PersistenceFlagStep", 'persist', False),
     ]

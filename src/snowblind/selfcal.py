@@ -2,18 +2,18 @@ from os.path import commonprefix
 import warnings
 
 from astropy.stats import sigma_clipped_stats
-from astropy.io import fits
 import numpy as np
 from jwst import datamodels
 from jwst.stpipe import Step
 
 
-RC = datamodels.dqflags.pixel["RC"]
+OPEN = datamodels.dqflags.pixel["OPEN"]
+ADJ_OPEN = datamodels.dqflags.pixel["ADJ_OPEN"]
 DO_NOT_USE = datamodels.dqflags.pixel["DO_NOT_USE"]
 
 
-class RcSelfCalStep(Step):
-    """Removes cross-shaped and other defects caused by RC-type bad pixels in NIR detectors
+class OpenPixelStep(Step):
+    """Flags cross-shaped and hot pixel defects caused by open pixels in NIR detectors
 
     Input is an assocation (or glob pattern of files) of all images in visit or program ID
     on which ones wishes to do a self-cal.  These are split into separate detector stacks,
@@ -22,7 +22,7 @@ class RcSelfCalStep(Step):
     stage 3 pipelines such as tweakreg, skymatch and outlier detection.
 
     Like outlier_detection, the input and output science images are the same, and only the
-    data quality (DQ) array has new pixels flagged as DO_NOT_USE and RC.
+    data quality (DQ) array has new pixels flagged as DO_NOT_USE and ADJ_OPEN.
 
     This should be run after flatfielding is finished in image2 pipeline.  It is fine to
     insert it anywhere in the level3 pipeline before resample.
@@ -34,7 +34,7 @@ class RcSelfCalStep(Step):
         output_use_index = boolean(default=False)
     """
 
-    class_alias = "rc_selfcal"
+    class_alias = "open_pixel"
 
     def process(self, input_data):
         with datamodels.open(input_data) as images:
@@ -66,7 +66,7 @@ class RcSelfCalStep(Step):
 
             for result in results:
                 if result.meta.instrument.detector == detector:
-                    result.dq |= (mask * (DO_NOT_USE | RC)).astype(np.uint32)
+                    result.dq |= (mask * (DO_NOT_USE | ADJ_OPEN)).astype(np.uint32)
 
         return results
 
