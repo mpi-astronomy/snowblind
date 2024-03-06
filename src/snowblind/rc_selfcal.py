@@ -1,3 +1,4 @@
+from os.path import commonprefix
 import warnings
 
 from astropy.stats import sigma_clipped_stats
@@ -27,8 +28,8 @@ class RcSelfCalStep(Step):
     insert it anywhere in the level3 pipeline before resample.
     """
     spec = """
-        threshold = float(default=3.0)  # threshold in sigma to flag hot pixels above median
-        save_mask = boolean(default=False)  # write out per-detector bad-pixel masks
+        threshold = float(default=3.0)  # threshold in sigma to flag hot pixels above local background
+        save_mask = boolean(default=False)  # write out per-detector bad-pixel mask and median
         output_use_model = boolean(default=True)
         output_use_index = boolean(default=False)
     """
@@ -55,16 +56,13 @@ class RcSelfCalStep(Step):
             mask, median = self.create_hotpixel_mask(image_stack)
             self.log.info(f"Flagged {mask.sum()} pixels with {self.threshold} sigma")
             if self.save_mask:
-                fits.HDUList(
-                    fits.PrimaryHDU(
-                        data=mask.astype(np.uint8)
-                    )
-                ).writeto(f"{detector.lower()}_rcflag_mask.fits", overwrite=True)
-                fits.HDUList(
-                    fits.PrimaryHDU(
-                        data=median
-                    )
-                ).writeto(f"{detector.lower()}_rcflag_median.fits", overwrite=True)
+                filename_prefix = f"{commonprefix([f.meta.filename for f in models])}_{detector.lower()}_{self.class_alias}"
+                mask_model = datamodels.MaskModel(data=mask.astype(np.uint8))
+                mask_model.meta.filename = f"{filename_prefix}.fits"
+                self.save_model(mask_model, suffix="mask", force=True)
+                median_model = datamodels.ImageModel(data=median)
+                median_model.meta.filename = f"{filename_prefix}.fits"
+                self.save_model(median_model, suffix="median", force=True)
 
             for result in results:
                 if result.meta.instrument.detector == detector:
