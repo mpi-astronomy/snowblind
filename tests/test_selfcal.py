@@ -1,16 +1,16 @@
 import numpy as np
 from jwst import datamodels
 
-from snowblind import RcSelfCalStep
+from snowblind import OpenPixelStep
 
 
-RC = datamodels.dqflags.pixel["RC"]
+ADJ_OPEN = datamodels.dqflags.pixel["ADJ_OPEN"]
 DO_NOT_USE = datamodels.dqflags.pixel["DO_NOT_USE"]
 GOOD = datamodels.dqflags.pixel["GOOD"]
 
 
 def test_init():
-    step = RcSelfCalStep(threshold=4.5)
+    step = OpenPixelStep(threshold=4.5)
 
     assert step.threshold == 4.5
 
@@ -41,11 +41,11 @@ def test_call():
         image.data[8, 8] += 3 * stddev
 
     # Run the step and see if they're recovered
-    results = RcSelfCalStep.call(images, threshold=3.0)
+    results = OpenPixelStep.call(images, threshold=3.0)
 
     for result in results:
-        assert result.dq[2, 2] == RC | DO_NOT_USE
-        assert result.dq[3, 5] == RC | DO_NOT_USE
-        assert result.dq[8, 8] == RC | DO_NOT_USE
+        assert result.dq[2, 2] == ADJ_OPEN | DO_NOT_USE
+        assert result.dq[3, 5] == ADJ_OPEN | DO_NOT_USE
+        assert result.dq[8, 8] == ADJ_OPEN | DO_NOT_USE
 
         assert result.dq[5, 5] == GOOD
