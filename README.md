@@ -33,8 +33,8 @@ In Python, we can insert `SnowblindStep` and `JumpPlusStep` after `JumpStep` as 
             "save_results": True,
             "flag_large_events": False,
             "post_hooks": [
-                "snowblind.SnowblindStep",
-                "snowblind.JumpPlusStep",
+                SnowblindStep,
+                JumpPlusStep,
             ],
         },
     }
