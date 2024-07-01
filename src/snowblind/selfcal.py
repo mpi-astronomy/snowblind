@@ -32,6 +32,7 @@ class OpenPixelStep(Step):
         save_mask = boolean(default=False)  # write out per-detector bad-pixel mask and median
         output_use_model = boolean(default=True)
         output_use_index = boolean(default=False)
+        flag_low_signal_pix = boolean(default=False)
     """
 
     class_alias = "open_pixel"
@@ -91,7 +92,10 @@ class OpenPixelStep(Step):
             warnings.filterwarnings(action="ignore",
                                     message="Input data contains invalid values")
             _, med, std = sigma_clipped_stats(median2d, mask_value=np.nan)
+
         mask = median2d > med + self.threshold * std
-        # mask |= median2d < med - self.threshold * std
+        if self.flag_low_signal_pix:
+            self.log.info(f"Flagging pixels {self.threshold}-sigma below median as well as those above.")
+            mask |= median2d < med - self.threshold * std
 
         return mask, median2d
