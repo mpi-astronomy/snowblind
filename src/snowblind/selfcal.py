@@ -1,18 +1,19 @@
+from os.path import commonprefix
 import warnings
 
 from astropy.stats import sigma_clipped_stats
-from astropy.io import fits
 import numpy as np
 from jwst import datamodels
 from jwst.stpipe import Step
 
 
-RC = datamodels.dqflags.pixel["RC"]
+OPEN = datamodels.dqflags.pixel["OPEN"]
+ADJ_OPEN = datamodels.dqflags.pixel["ADJ_OPEN"]
 DO_NOT_USE = datamodels.dqflags.pixel["DO_NOT_USE"]
 
 
-class RcSelfCalStep(Step):
-    """Removes cross-shaped and other defects caused by RC-type bad pixels in NIR detectors
+class OpenPixelStep(Step):
+    """Flags cross-shaped and hot pixel defects caused by open pixels in NIR detectors
 
     Input is an assocation (or glob pattern of files) of all images in visit or program ID
     on which ones wishes to do a self-cal.  These are split into separate detector stacks,
@@ -21,20 +22,20 @@ class RcSelfCalStep(Step):
     stage 3 pipelines such as tweakreg, skymatch and outlier detection.
 
     Like outlier_detection, the input and output science images are the same, and only the
-    data quality (DQ) array has new pixels flagged as DO_NOT_USE and RC.
+    data quality (DQ) array has new pixels flagged as DO_NOT_USE and ADJ_OPEN.
 
     This should be run after flatfielding is finished in image2 pipeline.  It is fine to
     insert it anywhere in the level3 pipeline before resample.
     """
     spec = """
-        threshold = float(default=3.0)  # threshold in sigma to flag hot pixels above median
-        save_mask = boolean(default=False)  # write out per-detector bad-pixel masks
+        threshold = float(default=3.0)  # threshold in sigma to flag hot pixels above local background
+        save_mask = boolean(default=False)  # write out per-detector bad-pixel mask and median
         output_use_model = boolean(default=True)
         output_use_index = boolean(default=False)
         flag_low_signal_pix = boolean(default=False)
     """
 
-    class_alias = "rc_selfcal"
+    class_alias = "open_pixel"
 
     def process(self, input_data):
         with datamodels.open(input_data) as images:
@@ -56,20 +57,17 @@ class RcSelfCalStep(Step):
             mask, median = self.create_hotpixel_mask(image_stack)
             self.log.info(f"Flagged {mask.sum()} pixels with {self.threshold} sigma")
             if self.save_mask:
-                fits.HDUList(
-                    fits.PrimaryHDU(
-                        data=mask.astype(np.uint8)
-                    )
-                ).writeto(f"{detector.lower()}_rcflag_mask.fits", overwrite=True)
-                fits.HDUList(
-                    fits.PrimaryHDU(
-                        data=median
-                    )
-                ).writeto(f"{detector.lower()}_rcflag_median.fits", overwrite=True)
+                filename_prefix = f"{commonprefix([f.meta.filename for f in models])}_{detector.lower()}_{self.class_alias}"
+                mask_model = datamodels.MaskModel(data=mask.astype(np.uint8))
+                mask_model.meta.filename = f"{filename_prefix}.fits"
+                self.save_model(mask_model, suffix="mask", force=True)
+                median_model = datamodels.ImageModel(data=median)
+                median_model.meta.filename = f"{filename_prefix}.fits"
+                self.save_model(median_model, suffix="median", force=True)
 
             for result in results:
                 if result.meta.instrument.detector == detector:
-                    result.dq |= (mask * (DO_NOT_USE | RC)).astype(np.uint32)
+                    result.dq |= (mask * (DO_NOT_USE | ADJ_OPEN)).astype(np.uint32)
 
         return results
 

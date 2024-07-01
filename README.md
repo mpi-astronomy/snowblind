@@ -3,7 +3,7 @@ Algorithms for cleaning JWST data.
  - `SnowblindStep`: mask cosmic ray showers and snowballs
  - `JumpPlusStep`: Propagate JUMP_DET and SATURATED flags in GROUPDQ properly for frame-averaged groups
  - `PersistenceFlagStep`: flag pixels effected by persistence exposure-to-exposure
- - `RcSelfCalStep`: flag new hot pixels, open pixels or RC pixels
+ - `OpenPixelStep`: flag new open pixels, hot pixels, or open adjacent pixels
 
 
 ## Installation
@@ -31,9 +31,10 @@ In Python, we can insert `SnowblindStep` and `JumpPlusStep` after `JumpStep` as 
     steps = {
         "jump": {
             "save_results": True,
+            "flag_large_events": False,
             "post_hooks": [
-                "snowblind.SnowblindStep",
-                "snowblind.JumpPlusStep",
+                SnowblindStep,
+                JumpPlusStep,
             ],
         },
     }

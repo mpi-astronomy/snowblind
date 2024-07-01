@@ -1,26 +1,15 @@
+---
 cff-version: 1.2.0
-title: snowblind
 message: If you use this software, please cite as below.
-# date-released: 2023-10-29
-url: 'https://github.com/mpi-astronomy/snowblind'
-# version: 0.1.2
-type: software
+title: snowblind
+abstract: Mask cosmic ray showers (snowballs) in JWST data
 authors:
-  - family-names: Davies
-    given-names: James
-    email: jdavies@mpia.de
-    affiliation: MPIA
-    orcid: 'https://orcid.org/0000-0002-5079-9098'
-
-# For citing software, see:
-
-# http://journals.aas.org/authors/references.html
-
-# GitHub has Zenodo DOI integration:
-# https://guides.github.com/activities/citable-code/
-
-# What is a CITATION.cff file: 
-# https://citation-file-format.github.io/
-
-# This CITATION.cff file was generated with cffinit.
-# Visit https://bit.ly/cffinit to generate yours today!
+- name: James Davies
+  email: jdavies@mpia.de
+  orcid: https://orcid.org/0000-0002-5079-9098
+version: 0.2.1
+date-released: '2024-02-08'
+type: software
+license: BSD-3-Clause
+url: https://github.com/mpi-astronomy/snowblind
+...

@@ -1,9 +1,11 @@
 [project]
 name = "snowblind"
-authors = [{name = "James Davies", email = "jdavies@mpia.de"}]
+authors = [
+    {name = "James Davies", email = "jdavies@mpia.de"},
+]
 description = "Mask cosmic ray showers (snowballs) in JWST data"
 readme = "README.md"
-license = { file = 'LICENSE' }
+license = {file = "LICENSE"}
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: BSD License",
@@ -31,28 +33,42 @@ test = [
     "codecov",
     "pytest-cov",
 ]
+cff = [
+    "cff-from-621",
+]
 
 [project.entry-points]
-"stpipe.steps" ={jwst = "snowblind:_get_steps"}
+"stpipe.steps" ={snowblind = "snowblind:_get_steps"}
 
 [project.urls]
-"Bug Tracker" = "https://github.com/mpi-astronomy/snowblind/issues"
-"Source Code" = "https://github.com/mpi-astronomy/snowblind"
-
+Homepage = "https://github.com/mpi-astronomy/snowblind"
 
 [build-system]
 requires = [
-    "setuptools>=60",
-    "setuptools_scm[toml] >=3.4",
+    "setuptools>=64",
+    "setuptools_scm>=8",
     "wheel",
 ]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.setuptools_scm]
 write_to = "src/snowblind/_version.py"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.cff-from-621]
+order = ["cff-version", "message", "title", "abstract", "authors", "urls", "version", "date-released", "type", "keywords"]
+
+[tool.cff-from-621.static]
+message = "If you use this software, please cite as below."
+license = "BSD-3-Clause"
+authors = [
+    {"name" = "James Davies", "email" = "jdavies@mpia.de", "orcid" = "https://orcid.org/0000-0002-5079-9098", "affiliation" = "Max Planck Institute for Astronomy"},
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "snowblind._version.version"}
 
 [tool.flake8]
 max-line-length = 130
