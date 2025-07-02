@@ -8,6 +8,7 @@ authors:
   email: jdavies@mpia.de
   orcid: https://orcid.org/0000-0002-5079-9098
 version: 0.2.1
+doi: 10.5281/zenodo.7038885
 date-released: '2024-02-08'
 type: software
 license: BSD-3-Clause
