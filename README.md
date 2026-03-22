@@ -26,22 +26,22 @@ Or you can run `SnowblindStep` and `JumpPlusStep` as post-hooks after `JumpStep`
 
 In Python, we can insert `SnowblindStep` and `JumpPlusStep` after `JumpStep` as a post-hook:
 
-    from snowblind import SnowblindStep, JumpPlusStep
-    from jwst.pipeline import Detector1Pipeline
-
 ```python
-    steps = {
-        "jump": {
-            "save_results": True,
-            "flag_large_events": False,
-            "post_hooks": [
-                SnowblindStep,
-                JumpPlusStep,
-            ],
-        },
-    }
+from snowblind import SnowblindStep, JumpPlusStep
+from jwst.pipeline import Detector1Pipeline
 
-    Detector1Pipeline.call("jw001234_010203_00001_nrcalong_uncal.fits", steps=steps, save_results=True)
+steps = {
+    "jump": {
+        "save_results": True,
+        "flag_large_events": False,
+        "post_hooks": [
+            SnowblindStep,
+            JumpPlusStep,
+        ],
+    },
+}
+
+Detector1Pipeline.call("jw001234_010203_00001_nrcalong_uncal.fits", steps=steps, save_results=True)
 ```
 
 ## PersistenceFlagStep and OpenPixelStep
