@@ -18,6 +18,7 @@ dependencies = [
     "numpy",
     "scikit-image>=0.20.0",
     "scipy",
+    "stdatamodels",
     "stpipe",
 ]
 dynamic = ['version']
