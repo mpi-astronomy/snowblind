@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 from stdatamodels.jwst import datamodels
 
@@ -24,12 +25,14 @@ def snowball_data():
 
     # 2D ImageModel, e.g., _rate products
     im2 = datamodels.ImageModel((40, 40))
+    im2.dq = np.zeros((40, 40), dtype=np.uint32)
     im2.dq[15:26, 15:26] = JUMP_DET
     im2.dq[20, 20] = SATURATED
     im2.dq[5, 5] = JUMP_DET
 
     # CubeModel, e.g., _rateints
     im3 = datamodels.CubeModel((6, 40, 40))
+    im3.dq = np.zeros((6, 40, 40), dtype=np.uint32)
     im3.dq[1, 15:26, 15:26] = JUMP_DET
     im3.dq[1, 20, 20] = SATURATED
     im3.dq[1, 5, 5] = JUMP_DET
@@ -60,6 +63,7 @@ def test_ramp():
 def test_rate():
     # Image mode, e.g., rate products
     im = datamodels.ImageModel((40, 40))
+    im.dq = np.zeros((40, 40), dtype=np.uint32)
     im.dq[15:26, 15:26] = JUMP_DET
     im.dq[20, 20] = SATURATED
     im.dq[5, 5] = JUMP_DET
@@ -80,6 +84,7 @@ def test_rate():
 def test_rateints():
     # Cube mode, e.g., rateints
     im = datamodels.CubeModel((6, 40, 40))
+    im.dq = np.zeros((6, 40, 40), dtype=np.uint32)
     im.dq[1, 15:26, 15:26] = JUMP_DET
     im.dq[1, 20, 20] = SATURATED
     im.dq[1, 5, 5] = JUMP_DET
