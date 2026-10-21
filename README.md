@@ -4,6 +4,8 @@ Algorithms for cleaning JWST data.
  - `JumpPlusStep`: Propagate JUMP_DET and SATURATED flags in GROUPDQ properly for frame-averaged groups
  - `PersistenceFlagStep`: flag pixels effected by persistence exposure-to-exposure
  - `OpenPixelStep`: flag new open pixels, hot pixels, or open adjacent pixels via self-cal
+ - `StreamCleanStep`: remove 1/f (flicker) noise from NIR group data by filtering each output channel's readout stream
+ - `ResetRampFitStep`: likelihood ramp fitting with the superbias-subtracted reset level as an extra resultant, so that pixels with a single unsaturated group still get a rate
 
 
 # Installation
@@ -87,5 +89,19 @@ PersistenceFlagStep.call(combined_asn, save_results=True, suffix="cal")
 which will overwrite _cal.fits files with the same file but with a new DQ array with PERSISTENCE and DO_NOT_USE flag set.  If you don't want to overwrite and will rename later, just don't use the `suffix` arg.
 
 Finally, both these steps can be inserted as pre-hooks into the `Image3Pipeline` using the same method as shown above with `SnowblindStep`.
+
+## StreamCleanStep and ResetRampFitStep
+
+Both steps work on the `_jump` product and need the reference pixel step run with the SIRS algorithm:
+
+    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs --steps.jump.save_results=True
+    strun stream_clean jw..._jump.fits --fit_method=wiener --save_spectra=True
+
+`ResetRampFitStep` needs the reset-level scatter of the detector, measured once from dark ramps:
+
+    snowblind-reset-calib jw..._nrca1_uncal.fits -o nrca1_reset_calib.asdf
+    strun reset_rampfit jw..._nrca1_jump.fits --reset_calib=nrca1_reset_calib.asdf
+
+The design, the measurements and the open questions are in `PLAN-1f-cleaning-and-reset-anchored-rampfit.md`.
 
 Please open an issue if you have any problems!

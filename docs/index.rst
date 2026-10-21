@@ -10,6 +10,8 @@ Welcome to my_package's documentation!
    :maxdepth: 2
    :caption: Contents:
 
+   flicker_and_reset
+
 
 Here is where you can write the documentation for your package. 
 
