@@ -102,6 +102,11 @@ Both steps work on the `_jump` product and need the reference pixel step run wit
     snowblind-reset-calib jw..._nrca1_uncal.fits -o nrca1_reset_calib.asdf
     strun reset_rampfit jw..._nrca1_jump.fits --reset_calib=nrca1_reset_calib.asdf
 
-The design, the measurements and the open questions are in `PLAN-1f-cleaning-and-reset-anchored-rampfit.md`.
+Both steps build on published work:
+- the SIRS reference-pixel correction (Rauscher, Fixsen and Mosby 2022, JATIS 8, 028002)
+- the CEERS team's masked row and column striping removal (Bagley et al. 2023, ApJL 946, L12)
+- the likelihood ramp fitting of Brandt (2024, PASP, doi:10.1088/1538-3873/ad38d9 and ad38da) as implemented in `stcal`
+- the scene mask follows NoiseChisel (Akhlaghi and Ichikawa 2015, ApJS 220, 1)
+- comparisons are against the jwst `clean_flicker_noise` step, which descends from Chris Willott's image1overf (https://github.com/chriswillott/jwst) and from NSClean (Rauscher 2024, PASP 136, 015001).
 
 Please open an issue if you have any problems!

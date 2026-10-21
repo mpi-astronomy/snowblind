@@ -1872,3 +1872,125 @@ deploy): `superbias_difference` is tested with an injected file
 resolver, the step with `override_superbias` pointing at a local file.
 Real path verified on the NRCA1 field (same superbias on both sides, no
 correction, 4146199 finite pixels). 195 tests pass.
+
+### 2026-10-21: scene model from the dithered mosaic (in progress)
+
+James chose the mosaic route next, with skymatch and tweakreg skipped.
+Design: `scripts/run_mosaic_pass.py` runs, for every _uncal of one
+detector, Detector1 to jump (SIRS), stream_clean (scalar median
+background in pass 1, the scene models afterwards; first read cleaned
+against the reset prior), reset_rampfit, saved as _rate; Image2 with
+photom and resample skipped, so the cal files are flat-fielded DN/s;
+Image3 on all exposures with tweakreg, skymatch and source_catalog
+skipped and outlier_detection saving its intermediate products, which
+include the median mosaic blotted back into each exposure's frame
+(_blot.fits). `scripts/make_scene_models.py` multiplies each blot by
+the flat the Image2 run used (so the scene is in the units of the
+group data, DN/s before flat-fielding) and writes <root>_scene.fits;
+pixels without coverage or with an unusable flat are NaN.
+StreamCleanStep gained `scene_model`: the image times the group time
+is the fixed background of every difference (the first read gets the
+first-group time ratio as before, on top of the reset prior), the
+chisel mask is built on the residual of the draft rate against the
+scene, so it only covers where the model is wrong (saturated cores,
+undersampled peaks, variable sources), and pixels without coverage are
+excluded. Pass 1 is running on the four NRCA1 exposures of 6154
+(`results/2026-10-21_mosaic_nrca1/pass1`); pass 2 uses its scenes.
+Metrics to compare against the v4 panels: row and column scatter of
+the sky pixels, sky change, the change-distribution tails near
+sources (the streaks), and star photometry pass 2 against pass 1.
+
+Pass 1 and pass 2 results (NRCA1, 4 exposures; `scripts/compare_mosaic_passes.py`,
+`results/2026-10-21_mosaic_nrca1/pass2/compare.json`). Pass 1 (scalar
+median background, first read against the reset prior) reproduces the
+v4 panel numbers. Its blots: units DN/s (photom skipped), 3 to 4
+percent of each frame without coverage, and on an exposure's sky
+pixels the blot sits 5 percent above the exposure (median residual
+-0.013 DN/s on 0.236; selection of the faintest pixels plus the
+smoothing of the drizzle-and-blot), with a row-mean scatter of the
+residual of 0.006 to 0.012 DN/s, two to three times the cleaned
+exposure's own 0.003 to 0.005. Pass 2 (the blots as scene models,
+chisel mask on the residual so that 96.6 percent of pixels count as
+background against 70.8): on the v4 sky pixels of exposure 1, row-mean
+scatter 0.0134 against 0.0024 in pass 1, column-mean 0.0166 against
+0.0027, sky change +10.2 percent against -0.5, near-source 5th
+percentile -0.070 against -0.099 (the one gain: the streaks are
+shallower). Star photometry pass 2 over pass 1: 0.998 to 1.001 in four
+flux bins, so no flux was moved, only the sky and its structure.
+Mechanism, measured: the mean of (data - scene) over the pass-2 mask
+is -0.055, -0.020, -0.018, -0.019 DN/s per channel (the blot is above
+the data over the wings while the cores, where it is below, are
+masked as model errors); the filter's unit gain at zero frequency
+removes that and the sky rises by exactly those amounts (+0.053,
++0.015, +0.013, +0.014). The added row structure correlates at 0.49
+with the row means of (scene - pass 1): the blot's error field is
+imprinted. That error field is 0.014 DN/s rms in 16-pixel blocks on
+the sky pixels, 6 percent of the sky, larger than the 1/f being
+removed. On a field this crowded and undersampled a four-dither
+drizzled median blotted back is not accurate enough at the slow scales
+to serve as the subtracted scene; its errors dominate the result.
+Variants under test on exposure 1: the scene with the conservative
+(pass-1) star mask, and the scene re-anchored per channel to the data's
+sky level.
+
+Variants on exposure 1 (OLS_C, v4 sky pixels, DN/s):
+
+| variant | row | col | sky change | p5 / p95 | near-source p5 |
+|---|---|---|---|---|---|
+| pass 1, scalar median background | 0.0024 | 0.0027 | -0.5% | -0.088 / +0.076 | -0.099 |
+| scene, conservative (pass-1) star mask | 0.0111 | 0.0082 | +4.8% | -0.059 / +0.074 | -0.067 |
+| scene re-anchored per channel, conservative mask | 0.0107 | 0.0071 | -1.8% | -0.082 / +0.061 | -0.091 |
+| scene re-anchored, residual mask | 0.0130 | 0.0137 | +3.6% | -0.082 / +0.085 | -0.090 |
+
+(Re-anchoring shifts: -0.046, -0.006, -0.006, -0.006 DN/s per channel;
+channel 0 holds the cluster core.) Re-anchoring repairs the sky level
+and the conservative mask trims the streaks a little, but the row and
+column structure stays four times worse than the scalar background:
+the blot's slow-scale error is imprinted whatever the mask or the
+level. Conclusion for Omega Cen: the blotted four-dither median is not
+an adequate scene model; the per-exposure scalar background with the
+chisel mask remains the configuration (v4 panels). The scene_model
+option, the mosaic pass script and the scene script stay in the tree
+for fields where the blot error is small (sparse fields, smooth
+extended emission, more dithers), which is also where the box-size
+ambiguity bites; untested. What would make it work on a crowded
+undersampled field is a scene model whose slow-scale error is below
+the 1/f, which needs a PSF-based model of the stars rather than a
+resampled image.
+
+James asked whether the blot adds noise as a per-pixel background and
+whether a smoother blot (kernel choice, or smoothing the blot before
+use) would help. The jwst resample kernel is 'square' with pixfrac 1
+and the blot is drizzle's polynomial interpolation of the mosaic, not a
+sinc. Decomposition of the (re-anchored) scene's error against the
+pass-1 rate on the sky pixels: row-mean scatter 0.0066 DN/s;
+16-pixel block scatter 0.0103, and 0.0076 after removing the row
+means. So a third of the slow error is row-aligned, which is the other
+dithers' residual banding carried into the mosaic (a dither moves a
+band to another row but keeps it a row), and the rest is the smoothing
+of thousands of undersampled stars. The blot's pixel noise is not the
+issue: only its low-pass part reaches the cleaned data, and that is
+below 0.002 DN/s. Variants on exposure 1 (anchored scene, conservative
+mask, OLS_C):
+
+| scene variant | row | col | sky change | near-source p5 |
+|---|---|---|---|---|
+| anchored (reference) | 0.0107 | 0.0071 | -1.8% | -0.091 |
+| Gaussian-smoothed, 4 px | 0.0219 | 0.0189 | +14.6% | -0.059 |
+| Gaussian-smoothed, 16 px | 0.0459 | 0.0313 | +64.3% | +0.037 |
+| per-channel row means removed | 0.0068 | 0.0071 | -1.6% | -0.088 |
+| row means removed, then smoothed 4 px | 0.0135 | 0.0187 | +14.0% | -0.065 |
+| pass 1, scalar median background | 0.0024 | 0.0027 | -0.5% | -0.099 |
+
+Smoothing goes the wrong way, and strongly: on a crowded field it
+spreads star light into the sky pixels, the model sits further above
+the data there, and the filter's unit gain at zero frequency lifts the
+sky by the difference (+15 percent at 4 pixels, +64 at 16). Removing
+the row-aligned part of the model recovers 40 percent of the row
+structure, confirming the banding carry-over, but the remainder is
+still three times the scalar background. Conclusion unchanged: on this
+field the subtracted scene must be either noise-free and structure-free
+(scalar) or accurate to better than the 1/f at the slow scales, and a
+resampled image of an undersampled crowded field is neither. A
+smoother kernel would be the right lever only on a smooth scene
+(extended emission, sparse field), where the smoothing error is small.

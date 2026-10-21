@@ -682,3 +682,37 @@ def test_clean_ramp_first_group_against_reference_returns_reference_plus_cleaned
     )
 
     np.testing.assert_allclose(cleaned[0, 0], reference, atol=1e-4)
+
+
+def test_clean_ramp_with_scene_background_keeps_the_scene_and_removes_rows():
+    """clean_ramp with scene_background equal to the injected scene and row_median returns the scene ramp to 1e-4."""
+    rng = np.random.default_rng(14)
+    scene = rng.uniform(5.0, 50.0, (NY, NX)).astype(np.float32)
+    rows = rng.normal(0.0, 3.0, (3, NY)).astype(np.float32)
+    data = np.zeros((1, 4, NY, NX), dtype=np.float32)
+    for j in range(1, 4):
+        data[0, j] = data[0, j - 1] + scene + rows[j - 1][:, None]
+    groupdq = np.zeros(data.shape, dtype=np.uint32)
+    mask = np.ones((NY, NX), dtype=bool)
+
+    cleaned = clean_ramp(
+        data, groupdq, mask, -1, 2, fit_method="row_median", clean_first_group=False, scene_background=scene
+    )
+
+    for j in range(1, 4):
+        np.testing.assert_allclose(cleaned[0, j] - cleaned[0, j - 1], scene, atol=1e-4)
+
+
+def test_read_scene_model_reads_sci_extension(tmp_path):
+    """read_scene_model on a FITS file with a SCI extension of shape (NY, NX) returns that array."""
+    from astropy.io import fits
+
+    from snowblind.stream_clean import read_scene_model
+
+    image = np.arange(NY * NX, dtype=np.float32).reshape(NY, NX)
+    path = tmp_path / "scene.fits"
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(image, name="SCI")]).writeto(path)
+
+    scene = read_scene_model(str(path), (NY, NX))
+
+    np.testing.assert_array_equal(scene, image)

@@ -50,6 +50,7 @@ __all__ = [
     "masked_mean_background",
     "slope_per_group",
     "exclude_reference_border",
+    "read_scene_model",
     "dilate_sources",
     "first_group_time_ratio",
     "channel_gain",
@@ -93,6 +94,7 @@ class StreamCleanStep(Step):
         mask_dilation = integer(default=0)  # pixels by which to grow the masked (source) regions, for source wings
         clean_first_group = boolean(default=True)  # also clean group 1, against zero or against the reset prior; needed for reset_rampfit, harmless for OLS
         reset_calib = string(default=None)  # snowblind-reset-calib ASDF; with it the first read is cleaned against its reset-level prior, as reset_rampfit will use it
+        scene_model = string(default=None)  # FITS image of the scene in DN/s, detector frame, before flat-fielding (e.g. the blotted mosaic); replaces the background model
         iterations = integer(default=1)  # noise estimates per difference; re-clips with clip_sigma between them
         min_density = float(default=0.2)  # local background fraction below which the estimate tapers off
         first_direction = integer(default=1)  # readout direction of channel 0 in the detector frame, 1 or -1
@@ -140,6 +142,14 @@ class StreamCleanStep(Step):
             flat_filename = self.get_reference_file(result, "flat")
             log.info(f"Using FLAT reference file {flat_filename}")
             flat = read_flat_file(result, flat_filename)
+
+        self._scene = None
+        if self.scene_model is not None:
+            self._scene = read_scene_model(self.scene_model, result.data.shape[-2:])
+            log.info(
+                f"Scene model {self.scene_model}: median {np.nanmedian(self._scene):.4g} DN/s, "
+                f"{100 * np.mean(~np.isfinite(self._scene)):.2f} percent without coverage"
+            )
 
         background_mask, mask_model = self._scene_mask(result, flat)
         background_mask = exclude_reference_border(background_mask)
@@ -202,6 +212,12 @@ class StreamCleanStep(Step):
                 science_superbias=result.meta.ref_file.superbias.name,
             )
             log.info(f"First read cleaned against the reset prior of {self.reset_calib}")
+        scene_background = None
+        if self._scene is not None:
+            # the scene in DN per group; pixels without coverage get zero and are outside the mask
+            scene_background = (np.where(np.isfinite(self._scene), self._scene, 0.0) * result.meta.exposure.group_time).astype(
+                np.float32
+            )
         return clean_ramp(
             result.data,
             result.groupdq,
@@ -209,6 +225,7 @@ class StreamCleanStep(Step):
             result.meta.subarray.fastaxis,
             result.meta.subarray.slowaxis,
             first_group_reference=reference,
+            scene_background=scene_background,
             fit_method=self.fit_method,
             background_method=self.background_method,
             background_box_size=self.background_box_size,
@@ -254,7 +271,12 @@ class StreamCleanStep(Step):
             rate = np.array(image_model.data, dtype=np.float64)
             if hasattr(image_model, "dq") and image_model.dq is not None:
                 rate[(image_model.dq & dqflags.pixel["DO_NOT_USE"]) > 0] = np.nan
+            if self._scene is not None:
+                # with a scene model the mask only has to cover where the model is wrong
+                rate = rate - self._scene
             background_mask = chisel_mask(rate)
+            if self._scene is not None:
+                background_mask &= np.isfinite(self._scene)
             log.info(f"Scene mask (chisel): {100 * (~background_mask).mean():.2f} percent of pixels masked")
             mask_model = make_intermediate_model(image_model, background_mask) if self.save_mask else None
         else:
@@ -270,6 +292,22 @@ class StreamCleanStep(Step):
         if image_model is not model:
             image_model.close()
         return background_mask, mask_model
+
+
+def read_scene_model(path, shape):
+    """Read a scene model (DN/s, detector frame, before flat-fielding) from a FITS file.
+
+    The image is taken from the SCI extension when present, else from the
+    primary HDU.  Non-finite pixels mean no coverage.
+    """
+    from astropy.io import fits
+
+    with fits.open(path) as handle:
+        data = handle["SCI"].data if "SCI" in handle else handle[0].data
+        scene = np.asarray(data, dtype=np.float32)
+    if scene.shape != tuple(shape):
+        raise ValueError(f"Scene model shape {scene.shape} does not match data {tuple(shape)}")
+    return scene
 
 
 def exclude_reference_border(background_mask, width=readout.NREFPIX):
@@ -386,6 +424,7 @@ def clean_ramp(
     column_offsets=False,
     anchor_mean=False,
     first_group_reference=None,
+    scene_background=None,
     **filter_kwargs,
 ):
     """Clean every group difference of every integration and rebuild the groups.
@@ -429,6 +468,10 @@ def clean_ramp(
     first_group_reference : ndarray or None
         With ``clean_first_group``, the image group 0 is cleaned against
         (the reset-level prior); None cleans it against zero.
+    scene_background : ndarray or None
+        The scene in DN per group (for example a blotted mosaic), used as
+        the fixed background of every difference in place of the fitted
+        model; ``background_method`` is then ignored.
     **filter_kwargs
         Passed to the noise estimator.
 
@@ -446,7 +489,10 @@ def clean_ramp(
     cleaned = np.array(data, dtype=np.float32, copy=True)
 
     fixed = None
-    if background_method in ("integration_model", "exposure_model"):
+    if scene_background is not None:
+        background_method = "integration_model"
+        fixed = [np.asarray(scene_background, dtype=np.float32)] * nints
+    elif background_method in ("integration_model", "exposure_model"):
         fixed = integration_backgrounds(
             data, groupdq, background_mask, background_box_size, flat, per_exposure=background_method == "exposure_model"
         )
