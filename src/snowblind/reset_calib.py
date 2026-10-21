@@ -216,7 +216,11 @@ def sigma_b_from_pedestals(pedestals, sigma=3.0, read_noise=None, nframes=1):
         The raw sigma-clipped standard deviation of the pedestal.
     """
     count = np.isfinite(pedestals).sum(axis=0).astype(np.int32)
-    mean, _median, std = sigma_clipped_stats(pedestals, sigma=sigma, maxiters=5, axis=0)
+    # unusable integrations are NaN by design; pass them as a mask on a NaN-free array so astropy does not warn
+    finite = np.isfinite(pedestals)
+    mean, _median, std = sigma_clipped_stats(
+        np.where(finite, pedestals, 0.0), mask=~finite, sigma=sigma, maxiters=5, axis=0
+    )
     scatter = np.where(count >= 3, std, np.nan).astype(np.float32)
     mean = np.where(count >= 3, mean, np.nan).astype(np.float32)
     if read_noise is None:
