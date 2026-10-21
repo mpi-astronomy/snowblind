@@ -5,6 +5,7 @@ from .jump_plus import JumpPlusStep
 from .selfcal import OpenPixelStep
 from .persist import PersistenceFlagStep
 from .stream_clean import StreamCleanStep
+from .reset_rampfit import ResetRampFitStep
 
 
 try:
@@ -20,6 +21,7 @@ __all__ = [
     'OpenPixelStep',
     'PersistenceFlagStep',
     'StreamCleanStep',
+    'ResetRampFitStep',
 ]
 
 
@@ -32,4 +34,5 @@ def _get_steps():
         ("snowblind.OpenPixelStep", 'open_pixel', False),
         ("snowblind.PersistenceFlagStep", 'persist', False),
         ("snowblind.StreamCleanStep", 'stream_clean', False),
+        ("snowblind.ResetRampFitStep", 'reset_rampfit', False),
     ]
