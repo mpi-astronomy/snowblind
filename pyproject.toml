@@ -13,6 +13,7 @@ classifiers = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "asdf",
     "astropy",
     "jwst",
     "numpy",
@@ -40,6 +41,9 @@ test = [
 cff = [
     "cff-from-621",
 ]
+
+[project.scripts]
+snowblind-reset-calib = "snowblind.reset_calib:main"
 
 [project.entry-points]
 "stpipe.steps" ={snowblind = "snowblind:_get_steps"}
