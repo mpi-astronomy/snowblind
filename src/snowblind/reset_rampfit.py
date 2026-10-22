@@ -18,7 +18,7 @@ from jwst.ramp_fitting.ramp_fit_step import (
     create_integration_model,
     get_reference_file_subarrays,
 )
-from jwst.stpipe import Step
+from .step import Step
 from stcal.ramp_fitting.ramp_fit import create_ramp_fit_class
 from stdatamodels.jwst.datamodels import dqflags
 
@@ -43,11 +43,6 @@ class ResetRampFitStep(Step):
     """
 
     class_alias = "reset_rampfit"
-
-    @classmethod
-    def get_stpipe_loggers(cls):
-        """The jwst loggers plus snowblind's, so that this package's messages reach the step log."""
-        return super().get_stpipe_loggers() + ("snowblind",)
 
     spec = """
         reset_calib = string(default=None)  # ASDF from snowblind-reset-calib; required unless sigma_b is set

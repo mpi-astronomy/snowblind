@@ -1,10 +1,13 @@
+import logging
 from os.path import commonprefix
 import warnings
 
 from astropy.stats import sigma_clipped_stats
 import numpy as np
 from jwst import datamodels
-from jwst.stpipe import Step
+from .step import Step
+
+log = logging.getLogger(__name__)
 
 
 OPEN = datamodels.dqflags.pixel["OPEN"]
@@ -53,9 +56,9 @@ class OpenPixelStep(Step):
         # np.bitwise_or() it with each input image for that detector
         for detector, models in images_grouped_by_detector.items():
             image_stack = self.get_selfcal_stack(models)
-            self.log.info(f"Creating mask for detector {detector}")
+            log.info(f"Creating mask for detector {detector}")
             mask, median = self.create_hotpixel_mask(image_stack)
-            self.log.info(f"Flagged {mask.sum()} pixels with {self.threshold} sigma")
+            log.info(f"Flagged {mask.sum()} pixels with {self.threshold} sigma")
             if self.save_mask:
                 filename_prefix = f"{commonprefix([f.meta.filename for f in models])}_{detector.lower()}_{self.class_alias}"
                 mask_model = datamodels.MaskModel(data=mask.astype(np.uint8))
@@ -95,7 +98,7 @@ class OpenPixelStep(Step):
 
         mask = median2d > med + self.threshold * std
         if self.flag_low_signal_pix:
-            self.log.info(f"Flagging pixels {self.threshold}-sigma below median as well as those above.")
+            log.info(f"Flagging pixels {self.threshold}-sigma below median as well as those above.")
             mask |= median2d < med - self.threshold * std
 
         return mask, median2d

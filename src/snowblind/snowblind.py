@@ -1,7 +1,10 @@
+import logging
 import skimage
 import numpy as np
 from jwst import datamodels
-from jwst.stpipe import Step
+from .step import Step
+
+log = logging.getLogger(__name__)
 
 
 JUMP_DET = datamodels.dqflags.group["JUMP_DET"]
@@ -103,7 +106,7 @@ class SnowblindStep(Step):
                 else:
                     msg = f"Large CR masked with radius={radius:.1f} at [{ig[0]}, {ig[1]}, {round(y)}, {round(x)}]"
 
-                self.log.warning(msg)
+                log.warning(msg)
 
             if dilate_radius > 0:
                 event_dilated |= skimage.morphology.isotropic_dilation(segmentation_slice, radius=dilate_radius)

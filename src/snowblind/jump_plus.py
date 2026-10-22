@@ -1,6 +1,9 @@
+import logging
 import numpy as np
 from jwst import datamodels
-from jwst.stpipe import Step
+from .step import Step
+
+log = logging.getLogger(__name__)
 
 
 JUMP_DET = datamodels.dqflags.group["JUMP_DET"]
@@ -36,7 +39,7 @@ class JumpPlusStep(Step):
 
         if not frame_averaging:
             # Update step meta
-            self.log.info("No frame averaging in this readout mode")
+            log.info("No frame averaging in this readout mode")
             self.skip = True
             setattr(result.meta.cal_step, self.class_alias, "SKIPPED")
 

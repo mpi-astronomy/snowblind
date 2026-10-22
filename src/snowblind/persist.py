@@ -1,10 +1,13 @@
+import logging
 from pathlib import Path
 
 from astropy.time import Time
 from astropy.io import fits
 import numpy as np
 from jwst import datamodels
-from jwst.stpipe import Step
+from .step import Step
+
+log = logging.getLogger(__name__)
 
 
 DO_NOT_USE = datamodels.dqflags.pixel["DO_NOT_USE"]
@@ -46,14 +49,14 @@ class PersistenceFlagStep(Step):
             # Get DQ arrays sorted by observation start time, and difference in time between
             models_sorted, time_deltas = self.sort_by_start_times(models)
 
-            self.log.info(f"Time deltas [sec] between {detector} exposures are {time_deltas}")
+            log.info(f"Time deltas [sec] between {detector} exposures are {time_deltas}")
 
             # Get boolean cube of persistence pixels
             persist_bool = self.flag_saturated_in_subsequent(models_sorted, time_deltas)
 
             # Convert bool cube into PERSISTENCE flags for each image dq array
             for model, mask in zip(models_sorted, persist_bool):
-                self.log.info(f"Pixels flagged: {model.meta.filename} {mask.sum()}")
+                log.info(f"Pixels flagged: {model.meta.filename} {mask.sum()}")
                 model.dq |= (mask * (DO_NOT_USE | PERSISTENCE)).astype(np.uint32)
 
         return results
@@ -125,6 +128,6 @@ class PersistenceFlagStep(Step):
                         data=mask.astype(np.uint8)
                     )
                 ).writeto(sat_mask_name, overwrite=True)
-                self.log.info(f"Writing out saturation mask {sat_mask_name}")
+                log.info(f"Writing out saturation mask {sat_mask_name}")
 
         return np.array(masks)

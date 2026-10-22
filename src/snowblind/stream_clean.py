@@ -12,7 +12,7 @@ import logging
 
 import numpy as np
 from jwst import datamodels
-from jwst.stpipe import Step
+from .step import Step
 from stdatamodels.jwst.datamodels import dqflags
 
 from . import readout
@@ -77,11 +77,6 @@ class StreamCleanStep(Step):
     """
 
     class_alias = "stream_clean"
-
-    @classmethod
-    def get_stpipe_loggers(cls):
-        """The jwst loggers plus snowblind's, so that this package's messages reach the step log."""
-        return super().get_stpipe_loggers() + ("snowblind",)
 
     spec = """
         fit_method = option('wiener', 'boxcar', 'row_median', default='wiener')  # noise estimator per channel
