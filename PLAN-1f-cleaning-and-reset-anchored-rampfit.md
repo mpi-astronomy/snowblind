@@ -1994,3 +1994,123 @@ field the subtracted scene must be either noise-free and structure-free
 resampled image of an undersampled crowded field is neither. A
 smoother kernel would be the right lever only on a smooth scene
 (extended emission, sparse field), where the smoothing error is small.
+
+### 2026-10-22: reset calibration for all ten NIRCam detectors
+
+`scripts/run_reset_calib_batch.sh`, one detector at a time (memory):
+calibration from the 9022 BRIGHT1 10 x 10 dark of each detector
+(`results/2026-10-22_reset_calib/<det>_reset_calib.asdf`, with the
+superbias recorded and ASDF history entries), then the per-channel
+first-read timing from the 6154 Omega Cen exposure 00004 of the same
+detector (`exp_reset_field.py --use-pedestal-mean --write-timing`,
+`results/2026-10-22_reset_field/<DET>/`). Summary in
+`results/2026-10-22_reset_calib/summary.json`:
+
+| detector | sigma_b (DN) | single-read noise (DN) | pedestal median (DN) | pedestal row scatter (DN) | t1_scale | per-channel t1_scale | reset offsets b (DN) | superbias | saturated-from-group-2 pixels fitted |
+|---|---|---|---|---|---|---|---|---|---|
+| NRCA1 | 16.83 | 5.19 | -0.03 | 3.5 | 0.904 | 0.897, 0.897, 0.910, 0.914 | -2.9, -2.0, -1.9, -5.6 | 0454 | 3530 of 3530 |
+| NRCA2 | 15.82 | 5.70 | +0.01 | 4.4 | 0.930 | 0.933, 0.932, 0.931, 0.918 | -6.3, -7.2, -5.0, -6.3 | 0416 | 2775 of 2775 |
+| NRCA3 | 14.97 | 4.55 | -0.16 | 2.5 | 0.883 | 0.880, 0.902, 0.895, 0.871 | -3.0, -3.7, -2.8, -3.8 | 0435 | 1879 of 1879 |
+| NRCA4 | 16.08 | 4.99 | +0.01 | 4.4 | 0.908 | 0.906, 0.904, 0.903, 0.915 | -7.9, -6.4, -9.2, -6.1 | 0440 | 1456 of 1456 |
+| NRCALONG | 17.64 | 4.78 | -0.07 | 3.2 | 0.943 | 0.946, 0.952, 0.936, 0.943 | -2.0, -2.2, +1.3, -0.1 | 0443 | 11034 of 11036 |
+| NRCB1 | 20.80 | 5.62 | -2.44 | 6.0 | 0.914 | 0.916, 0.911, 0.932, 0.899 | +3.2, +4.1, +2.6, +1.7 | 0397 | 668 of 668 |
+| NRCB2 | 16.36 | 5.04 | -0.17 | 3.0 | 0.880 | 0.896, 0.862, 0.904, 0.876 | +1.7, +2.0, +4.0, +3.2 | 0393 | 1308 of 1308 |
+| NRCB3 | 17.15 | 5.60 | -0.16 | 3.0 | 0.882 | 0.891, 0.918, 0.895, 0.864 | +2.4, +2.9, +3.1, +2.9 | 0383 | 1667 of 1667 |
+| NRCB4 | 17.42 | 4.86 | +0.30 | 3.1 | 0.881 | 0.906, 0.867, 0.871, 0.893 | -0.7, -2.2, -0.2, -1.0 | 0438 | 1916 of 1916 |
+| NRCBLONG | 17.80 | 4.90 | -0.04 | 3.0 | 0.942 | 0.940, 0.936, 0.943, 0.953 | +1.5, +0.7, +2.4, +1.9 | 0434 | 8071 of 8074 |
+
+NRCA1 reproduces the v3 file exactly. The first-read shortfall is 6 to
+12 percent on every detector (t1_scale 0.88 to 0.94), largest on the
+short-wave B module and smallest on the two long-wave detectors, with
+per-channel spreads of 1 to 5 percent; the offsets b are a few DN,
+negative on the A module and positive on B1 to B3. The reset fit
+assigned a rate to every pixel saturated from group 2 on all detectors
+and lost none relative to OLS_C. NRCB1 stands out: sigma_b 20.8 against
+15 to 18 elsewhere, pedestal median -2.4 DN and row scatter 6 DN
+against about 3: its superbias reference (0397) is likely from an
+earlier epoch than the others; checked below.
+Superbias epochs: all five A-module files have useafter 2025-01-29
+(pedigree INFLIGHT 2025-01-29 to 2025-11-04) and all five B-module files
+useafter 2025-02-09 (INFLIGHT 2025-02-09 to 2025-12-03), all delivered
+2026-10-13. So NRCB1's larger reset scatter, -2.4 DN pedestal offset and
+6 DN row pattern are not a superbias epoch effect; they are properties
+of that detector relative to its superbias, and the sky-anchored
+offsets absorb the level. Worth a look at B1 on a field before trusting
+its map prior.
+
+### 2026-10-22: NIRISS measurements on the darks
+
+Calibration from both 9279 NISRAPID darks, first 20 of 120 groups, 10
+integrations. The new superbias guard refused them at first: the two
+exposures (observed months apart) had different superbias files
+subtracted, 0252 and 0257, so the earlier two-dark file
+(`nis_nisrapid_reset_calib_v2.asdf`, 24.3 DN) had mixed two references.
+`snowblind-reset-calib` now expresses every dark relative to one
+reference superbias, the latest delivery among the inputs, by adding
+the difference of the two superbias images to the other dark's pedestal
+(`reference_superbias`, `superbias_difference`, the same helper the step
+uses), and records the reference in the provenance and history.
+Result (`results/2026-10-22_reset_calib/nis_reset_calib.asdf`): sigma_b
+24.97 DN, single-read noise 7.43 DN, pedestal median -0.36 DN, pedestal
+row-mean / column-mean scatter 2.0 / 2.7 DN, superbias 0257. So the
+increase from one exposure (22.0) to two is not a superbias artefact:
+with the references aligned it is 25.0, a real exposure-to-exposure
+scatter of the reset level, which the sky-anchored offset would absorb
+on a field. First-read timing (k, b) still needs a NIRISS field;
+t1_scale stays 1.0 in the file.
+
+Dark cleaning metrics (`exp_darks_part_a.py`, jw09279002001, 20
+groups, `results/2026-10-22_darks_nis/NIS/`; science frame, where the
+fast readout axis runs along columns):
+
+| variant | pixel | row-mean | column-mean | ap 9 / 33 / 101 |
+|---|---|---|---|---|
+| SIRS | 0.0300 | 0.0092 | 0.0083 | 0.0085 / 0.0057 / 0.0047 |
+| SIRS + jwst median | 0.0303 | 0.0103 | 0.0065 | 0.0083 / 0.0058 / 0.0045 |
+| SIRS + stream_clean box 32 | 0.0275 | 0.0043 | 0.0039 | 0.0066 / 0.0049 / 0.0044 |
+| same, column_offsets off | 0.0278 | 0.0043 | 0.0039 | 0.0068 / 0.0050 / 0.0044 |
+
+Rate panels (`make_rate_image_panels.py --background none`,
+`results/2026-10-22_rate_images_nis/NIS/`), full frame, DN/s:
+
+| chain | row-mean | column-mean | pixel | finite |
+|---|---|---|---|---|
+| median refpix, OLS_C | 0.0033 | 0.0103 | 0.0305 | 4152642 |
+| SIRS, OLS_C | 0.0032 | 0.0083 | 0.0297 | 4152642 |
+| SIRS + jwst median, no background, OLS_C | 0.0029 | 0.0043 | 0.0291 | 4152642 |
+| SIRS + stream_clean, no background, OLS_C | 0.0004 | 0.0008 | 0.0267 | 4152642 |
+| SIRS + stream_clean, reset_rampfit | 0.0005 | 0.0009 | 0.0266 | 4154975 |
+
+The step works unchanged on the NIRISS geometry: the banding (along
+science columns here) drops from 0.0083 to 0.0008 DN/s, ten times, and
+the pixel scatter by 10 percent; the jwst median gets a factor 2. The
+reset fit matches OLS_C in structure and fits 2333 more pixels. All
+dark-based measurements are now saved under results/, so the dark
+files can leave the disk; what still needs data is a NIRISS field.
+
+### 2026-10-22: dark metrics regenerated with the current code
+
+James asked whether `aperture_scatter.png` was stale: it read the v5
+run (2026-10-21, before the even-odd and column-offset corrections, the
+masked-mean model and the first-read cleaning). Rerun with the current
+code, NRCA1 dark 8758, 20 groups
+(`results/2026-10-22_darks_part_a/NRCA1/`), plus a new `sirs_wiener_none`
+variant (no background, the right setting on a dark):
+
+| variant | pixel | row-mean | column-mean | ap 9 / 33 / 101 |
+|---|---|---|---|---|
+| SIRS | 0.0205 | 0.0053 | 0.0020 | 0.0052 / 0.0037 / 0.0027 |
+| SIRS + jwst median (model bkg) | 0.0213 | 0.0079 | 0.0021 | 0.0058 / 0.0046 / 0.0034 |
+| SIRS + Wiener, box 32 (default) | 0.0195 | 0.0025 | 0.0011 | 0.0039 / 0.0028 / 0.0026 |
+| SIRS + Wiener, box 256 | 0.0194 | 0.0013 | 0.0007 | 0.0030 / 0.0016 / 0.0014 |
+| SIRS + Wiener, scalar median | 0.0194 | 0.0013 | 0.0007 | 0.0028 / 0.0010 / 0.0004 |
+| SIRS + Wiener, no background | 0.0193 | 0.0005 | 0.0002 | 0.0027 / 0.0009 / 0.0003 |
+
+Against v5 the default (box 32) is unchanged within 0.0002 at every
+scale except 101 pixels (0.0024 -> 0.0026, the masked-mean model's
+small cost noted on 2026-10-21); the column means are now measured and
+halved by the column-offset correction; the no-background variant sits
+at the white-noise floor at every scale (white prediction at 101
+pixels 0.0002). The figures (`aperture_scatter.png`,
+`channel_spectra.png`) now read this run, with the no-background curve
+added.

@@ -40,7 +40,7 @@ Four results matter for the pipeline:
    the cutoff it gains a further 11 percent in pixel rate scatter and loses
    12 percent of the flux of the faintest sources.
 3. The reset-level scatter is 16.8 DN on NRCA1 (36 e, the size of kTC
-   noise), 17.6 DN on NRCALONG and 24 DN on NIRISS. With it as a prior,
+   noise), 17.6 DN on NRCALONG and 25 DN on NIRISS. With it as a prior,
    every pixel that saturates after group 1 on a bright field gets a rate,
    and on NRCA1 the recovered cores of 30 saturated stars agree with the
    curve of growth of 223 unsaturated stars to 2 +- 1 percent.
@@ -209,7 +209,12 @@ difference.
 
    Scatter of aperture means against aperture size on the NRCA1 dark for
    SIRS alone, the jwst median step, and the linear Wiener clean with a
-   32-pixel and a 256-pixel background box, with the white-noise prediction.
+   32-pixel and a 256-pixel background box and with no background, with
+   the white-noise prediction. With no background to protect, which is
+   the right setting on a dark, the clean reaches the white-noise floor
+   at every aperture size (0.0003 DN/s at 101 pixels against 0.0002
+   predicted); the box model keeps whatever structure it holds above its
+   scale, by design.
 
 On NRCALONG (same dark program, same script, run with the earlier
 mean-difference model) the pattern repeats in weaker form: SIRS alone
@@ -299,13 +304,15 @@ Detector   data                                pedestal scatter  single-read noi
 =========  ==================================  ================  ================  ========
 NRCA1      9022 BRIGHT1, 10 integrations       17.6 DN           5.2 DN            16.8 DN
 NRCALONG   9022 BRIGHT1, 10 integrations       18.3 DN           4.8 DN            17.6 DN
-NIRISS     9279 NISRAPID, 10 integrations      25.5 DN           7.4 DN            24.3 DN
+NIRISS     9279 NISRAPID, 10 integrations      25.5 DN           7.4 DN            25.0 DN
 =========  ==================================  ================  ================  ========
 
-The NIRISS value comes from two exposures of five integrations and
-includes any change of the bias level between them, which the sky-anchored
-reset offset absorbs on a science exposure; one exposure alone gives 22.0
-DN. On NRCA1 the value is 36 e at a gain of 2.05, the size of kTC noise;
+The NIRISS value comes from two exposures of five integrations, observed
+months apart and processed with different superbias references, which
+the calibration expresses against one of them before combining; it
+includes any change of the reset level between the exposures, which the
+sky-anchored reset offset absorbs on a science exposure. One exposure
+alone gives 22.0 DN. On NRCA1 the value is 36 e at a gain of 2.05, the size of kTC noise;
 the per-channel medians agree to 0.5 percent, and the per-pixel pedestal mean
 has a scatter of 13.9 DN of which 12.7 DN is systematic superbias error.
 The prior's weight: in a BRIGHT1 5-group ramp the reset difference carries
@@ -471,6 +478,29 @@ median method is what the pipeline offers NIRCam.
    nothing to protect and should be off; on a science exposure it keeps
    the sky, and separating sky from slow 1/f needs a model with more
    information than one exposure (see Open items).
+
+The same comparison on a NIRISS dark (program 9279, NISRAPID, first 20
+of 120 groups) shows the step on the other readout geometry: on NIRISS
+the fast readout axis runs along science columns, so the banding is
+vertical and the amplifiers are horizontal bands.
+
+.. figure:: figures/dark_rate_images_nis.png
+   :width: 100%
+
+   NIRISS dark, central 512 by 512 pixels, same layout and statistics as
+   the NRCA1 figure. Over the full frame the column-mean scatter, which
+   is the banding direction here, goes from 0.0103 DN/s (median refpix)
+   and 0.0083 (SIRS) to 0.0043 with the jwst median and 0.0008 with the
+   stream clean, and the pixel scatter from 0.0297 to 0.0267.
+
+.. figure:: figures/dark_rate_images_full_nis.jpg
+   :width: 100%
+
+   The same on the full NIRISS frame, binned 2 by 2 for display. The
+   rectangular patches in the first two panels are large-scale structure
+   of this dark that the median reference-pixel correction and SIRS leave
+   in place; with no background to protect, the stream clean removes
+   them with the banding.
 
 Its Figure 4 plots the 1/f noise in NIRCam dark data against the number
 of groups in the ramp, with and without ``clean_flicker_noise``, and the

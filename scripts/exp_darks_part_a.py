@@ -173,6 +173,9 @@ def main():
         "sirs_wiener_box32_minp300": lambda: StreamCleanStep.call(
             sirs, fit_method="wiener", max_lag=MAX_LAG, min_period=300, **linear(32)
         ),
+        "sirs_wiener_none": lambda: StreamCleanStep.call(
+            sirs, fit_method="wiener", max_lag=MAX_LAG, background_method=None, output_dir=out_dir
+        ),
         "sirs_wiener_box32_nocolumns": lambda: StreamCleanStep.call(
             sirs, fit_method="wiener", max_lag=MAX_LAG, column_offsets=False, **linear(32)
         ),

@@ -241,3 +241,13 @@ def test_update_timing_keeps_history_and_adds_entry(tmp_path):
         entries = handle.get_history_entries()
     assert len(entries) == 2
     assert "field_uncal.fits" in entries[1]["description"]
+
+
+def test_reference_superbias_picks_the_latest_delivery():
+    """reference_superbias on names ending 0252 and 0257 returns the 0257 file; on an empty list returns None."""
+    from snowblind.reset_calib import reference_superbias
+
+    chosen = reference_superbias(["jwst_niriss_superbias_0252.fits", "jwst_niriss_superbias_0257.fits", None])
+
+    assert chosen == "jwst_niriss_superbias_0257.fits"
+    assert reference_superbias([None]) is None

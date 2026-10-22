@@ -9,7 +9,6 @@ separate ``_resetfit.asdf`` product when ``save_opt`` is set; they are not
 attached to the cube model.
 """
 import logging
-import os
 
 import asdf
 import numpy as np
@@ -25,7 +24,7 @@ from stdatamodels.jwst.datamodels import dqflags
 
 from . import readout
 from .likely_fit_reset import MIN_NGROUPS, likely_ramp_fit_reset, likely_ramp_fit_reset_blocks
-from .reset_calib import add_history, read_calibration, superbias_basename
+from .reset_calib import add_history, read_calibration, superbias_basename, superbias_difference  # noqa: F401
 
 __all__ = ["ResetRampFitStep", "write_resetfit"]
 
@@ -222,45 +221,6 @@ class ResetRampFitStep(Step):
         if t1_scale is None:
             t1_scale = 1.0
         return sigma_b, float(t1_scale), reset_level, channel_timing
-
-
-def superbias_difference(calibration_superbias, science_superbias, shape, locate=None):
-    """``calibration minus science`` superbias images, or None when they are the same file or unknown.
-
-    The pedestal map is the mean reset level of the darks after their
-    superbias was subtracted, so for a science exposure that had another
-    superbias subtracted the prior is the map plus this difference.  The
-    names are resolved through the CRDS cache (``crds.locate_file``) unless
-    ``locate`` is given.
-    """
-    cal = superbias_basename(calibration_superbias)
-    sci = superbias_basename(science_superbias)
-    if cal is None or sci is None:
-        if cal is None and sci is not None:
-            log.warning("The calibration file does not record its superbias; the prior cannot be checked against the data's")
-        return None
-    if cal == sci:
-        return None
-    if locate is None:
-        from crds import locate_file
-
-        def locate(name):
-            return locate_file(name, "jwst")
-
-    from astropy.io import fits
-
-    images = []
-    for name in (cal, sci):
-        path = locate(name)
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Superbias {name} is not in the CRDS cache ({path}); fetch it to correct the prior")
-        with fits.open(path) as handle:
-            images.append(np.asarray(handle["SCI"].data, dtype=np.float32))
-    for image in images:
-        if image.shape != tuple(shape):
-            raise ValueError(f"Superbias shape {image.shape} does not match data {tuple(shape)}")
-    log.info(f"Prior corrected from superbias {cal} (calibration) to {sci} (data)")
-    return images[0] - images[1]
 
 
 def calibrated_pedestal_map(tree, shape, fastaxis, slowaxis, highpass=True, science_superbias=None):

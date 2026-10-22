@@ -16,13 +16,13 @@ import numpy as np  # noqa: E402
 from snowblind.metrics import robust_sigma  # noqa: E402
 from snowblind.noise_spectrum import log_binned_spectrum  # noqa: E402
 
-DARKS = "results/2026-10-21_darks_part_a_v5/NRCA1"
+DARKS = "results/2026-10-22_darks_part_a/NRCA1"
 INJECT = "results/2026-10-20_inject_part_a_v3/NRCA1"
 INJECT_MASKS = "results/2026-10-21_inject_chisel_v3/NRCA1"
 FIELD = "results/2026-10-20_reset_field_final3/NRCA1"
 OUT = "docs/figures"
 
-SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
+SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#8e5bd6"]
 TEXT, MUTED, GRID, SURFACE = "#0b0b0b", "#52514e", "#dcdbd6", "#fcfcfb"
 
 plt.rcParams.update(
@@ -90,11 +90,12 @@ def aperture_scatter():
         ("sirs_jwst_median", summary, "SIRS + jwst median", SERIES[1]),
         ("sirs_wiener_box32", summary, "SIRS + Wiener, box 32 (default)", SERIES[2]),
         ("sirs_wiener_box256", summary, "SIRS + Wiener, box 256", SERIES[3]),
+        ("sirs_wiener_none", summary, "SIRS + Wiener, no background", SERIES[4]),
     ]
     fig, ax = plt.subplots(figsize=(8, 4.5))
     sizes = np.array(summary["sirs"]["aperture_sizes"])
     ax.plot(sizes, summary["sirs"]["aperture_white_prediction"], color=MUTED, linestyle="--", linewidth=1, label="white noise")
-    offsets = {"sirs_jwst_median": 9, "sirs": -2, "sirs_wiener_box32": -12}
+    offsets = {"sirs_jwst_median": 9, "sirs": -2, "sirs_wiener_box32": -12, "sirs_wiener_box256": 8, "sirs_wiener_none": -8}
     for key, table, label, color in picks:
         values = np.array(table[key]["aperture_scatter"])
         ax.plot(sizes, values, color=color, marker="o", markersize=5, label=label)
@@ -165,6 +166,11 @@ def first_read():
 
 NGROUPS_ROOT = "results/2026-10-21_darks_vs_ngroups"
 RATE_PANELS = "results/2026-10-21_rate_images_v5/NRCA1"
+# the same panels on a NIRISS dark: (panel directory, label for the titles, suffix of the figure files)
+DARK_PANEL_SETS = [
+    (RATE_PANELS, "NRCA1 dark", ""),
+    ("results/2026-10-22_rate_images_nis/NIS", "NIRISS dark", "_nis"),
+]
 
 
 def noise_vs_groups():
@@ -202,7 +208,7 @@ def noise_vs_groups():
     fig.savefig(os.path.join(OUT, "noise_vs_groups.png"), dpi=150)
 
 
-def dark_rate_images():
+def dark_rate_images(panels_dir=RATE_PANELS, label="NRCA1 dark", suffix=""):
     """Counterpart of Figure 1 of the JWST 1/f known-issues page: rate images before and after cleaning."""
     panels = [
         ("default_refpix_ols.npz", "median refpix (pre-SIRS default),\nno cleaning, OLS_C"),
@@ -210,9 +216,9 @@ def dark_rate_images():
         ("sirs_jwst_median_ols.npz", "SIRS + jwst clean_flicker_noise\n(median per channel,\nno background), OLS_C"),
         ("sirs_stream_clean_ols.npz", "SIRS + snowblind stream_clean\n(no background), OLS_C"),
     ]
-    if not os.path.exists(os.path.join(RATE_PANELS, panels[-1][0])):
+    if not os.path.exists(os.path.join(panels_dir, panels[-1][0])):
         return
-    reference = np.load(os.path.join(RATE_PANELS, "sirs_ols.npz"))
+    reference = np.load(os.path.join(panels_dir, "sirs_ols.npz"))
     good = np.isfinite(reference["rate"]) & (reference["dq"] == 0)
     good[:4] = good[-4:] = False
     good[:, :4] = good[:, -4:] = False
@@ -226,7 +232,7 @@ def dark_rate_images():
     fig, axes = plt.subplots(1, 4, figsize=(14.5, 5.3), dpi=150, constrained_layout=True)
     stats = good & (np.abs(reference["rate"] - level) < 5 * width / 2.5)
     for ax, (name, title) in zip(axes, panels):
-        rate = np.load(os.path.join(RATE_PANELS, name))["rate"]
+        rate = np.load(os.path.join(panels_dir, name))["rate"]
         # display every pixel, with unusable ones at the median level; hot pixels clip to the top of the scale
         shown = np.where(np.isfinite(rate), rate, level)[region]
         image = ax.imshow(shown, origin="lower", cmap="viridis", vmin=level - width, vmax=level + width, interpolation="nearest")
@@ -243,13 +249,13 @@ def dark_rate_images():
     colorbar.set_label("DN/s", fontsize=base * scale * 0.6)
     colorbar.ax.tick_params(labelsize=base * scale * 0.6)
     fig.suptitle(
-        f"NRCA1 dark, 20 groups, central 512 x 512 pixels, stretch +- {width:.3f} DN/s\n",
+        f"{label}, 20 groups, central 512 x 512 pixels, stretch +- {width:.3f} DN/s\n",
         fontsize=base * scale * 0.85,
     )
-    fig.savefig(os.path.join(OUT, "dark_rate_images.png"), dpi=150)
+    fig.savefig(os.path.join(OUT, f"dark_rate_images{suffix}.png"), dpi=150)
 
 
-def dark_rate_images_full():
+def dark_rate_images_full(panels_dir=RATE_PANELS, label="NRCA1 dark", suffix=""):
     """The same four rate images as `dark_rate_images`, full 2048 x 2048 frame, binned 2 x 2 for display."""
     panels = [
         ("default_refpix_ols.npz", "median refpix (pre-SIRS default), no cleaning, OLS_C"),
@@ -257,9 +263,9 @@ def dark_rate_images_full():
         ("sirs_jwst_median_ols.npz", "SIRS + jwst clean_flicker_noise\n(median per channel, no background), OLS_C"),
         ("sirs_stream_clean_ols.npz", "SIRS + snowblind stream_clean\n(no background), OLS_C"),
     ]
-    if not os.path.exists(os.path.join(RATE_PANELS, panels[-1][0])):
+    if not os.path.exists(os.path.join(panels_dir, panels[-1][0])):
         return
-    reference = np.load(os.path.join(RATE_PANELS, "sirs_ols.npz"))
+    reference = np.load(os.path.join(panels_dir, "sirs_ols.npz"))
     good = np.isfinite(reference["rate"]) & (reference["dq"] == 0)
     good[:4] = good[-4:] = False
     good[:, :4] = good[:, -4:] = False
@@ -271,7 +277,7 @@ def dark_rate_images_full():
     base = plt.rcParams["font.size"]
     fig, axes = plt.subplots(2, 2, figsize=(14.5, 15.3), dpi=150, constrained_layout=True)
     for ax, (name, title) in zip(axes.ravel(), panels):
-        rate = np.load(os.path.join(RATE_PANELS, name))["rate"]
+        rate = np.load(os.path.join(panels_dir, name))["rate"]
         shown = np.where(np.isfinite(rate), rate, level)
         nrows, ncols = (shown.shape[0] // binning) * binning, (shown.shape[1] // binning) * binning
         binned = shown[:nrows, :ncols].reshape(nrows // binning, binning, ncols // binning, binning).mean(axis=(1, 3))
@@ -289,11 +295,13 @@ def dark_rate_images_full():
     colorbar.set_label("DN/s", fontsize=base * scale * 0.6)
     colorbar.ax.tick_params(labelsize=base * scale * 0.6)
     fig.suptitle(
-        f"NRCA1 dark, 20 groups, full frame binned {binning} x {binning} for display, stretch +- {width:.3f} DN/s\n",
+        f"{label}, 20 groups, full frame binned {binning} x {binning} for display, stretch +- {width:.3f} DN/s\n",
         fontsize=base * scale * 0.85,
     )
     # 9 MB as PNG; JPEG at quality 88 is 2 MB and shows the same structure
-    fig.savefig(os.path.join(OUT, "dark_rate_images_full.jpg"), dpi=150, pil_kwargs={"quality": 88, "optimize": True})
+    fig.savefig(
+        os.path.join(OUT, f"dark_rate_images_full{suffix}.jpg"), dpi=150, pil_kwargs={"quality": 88, "optimize": True}
+    )
     plt.close(fig)
 
 
@@ -410,8 +418,9 @@ if __name__ == "__main__":
     flux_bias()
     first_read()
     noise_vs_groups()
-    dark_rate_images()
-    dark_rate_images_full()
+    for panels_dir, label, suffix in DARK_PANEL_SETS:
+        dark_rate_images(panels_dir, label, suffix)
+        dark_rate_images_full(panels_dir, label, suffix)
     for detector in ("NRCA1", "NRCALONG"):
         field_rate_images(detector)
         field_rate_images_full(detector)

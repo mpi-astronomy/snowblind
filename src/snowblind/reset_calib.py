@@ -20,6 +20,7 @@ import argparse
 import datetime
 import logging
 import os
+import re
 import sys
 
 import asdf
@@ -256,6 +257,19 @@ def add_history(handle, description):
     handle.add_history_entry(description, software=software_entry())
 
 
+def reference_superbias(names):
+    """The superbias the calibration is expressed against: the latest delivery among the darks' files, or None."""
+    known = sorted({name for name in names if name is not None})
+    if not known:
+        return None
+
+    def number(name):
+        digits = re.findall(r"(\d+)\.fits$", name)
+        return int(digits[0]) if digits else -1
+
+    return max(known, key=number)
+
+
 def superbias_basename(name):
     """Base name of a reference file as stored in ``meta.ref_file`` (``crds://`` prefix and directories removed)."""
     if name is None:
@@ -264,6 +278,45 @@ def superbias_basename(name):
     if name in ("", "N/A", "None"):
         return None
     return os.path.basename(name.replace("crds://", ""))
+
+
+def superbias_difference(calibration_superbias, science_superbias, shape, locate=None):
+    """``calibration minus science`` superbias images, or None when they are the same file or unknown.
+
+    The pedestal map is the mean reset level of the darks after their
+    superbias was subtracted, so for a science exposure that had another
+    superbias subtracted the prior is the map plus this difference.  The
+    names are resolved through the CRDS cache (``crds.locate_file``) unless
+    ``locate`` is given.
+    """
+    cal = superbias_basename(calibration_superbias)
+    sci = superbias_basename(science_superbias)
+    if cal is None or sci is None:
+        if cal is None and sci is not None:
+            log.warning("The calibration file does not record its superbias; the prior cannot be checked against the data's")
+        return None
+    if cal == sci:
+        return None
+    if locate is None:
+        from crds import locate_file
+
+        def locate(name):
+            return locate_file(name, "jwst")
+
+    from astropy.io import fits
+
+    images = []
+    for name in (cal, sci):
+        path = locate(name)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Superbias {name} is not in the CRDS cache ({path}); fetch it to correct the prior")
+        with fits.open(path) as handle:
+            images.append(np.asarray(handle["SCI"].data, dtype=np.float32))
+    for image in images:
+        if image.shape != tuple(shape):
+            raise ValueError(f"Superbias shape {image.shape} does not match data {tuple(shape)}")
+    log.info(f"Prior corrected from superbias {cal} (calibration) to {sci} (data)")
+    return images[0] - images[1]
 
 
 def write_calibration(
@@ -363,8 +416,7 @@ def read_calibration(path):
 
 def calibrate(files, output, max_groups=None):
     """Measure ``sigma_b`` from a list of dark files for one detector and write the ASDF."""
-    superbias_names = set()
-    stacks = []
+    inputs = []  # (pedestal cube, superbias name, path)
     detector = None
     fastaxis = slowaxis = None
     read_noise = None
@@ -383,17 +435,21 @@ def calibrate(files, output, max_groups=None):
             raise ValueError(f"{path} is {this_detector}; expected {detector}")
 
         model = datamodels.RampModel(path) if is_jump else run_detector1_to_jump(path, max_groups=max_groups)
-        superbias_names.add(superbias_basename(model.meta.ref_file.superbias.name))
+        name = superbias_basename(model.meta.ref_file.superbias.name)
         pedestal, read_noise = pedestal_cube(model)
         model.close()
-        stacks.append(remove_channel_offsets(pedestal, fastaxis, slowaxis))
+        inputs.append((pedestal, name, path))
 
+    superbias = reference_superbias([name for _pedestal, name, _path in inputs])
+    log.info(f"Superbias of the calibration: {superbias}")
+    stacks = []
+    for pedestal, name, path in inputs:
+        if superbias is not None and name is not None and name != superbias:
+            # this dark had another superbias subtracted; express its pedestal relative to the reference
+            pedestal = pedestal + superbias_difference(name, superbias, pedestal.shape[-2:])
+            log.info(f"{os.path.basename(path)}: pedestal moved from superbias {name} to {superbias}")
+        stacks.append(remove_channel_offsets(pedestal, fastaxis, slowaxis))
     pedestals = np.concatenate(stacks, axis=0)
-    superbias_names.discard(None)
-    if len(superbias_names) > 1:
-        raise ValueError(f"The darks had different superbias files subtracted: {sorted(superbias_names)}")
-    superbias = superbias_names.pop() if superbias_names else None
-    log.info(f"Superbias subtracted from the darks: {superbias}")
     sigma_b, mean, count, scatter = sigma_b_from_pedestals(pedestals, read_noise=read_noise, nframes=nframes)
     log.info(
         f"{detector}: median pedestal scatter = {np.nanmedian(scatter):.3f} DN, "
