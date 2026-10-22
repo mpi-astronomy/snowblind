@@ -352,3 +352,31 @@ def test_call_no_warning_when_data_superbias_matches_best_reference(tmp_path, ca
         ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=str(same))
 
     assert not [r for r in caplog.records if "superbias" in r.getMessage() and r.levelno >= logging.WARNING]
+
+
+def test_calibrated_pedestal_map_is_unchanged_for_another_superbias(caplog):
+    """calibrated_pedestal_map with a data superbias other than the calibration's returns the map unchanged and warns."""
+    import logging
+
+    from snowblind.reset_rampfit import calibrated_pedestal_map
+
+    mean = np.full((8, 8), 3.0, dtype=np.float32)
+    tree = {"pedestal_mean": mean, "provenance": {"superbias": "jwst_nircam_superbias_0443.fits"}}
+
+    with caplog.at_level(logging.WARNING):
+        out = calibrated_pedestal_map(
+            tree, (8, 8), -1, 2, highpass=False, science_superbias="crds://jwst_nircam_superbias_0220.fits"
+        )
+
+    np.testing.assert_array_equal(out, mean)
+    assert any("0220" in r.getMessage() and "0443" in r.getMessage() for r in caplog.records)
+
+
+def test_rescale_t1_keeps_the_delay_in_seconds():
+    """rescale_t1 with 0.943 measured at 10.74 s gives a 0.612 s delay, which at 48.3 s is a scale of 0.9873."""
+    from snowblind.reset_rampfit import rescale_t1
+
+    scale = rescale_t1(0.943, 10.74, 48.3)
+
+    assert scale == pytest.approx(1.0 - (1.0 - 0.943) * 10.74 / 48.3, rel=1e-9)
+    assert scale == pytest.approx(0.9873, abs=5e-4)

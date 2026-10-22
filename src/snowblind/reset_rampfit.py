@@ -44,6 +44,11 @@ class ResetRampFitStep(Step):
 
     class_alias = "reset_rampfit"
 
+    @classmethod
+    def get_stpipe_loggers(cls):
+        """The jwst loggers plus snowblind's, so that this package's messages reach the step log."""
+        return super().get_stpipe_loggers() + ("snowblind",)
+
     spec = """
         reset_calib = string(default=None)  # ASDF from snowblind-reset-calib; required unless sigma_b is set
         sigma_b = float(default=None)  # DN; scalar reset scatter, overrides the calibration file
@@ -201,6 +206,22 @@ class ResetRampFitStep(Step):
                 )
             if t1_scale is None:
                 t1_scale = float(tree.get("t1_scale", 1.0))
+            t1_data = first_group_time(model)
+            t1_cal = tree.get("t1_seconds")
+            if t1_cal is not None and t1_data > 0:
+                # the shortfall is a delay in seconds; carry it to this exposure's first-group time
+                t1_scale = rescale_t1(t1_scale, float(t1_cal), t1_data)
+                if channel_timing is not None:
+                    channel_timing = ([rescale_t1(k, float(t1_cal), t1_data) for k in channel_timing[0]], channel_timing[1])
+                log.info(
+                    f"First-read timing carried from a first-group time of {float(t1_cal):.2f} s to {t1_data:.2f} s: "
+                    f"t1_scale {t1_scale:.4f}"
+                )
+            elif t1_cal is None and tree.get("t1_scale") is not None and abs(float(tree.get("t1_scale", 1.0)) - 1.0) > 1e-6:
+                log.warning(
+                    "The calibration's t1_scale has no first-group time recorded; it is used as it is, which is only right "
+                    "for exposures with the readout pattern it was measured on"
+                )
             if sigma_b is None:
                 if self.per_pixel_sigma_b:
                     sigma_b = np.array(tree["sigma_b"], dtype=np.float64)
@@ -224,13 +245,28 @@ class ResetRampFitStep(Step):
 
 
 def calibrated_pedestal_map(tree, shape, fastaxis, slowaxis, highpass=True, science_superbias=None):
-    """The calibration's pedestal map for a science exposure: superbias-corrected, then high-passed."""
+    """The calibration's pedestal map for a science exposure, high-passed by default.
+
+    The map is the mean reset level of the darks after their superbias was
+    subtracted.  A superbias reference tracks the reset level of its epoch
+    (two NRCALONG references from 2022 and 2025 differ by 11700 DN), so the
+    residual relative to each epoch's own superbias is the quantity that
+    transfers between epochs, and the map is used as it is for an exposure
+    processed with a different superbias.  The step says so, because the
+    per-pixel part of the residual has not been checked across epochs.
+    """
     mean = np.array(tree["pedestal_mean"], dtype=np.float32)
     if mean.shape != tuple(shape):
         raise ValueError(f"pedestal_mean shape {mean.shape} does not match data {tuple(shape)}")
-    delta = superbias_difference(tree.get("provenance", {}).get("superbias"), science_superbias, shape)
-    if delta is not None:
-        mean = mean + delta
+    cal = superbias_basename(tree.get("provenance", {}).get("superbias"))
+    sci = superbias_basename(science_superbias)
+    if cal is None:
+        log.warning("The calibration file does not record its superbias; the prior cannot be checked against the data's")
+    elif sci is not None and cal != sci:
+        log.warning(
+            f"The data had superbias {sci} subtracted, the calibration darks {cal}: the pedestal map is used as "
+            "the residual against the data's own epoch; its per-pixel part is untested across epochs"
+        )
     if highpass:
         mean = highpass_prior(mean, fastaxis, slowaxis)
     return mean
@@ -260,6 +296,18 @@ def reset_prior_map(
     else:
         level += np.float32(file_offset)
     return level
+
+
+def first_group_time(model):
+    """Mean time since reset of the first group's reads, in seconds (the stcal convention)."""
+    exposure = model.meta.exposure
+    return float(exposure.frame_time) * (int(exposure.nframes) + 1) / 2.0
+
+
+def rescale_t1(t1_scale, t1_calibration, t1_data):
+    """Carry a first-read scale measured at one first-group time to another, as a fixed delay in seconds."""
+    delay = (1.0 - float(t1_scale)) * float(t1_calibration)
+    return 1.0 - delay / float(t1_data)
 
 
 def highpass_prior(pedestal_mean, fastaxis, slowaxis):

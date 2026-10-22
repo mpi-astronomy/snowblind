@@ -78,6 +78,11 @@ class StreamCleanStep(Step):
 
     class_alias = "stream_clean"
 
+    @classmethod
+    def get_stpipe_loggers(cls):
+        """The jwst loggers plus snowblind's, so that this package's messages reach the step log."""
+        return super().get_stpipe_loggers() + ("snowblind",)
+
     spec = """
         fit_method = option('wiener', 'boxcar', 'row_median', default='wiener')  # noise estimator per channel
         window_length = integer(default=4096)  # pixel times (10 microseconds each); boxcar only
@@ -195,6 +200,8 @@ class StreamCleanStep(Step):
             mask_model.close()
 
         result.data = cleaned
+        if self._cleaned_zeroframe is not None:
+            result.zeroframe = self._cleaned_zeroframe
         setattr(result.meta.cal_step, self.class_alias, "COMPLETE")
         return result
 
@@ -218,6 +225,15 @@ class StreamCleanStep(Step):
             scene_background = (np.where(np.isfinite(self._scene), self._scene, 0.0) * result.meta.exposure.group_time).astype(
                 np.float32
             )
+        self._cleaned_zeroframe = None
+        zeroframe = None
+        if self.clean_first_group and getattr(result, "zeroframe", None) is not None and np.any(result.zeroframe != 0):
+            # frame-averaged readouts carry the first frame separately; the reset fit uses it, so clean it too
+            zeroframe = np.array(result.zeroframe, dtype=np.float32, copy=True)
+            self._cleaned_zeroframe = zeroframe
+            log.info("Cleaning the zeroframe as well")
+        frame_time = result.meta.exposure.frame_time or 0.0
+        group_time = result.meta.exposure.group_time or 1.0
         return clean_ramp(
             result.data,
             result.groupdq,
@@ -226,6 +242,8 @@ class StreamCleanStep(Step):
             result.meta.subarray.slowaxis,
             first_group_reference=reference,
             scene_background=scene_background,
+            zeroframe=zeroframe,
+            zeroframe_scale=frame_time / group_time,
             fit_method=self.fit_method,
             background_method=self.background_method,
             background_box_size=self.background_box_size,
@@ -425,6 +443,8 @@ def clean_ramp(
     anchor_mean=False,
     first_group_reference=None,
     scene_background=None,
+    zeroframe=None,
+    zeroframe_scale=None,
     **filter_kwargs,
 ):
     """Clean every group difference of every integration and rebuild the groups.
@@ -472,6 +492,16 @@ def clean_ramp(
         The scene in DN per group (for example a blotted mosaic), used as
         the fixed background of every difference in place of the fitted
         model; ``background_method`` is then ignored.
+    zeroframe : ndarray of shape (nints, nrows, ncols) or None
+        The ZEROFRAME of frame-averaged readouts, the first frame of the
+        first group, which the likelihood fit uses as a resultant of its
+        own.  With ``clean_first_group`` it is cleaned in place, like
+        group 0, as a difference against ``first_group_reference`` (or
+        zero); pixels at exactly zero, the pipeline's marker for an
+        unusable zeroframe pixel, stay zero.
+    zeroframe_scale : float or None
+        The frame time over the group time: scales a fixed background to
+        the signal of one frame.
     **filter_kwargs
         Passed to the noise estimator.
 
@@ -556,6 +586,42 @@ def clean_ramp(
             cleaned_image = image
         cleaned[i, j] = previous + cleaned_image
 
+    if zeroframe is not None and clean_first_group:
+        reference = 0.0 if first_group_reference is None else first_group_reference
+        for i in range(nints):
+            frame = np.asarray(zeroframe[i], dtype=np.float32)
+            unusable = frame == 0.0
+            mask = (background_mask[i] if background_mask.ndim == 3 else background_mask).copy()
+            mask_unusable(mask, groupdq[i, 0])
+            mask &= ~unusable
+            image = frame - reference
+            scale = first_group_scale if zeroframe_scale is None else zeroframe_scale
+            cleaned_image, _background = clean_difference(
+                image,
+                mask,
+                fastaxis,
+                slowaxis,
+                fit_method=fit_method,
+                background_method=background_method,
+                background_box_size=background_box_size,
+                clip_sigma=clip_sigma,
+                iterations=iterations,
+                flat=flat,
+                first_direction=first_direction,
+                channel_kwargs=None if gains is None else gains[i],
+                fixed_background=None if fixed is None else fixed[i] * scale,
+                even_odd_columns=even_odd_columns,
+                column_offsets=column_offsets,
+                anchor_mean=anchor_mean,
+                **filter_kwargs,
+            )
+            if cleaned_image is None:
+                log.warning(f"No usable data in the zeroframe of integration {i + 1}; left as is")
+                continue
+            new = reference + cleaned_image
+            new[unusable] = 0.0
+            zeroframe[i] = np.where(np.isfinite(new), new, 0.0)
+
     if return_spectra:
         return cleaned, spectra
     return cleaned
@@ -573,7 +639,7 @@ def _fixed_for(fixed, integration, group, first_group_scale):
 def prepare_difference(
     image, mask, background_method="median", background_box_size=None, clip_sigma=0.0, flat=None, fixed_background=None
 ):
-    """Divide by the flat, mask NaNs, remove the background and clip signal.
+    """Mask NaNs, remove the background and clip signal, in the raw DN of the difference.
 
     This is the part of ``_clean_one_image`` in the jwst step that comes
     before the noise fit.  ``mask`` is updated in place.  With
@@ -582,17 +648,31 @@ def prepare_difference(
     at ``clip_sigma`` happens only when a background was removed and only if
     ``clip_sigma`` is positive.
 
+    With ``flat`` the background is measured on the flat-fielded image, as
+    the sky is smooth there and the detector response is not, but what is
+    subtracted is that background times the flat, so that the residual
+    handed to the noise fit stays in raw DN, where the 1/f noise is
+    additive and does not pass through the quantum efficiency.  (The jwst
+    step divides the whole image by the flat, fits in that space and
+    multiplies back, which modulates the noise estimate by the flat.)  A
+    ``fixed_background`` is in flat-fielded units when a flat is given.
+
     Returns
     -------
     bkg_sub : ndarray of float32 or None
-        Background-subtracted image, or None if no pixel is usable.
+        Background-subtracted image in raw DN, or None if no pixel is usable.
     background : float or ndarray
+        The background that was removed, in raw DN (times the flat when one
+        was given).
     nan_pix : ndarray of bool
         Where the input was not finite.
     """
     image = image.astype(np.float32, copy=True)
+    flat_ok = None
     if flat is not None:
-        image /= flat
+        flat = np.asarray(flat, dtype=np.float32)
+        flat_ok = np.isfinite(flat) & (flat > 0)
+        image[~flat_ok] = np.nan
 
     nan_pix = ~np.isfinite(image)
     image[nan_pix] = 0.0
@@ -605,15 +685,17 @@ def prepare_difference(
         raise ValueError("background_method='integration_model' needs the per-integration background (fixed_background)")
     if fixed_background is not None:
         background = fixed_background
-        bkg_sub = image - background
     elif no_background:
         background = 0.0
-        bkg_sub = image
     else:
+        # measured on the flat-fielded image, where the sky is smooth
+        fielded = image if flat is None else np.where(flat_ok, image / np.where(flat_ok, flat, 1.0), 0.0)
         background = background_level(
-            image, mask, background_method=background_method, background_box_size=background_box_size
+            fielded.astype(np.float32), mask, background_method=background_method, background_box_size=background_box_size
         )
-        bkg_sub = image - background
+    if flat is not None and not no_background:
+        background = np.asarray(background, dtype=np.float32) * np.where(flat_ok, flat, 0.0)
+    bkg_sub = image - background
     # As in the jwst step, signal is clipped only after a background was removed.
     if clip_sigma > 0 and (fixed_background is not None or not no_background):
         clip_to_background(bkg_sub, mask, sigma_lower=clip_sigma, sigma_upper=clip_sigma, lower_half_only=True)
@@ -919,8 +1001,8 @@ def clean_difference(
 ):
     """Clean one group-difference image.
 
-    Follows ``_clean_one_image`` in the jwst step: optionally divide by the
-    flat, mask NaNs, fit and remove a background level, clip signal with a
+    Follows ``_clean_one_image`` in the jwst step: optionally measure the
+    background on the flat-fielded image, mask NaNs, fit and remove a background level, clip signal with a
     sigma from the lower half of the distribution, estimate the noise,
     re-clip on the cleaned image and re-estimate ``iterations`` times in
     total, then restore the background, flat and NaNs.
@@ -983,8 +1065,6 @@ def clean_difference(
         )
 
     cleaned = bkg_sub - noise + background
-    if flat is not None:
-        cleaned *= flat
     cleaned[nan_pix] = np.nan
     return cleaned.astype(np.float32), background
 

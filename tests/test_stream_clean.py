@@ -716,3 +716,66 @@ def test_read_scene_model_reads_sci_extension(tmp_path):
     scene = read_scene_model(str(path), (NY, NX))
 
     np.testing.assert_array_equal(scene, image)
+
+
+def test_prepare_difference_subtracts_background_times_flat_in_raw_dn():
+    """prepare_difference with a flat on sky 10 times flat plus a row pattern returns the row pattern in raw DN."""
+    from snowblind.stream_clean import prepare_difference
+
+    rng = np.random.default_rng(15)
+    flat = rng.uniform(0.8, 1.2, (NY, NX)).astype(np.float32)
+    rows = rng.normal(0.0, 1.0, NY).astype(np.float32)
+    image = (10.0 * flat + rows[:, None]).astype(np.float32)
+    mask = np.ones((NY, NX), dtype=bool)
+
+    bkg_sub, background, _nan = prepare_difference(image, mask, background_method="median", flat=flat)
+
+    np.testing.assert_allclose(background, 10.0 * flat, rtol=0.03)
+    residual_rows = np.median(bkg_sub, axis=1)
+    np.testing.assert_allclose(residual_rows - residual_rows.mean(), rows - rows.mean(), atol=0.3)
+
+
+def test_clean_difference_with_flat_returns_image_minus_row_noise():
+    """clean_difference with a flat and row_median on sky times flat plus rows halves the error against sky times flat."""
+    from snowblind.stream_clean import clean_difference
+
+    rng = np.random.default_rng(16)
+    flat = rng.uniform(0.8, 1.2, (NY, NX)).astype(np.float32)
+    rows = rng.normal(0.0, 1.0, NY).astype(np.float32)
+    image = np.ascontiguousarray(readout.to_science_frame((10.0 * flat + rows[:, None]).astype(np.float32), -1, 2))
+    flat_sci = np.ascontiguousarray(readout.to_science_frame(flat, -1, 2))
+    mask = np.ones((NY, NX), dtype=bool)
+
+    cleaned, _background = clean_difference(
+        image, mask, -1, 2, fit_method="row_median", background_method="median", flat=flat_sci
+    )
+
+    expected = 10.0 * flat_sci
+    assert np.abs(cleaned - expected).mean() < np.abs(image - expected).mean() / 2
+
+
+def test_clean_ramp_cleans_the_zeroframe_against_the_reference_and_keeps_zero_markers():
+    """clean_ramp with a zeroframe of reference plus a row pattern and two zero pixels returns the reference there and zeros."""
+    rng = np.random.default_rng(17)
+    reference = rng.normal(0.0, 10.0, (NY, NX)).astype(np.float32)
+    rows = rng.normal(0.0, 3.0, NY).astype(np.float32)
+    data = np.zeros((1, 3, NY, NX), dtype=np.float32)
+    data[0, 0] = reference + rows[:, None]
+    data[0, 1] = data[0, 0] + 1.0
+    data[0, 2] = data[0, 1] + 1.0
+    zeroframe = (reference + rows[:, None])[None].astype(np.float32)
+    zeroframe[0, 3, 5] = 0.0
+    zeroframe[0, 10, 20] = 0.0
+    groupdq = np.zeros(data.shape, dtype=np.uint32)
+    mask = np.ones((NY, NX), dtype=bool)
+
+    clean_ramp(
+        data, groupdq, mask, -1, 2, fit_method="row_median", background_method=None, clean_first_group=True,
+        first_group_reference=reference, zeroframe=zeroframe, zeroframe_scale=0.5,
+    )
+
+    assert zeroframe[0, 3, 5] == 0.0
+    assert zeroframe[0, 10, 20] == 0.0
+    good = np.ones((NY, NX), dtype=bool)
+    good[3, 5] = good[10, 20] = False
+    np.testing.assert_allclose(zeroframe[0][good], reference[good], atol=1e-3)

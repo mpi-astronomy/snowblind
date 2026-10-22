@@ -335,6 +335,7 @@ def write_calibration(
     reset_offset_channels=None,
     timing_provenance=None,
     superbias=None,
+    superbias_inputs=None,
 ):
     """Write the calibration ASDF file read by `ResetRampFitStep`.
 
@@ -365,6 +366,7 @@ def write_calibration(
             "input_files": [os.path.basename(f) for f in input_files],
             "refpix_algorithm": refpix_algorithm,
             "superbias": superbias,
+            "superbias_inputs": None if superbias_inputs is None else list(superbias_inputs),
             "jwst_version": jwst_version,
             "stcal_version": stcal_version,
             "snowblind_version": _snowblind_version(),
@@ -381,11 +383,22 @@ def write_calibration(
         handle.write_to(path)
 
 
-def update_timing(path, t1_scale, reset_offset, t1_scale_channels=None, reset_offset_channels=None, provenance=None):
-    """Rewrite a calibration file's first-read timing parameters in place, keeping everything else including its history."""
+def update_timing(
+    path, t1_scale, reset_offset, t1_scale_channels=None, reset_offset_channels=None, provenance=None, t1_seconds=None
+):
+    """Rewrite a calibration file's first-read timing parameters in place, keeping everything else including its history.
+
+    ``t1_seconds`` is the mean time since reset of the first group of the
+    exposure the timing was measured on.  With it the step can carry the
+    first-read shortfall to exposures with another readout pattern as a
+    delay in seconds, ``(1 - t1_scale) * t1_seconds``, which is what the
+    data show it to be (0.6 s on NIRCam: BRIGHT1 gives t1_scale 0.94 at a
+    first-group time of 10.7 s, MEDIUM8 gives 1.0 at 48 s).
+    """
     with asdf.open(path, mode="rw") as handle:
         tree = handle.tree
         tree["t1_scale"] = float(t1_scale)
+        tree["t1_seconds"] = None if t1_seconds is None else float(t1_seconds)
         tree["reset_offset"] = float(reset_offset)
         tree["t1_scale_channels"] = None if t1_scale_channels is None else [float(v) for v in t1_scale_channels]
         tree["reset_offset_channels"] = None if reset_offset_channels is None else [float(v) for v in reset_offset_channels]
@@ -396,8 +409,9 @@ def update_timing(path, t1_scale, reset_offset, t1_scale_channels=None, reset_of
             channels = f"; per channel t1_scale {[round(float(v), 4) for v in t1_scale_channels]}"
         add_history(
             handle,
-            f"First-read timing from {source}: t1_scale {float(t1_scale):.4f}, "
-            f"reset_offset {float(reset_offset):.2f} DN{channels}",
+            f"First-read timing from {source}: t1_scale {float(t1_scale):.4f}"
+            + ("" if t1_seconds is None else f" at a first-group time of {float(t1_seconds):.2f} s")
+            + f", reset_offset {float(reset_offset):.2f} DN{channels}",
         )
         handle.update()
 
@@ -440,15 +454,14 @@ def calibrate(files, output, max_groups=None):
         model.close()
         inputs.append((pedestal, name, path))
 
-    superbias = reference_superbias([name for _pedestal, name, _path in inputs])
+    names = sorted({name for _pedestal, name, _path in inputs if name is not None})
+    superbias = reference_superbias(names)
     log.info(f"Superbias of the calibration: {superbias}")
-    stacks = []
-    for pedestal, name, path in inputs:
-        if superbias is not None and name is not None and name != superbias:
-            # this dark had another superbias subtracted; express its pedestal relative to the reference
-            pedestal = pedestal + superbias_difference(name, superbias, pedestal.shape[-2:])
-            log.info(f"{os.path.basename(path)}: pedestal moved from superbias {name} to {superbias}")
-        stacks.append(remove_channel_offsets(pedestal, fastaxis, slowaxis))
+    if len(names) > 1:
+        # A superbias tracks the reset level of its epoch, so each dark's pedestal is kept as the residual
+        # against its own superbias; adding the difference of the references would add the drift back.
+        log.warning(f"The darks had different superbias files subtracted ({', '.join(names)}); residuals stacked as they are")
+    stacks = [remove_channel_offsets(pedestal, fastaxis, slowaxis) for pedestal, _name, _path in inputs]
     pedestals = np.concatenate(stacks, axis=0)
     sigma_b, mean, count, scatter = sigma_b_from_pedestals(pedestals, read_noise=read_noise, nframes=nframes)
     log.info(
@@ -458,7 +471,8 @@ def calibrate(files, output, max_groups=None):
         f"from {count.max()} integrations"
     )
     write_calibration(
-        output, sigma_b, mean, count, detector, files, scatter=scatter, read_noise=read_noise, superbias=superbias
+        output, sigma_b, mean, count, detector, files, scatter=scatter, read_noise=read_noise, superbias=superbias,
+        superbias_inputs=names,
     )
     return sigma_b, mean, count
 
