@@ -241,6 +241,21 @@ def _snowblind_version():
         return "dev"
 
 
+def software_entry():
+    """The ``software`` record for ASDF history entries written by snowblind."""
+    return {
+        "name": "snowblind",
+        "version": _snowblind_version(),
+        "homepage": "https://github.com/mpi-astronomy/snowblind",
+        "author": "James E. Davies",
+    }
+
+
+def add_history(handle, description):
+    """Add a history entry to an ASDF file handle, naming snowblind as the software."""
+    handle.add_history_entry(description, software=software_entry())
+
+
 def superbias_basename(name):
     """Base name of a reference file as stored in ``meta.ref_file`` (``crds://`` prefix and directories removed)."""
     if name is None:
@@ -304,19 +319,34 @@ def write_calibration(
         },
     }
     with asdf.AsdfFile(tree) as handle:
+        add_history(
+            handle,
+            f"Reset-level calibration for {detector} from {int(count.max())} dark integrations of "
+            f"{', '.join(os.path.basename(f) for f in input_files)} (refpix {refpix_algorithm}, superbias {superbias}): "
+            f"median sigma_b {float(np.nanmedian(sigma_b)):.2f} DN",
+        )
         handle.write_to(path)
 
 
 def update_timing(path, t1_scale, reset_offset, t1_scale_channels=None, reset_offset_channels=None, provenance=None):
-    """Rewrite a calibration file with new first-read timing parameters, keeping everything else."""
-    tree = read_calibration(path)
-    tree["t1_scale"] = float(t1_scale)
-    tree["reset_offset"] = float(reset_offset)
-    tree["t1_scale_channels"] = None if t1_scale_channels is None else [float(v) for v in t1_scale_channels]
-    tree["reset_offset_channels"] = None if reset_offset_channels is None else [float(v) for v in reset_offset_channels]
-    tree["timing_provenance"] = provenance
-    with asdf.AsdfFile(tree) as handle:
-        handle.write_to(path)
+    """Rewrite a calibration file's first-read timing parameters in place, keeping everything else including its history."""
+    with asdf.open(path, mode="rw") as handle:
+        tree = handle.tree
+        tree["t1_scale"] = float(t1_scale)
+        tree["reset_offset"] = float(reset_offset)
+        tree["t1_scale_channels"] = None if t1_scale_channels is None else [float(v) for v in t1_scale_channels]
+        tree["reset_offset_channels"] = None if reset_offset_channels is None else [float(v) for v in reset_offset_channels]
+        tree["timing_provenance"] = provenance
+        source = provenance.get("file", "unknown data") if isinstance(provenance, dict) else "unknown data"
+        channels = ""
+        if t1_scale_channels is not None:
+            channels = f"; per channel t1_scale {[round(float(v), 4) for v in t1_scale_channels]}"
+        add_history(
+            handle,
+            f"First-read timing from {source}: t1_scale {float(t1_scale):.4f}, "
+            f"reset_offset {float(reset_offset):.2f} DN{channels}",
+        )
+        handle.update()
 
 
 def read_calibration(path):

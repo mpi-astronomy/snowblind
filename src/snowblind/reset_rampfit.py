@@ -25,7 +25,7 @@ from stdatamodels.jwst.datamodels import dqflags
 
 from . import readout
 from .likely_fit_reset import MIN_NGROUPS, likely_ramp_fit_reset, likely_ramp_fit_reset_blocks
-from .reset_calib import read_calibration, superbias_basename
+from .reset_calib import add_history, read_calibration, superbias_basename
 
 __all__ = ["ResetRampFitStep", "write_resetfit"]
 
@@ -347,4 +347,9 @@ def write_resetfit(path, integ_info, sigma_b, t1_scale, detector, reset_level=0.
         "d0_chisq": float(np.mean(resid[finite] ** 2)) if finite.any() else float("nan"),
     }
     with asdf.AsdfFile(tree) as handle:
+        add_history(
+            handle,
+            f"Reset-anchored likelihood fit diagnostics for {detector}: sigma_b median "
+            f"{float(np.nanmedian(sigma_b)):.2f} DN, t1_scale {float(t1_scale):.4f}",
+        )
         handle.write_to(path)

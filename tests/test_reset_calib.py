@@ -204,3 +204,40 @@ def test_update_timing_keeps_sigma_b(tmp_path):
     assert tree["t1_scale"] == 0.9
     assert tree["reset_offset"] == -3.5
     assert tree["t1_scale_channels"] == [0.9, 0.91, 0.89, 0.9]
+
+
+def test_write_calibration_adds_history_entry_naming_snowblind(tmp_path):
+    """write_calibration writes one ASDF history entry whose software name is snowblind and whose text names the detector."""
+    import asdf
+
+    calib = tmp_path / "nrca1_reset_calib.asdf"
+    write_calibration(
+        calib, np.full((8, 8), 12.0, dtype=np.float32), np.zeros((8, 8), dtype=np.float32),
+        np.full((8, 8), 10, dtype=np.int32), "NRCA1", ["dark_uncal.fits"],
+    )
+
+    with asdf.open(str(calib)) as handle:
+        entries = handle.get_history_entries()
+    assert len(entries) == 1
+    assert entries[0]["software"]["name"] == "snowblind"
+    assert "NRCA1" in entries[0]["description"]
+
+
+def test_update_timing_keeps_history_and_adds_entry(tmp_path):
+    """update_timing on a calibration with one history entry leaves two, the second naming the timing source file."""
+    import asdf
+
+    from snowblind.reset_calib import update_timing
+
+    calib = tmp_path / "nrca1_reset_calib.asdf"
+    write_calibration(
+        calib, np.full((8, 8), 12.0, dtype=np.float32), np.zeros((8, 8), dtype=np.float32),
+        np.full((8, 8), 10, dtype=np.int32), "NRCA1", ["dark_uncal.fits"],
+    )
+
+    update_timing(calib, 0.9, -3.0, provenance={"file": "field_uncal.fits"})
+
+    with asdf.open(str(calib)) as handle:
+        entries = handle.get_history_entries()
+    assert len(entries) == 2
+    assert "field_uncal.fits" in entries[1]["description"]
