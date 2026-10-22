@@ -12,6 +12,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+from stdatamodels.jwst import datamodels  # noqa: E402
 
 from snowblind.metrics import robust_sigma  # noqa: E402
 from snowblind.noise_spectrum import log_binned_spectrum  # noqa: E402
@@ -306,16 +307,21 @@ def dark_rate_images_full(panels_dir=RATE_PANELS, label="NRCA1 dark", suffix="")
 
 
 FIELD_PANELS = "results/2026-10-21_field_panels_v4"
+# field panel sets: (panel root, detector, field label, file suffix, description of the jwst panel,
+# whether to divide every rate by the flat for display and statistics)
+FIELD_PANEL_SETS = [
+    (FIELD_PANELS, "NRCA1", "Omega Cen", "nrca1", "median, flat applied, as run\nfor this program", False),
+    (FIELD_PANELS, "NRCALONG", "Omega Cen", "nrcalong", "median, flat applied, as run\nfor this program", False),
+    ("results/2026-10-22_ceers_panels_v5", "NRCALONG", "CEERS", "ceers_nrcalong", "median, flat applied", True),
+]
 
 
-def _field_panels(detector):
+def _field_panels(root, detector, jwst_label, flat_fielded=False):
     """Rate images, background mask and display parameters for one detector of the field panels."""
-    from stdatamodels.jwst import datamodels
-
-    folder = os.path.join(FIELD_PANELS, detector)
+    folder = os.path.join(root, detector)
     panels = [
         ("sirs_ols.npz", "SIRS refpix, no cleaning,\nOLS_C (pipeline default)"),
-        ("sirs_jwst_usage_ols.npz", "SIRS + jwst clean_flicker_noise\n(median, flat applied, as run\nfor this program), OLS_C"),
+        ("sirs_jwst_usage_ols.npz", f"SIRS + jwst clean_flicker_noise\n({jwst_label}), OLS_C"),
         ("sirs_stream_clean_ols.npz", "SIRS + snowblind stream_clean\n(median background), OLS_C"),
         ("sirs_stream_clean_reset.npz", "SIRS + snowblind stream_clean\n(median background),\nsnowblind reset_rampfit"),
     ]
@@ -325,28 +331,39 @@ def _field_panels(detector):
         background = mask_model.data.astype(bool)
     with open(os.path.join(folder, "panels.json")) as handle:
         info = json.load(handle)
+    flat = 1.0
+    if flat_fielded:
+        from jwst.flatfield import FlatFieldStep
+
+        with datamodels.open(os.path.join(folder, "stream_clean_mask.fits")) as mask_model:
+            flat_path = FlatFieldStep().get_reference_file(mask_model, "flat")
+        with datamodels.FlatModel(flat_path) as flat_model:
+            flat = np.array(flat_model.data, dtype=np.float32)
+            flat[(flat_model.dq & 1) > 0] = np.nan
+        info["flat"] = os.path.basename(flat_path)
     reference = np.load(os.path.join(folder, "sirs_ols.npz"))
-    good = background & np.isfinite(reference["rate"]) & (reference["dq"] == 0)
+    ref_rate = reference["rate"] / flat
+    good = background & np.isfinite(ref_rate) & (reference["dq"] == 0)
     good[:4] = good[-4:] = False
     good[:, :4] = good[:, -4:] = False
-    sky = np.nanmedian(reference["rate"][good])
-    sigma = robust_sigma(reference["rate"][good])
-    stats = good & (np.abs(reference["rate"] - sky) < 5 * sigma)
-    return folder, panels, info, sky, 2.5 * sigma, stats
+    sky = np.nanmedian(ref_rate[good])
+    sigma = robust_sigma(ref_rate[good])
+    stats = good & (np.abs(ref_rate - sky) < 5 * sigma)
+    return folder, panels, info, sky, 2.5 * sigma, stats, flat
 
 
-def field_rate_images(detector):
+def field_rate_images(root, detector, field, suffix, jwst_label, flat_fielded=False):
     """The dark_rate_images layout on an Omega Cen exposure: central 512 x 512 pixels, 1 x 4."""
-    found = _field_panels(detector)
+    found = _field_panels(root, detector, jwst_label, flat_fielded)
     if found is None:
         return
-    folder, panels, info, sky, width, stats = found
+    folder, panels, info, sky, width, stats, flat = found
     region = (slice(768, 1280), slice(768, 1280))
     scale = 14.5 / 8.0
     base = plt.rcParams["font.size"]
     fig, axes = plt.subplots(1, 4, figsize=(14.5, 5.3), dpi=150, constrained_layout=True)
     for ax, (name, title) in zip(axes, panels):
-        rate = np.load(os.path.join(folder, name))["rate"]
+        rate = np.load(os.path.join(folder, name))["rate"] / flat
         shown = np.where(np.isfinite(rate), rate, sky)[region]
         image = ax.imshow(shown, origin="lower", cmap="viridis", vmin=sky - width, vmax=sky + width, interpolation="nearest")
         cut = np.where(stats, rate, np.nan)[region]
@@ -362,26 +379,27 @@ def field_rate_images(detector):
     colorbar.set_label("DN/s", fontsize=base * scale * 0.6)
     colorbar.ax.tick_params(labelsize=base * scale * 0.6)
     fig.suptitle(
-        f"Omega Cen, {detector} {info['filter']}, {info['ngroups']} groups, central 512 x 512 pixels, "
-        f"sky {sky:.2f} DN/s, stretch +- {width:.3f} DN/s about the sky\n",
-        fontsize=base * scale * 0.85,
+        f"{field}, {detector} {info['filter']} {info.get('readpatt', '')}, {info['ngroups']} groups"
+        + (", flat-fielded" if flat_fielded else "") + ", 512 x 512 cutout, "
+        f"sky {sky:.2f} DN/s, stretch +- {width:.3f} DN/s\n",
+        fontsize=base * scale * 0.75,
     )
-    fig.savefig(os.path.join(OUT, f"field_rate_images_{detector.lower()}.png"), dpi=150)
+    fig.savefig(os.path.join(OUT, f"field_rate_images_{suffix}.png"), dpi=150)
     plt.close(fig)
 
 
-def field_rate_images_full(detector):
+def field_rate_images_full(root, detector, field, suffix, jwst_label, flat_fielded=False):
     """The dark_rate_images_full layout on an Omega Cen exposure: full frame binned 2 x 2, 2 x 2 panels."""
-    found = _field_panels(detector)
+    found = _field_panels(root, detector, jwst_label, flat_fielded)
     if found is None:
         return
-    folder, panels, info, sky, width, stats = found
+    folder, panels, info, sky, width, stats, flat = found
     binning = 2
     scale = 14.5 / 8.0
     base = plt.rcParams["font.size"]
     fig, axes = plt.subplots(2, 2, figsize=(14.5, 15.3), dpi=150, constrained_layout=True)
     for ax, (name, title) in zip(axes.ravel(), panels):
-        rate = np.load(os.path.join(folder, name))["rate"]
+        rate = np.load(os.path.join(folder, name))["rate"] / flat
         shown = np.where(np.isfinite(rate), rate, sky)
         nrows, ncols = (shown.shape[0] // binning) * binning, (shown.shape[1] // binning) * binning
         binned = shown[:nrows, :ncols].reshape(nrows // binning, binning, ncols // binning, binning).mean(axis=(1, 3))
@@ -400,12 +418,13 @@ def field_rate_images_full(detector):
     colorbar.set_label("DN/s", fontsize=base * scale * 0.6)
     colorbar.ax.tick_params(labelsize=base * scale * 0.6)
     fig.suptitle(
-        f"Omega Cen, {detector} {info['filter']}, {info['ngroups']} groups, full frame binned {binning} x {binning} "
+        f"{field}, {detector} {info['filter']} {info.get('readpatt', '')}, {info['ngroups']} groups"
+        + (", flat-fielded" if flat_fielded else "") + f", full frame binned {binning} x {binning} "
         f"for display, stretch +- {width:.3f} DN/s about the sky\n",
         fontsize=base * scale * 0.85,
     )
     fig.savefig(
-        os.path.join(OUT, f"field_rate_images_{detector.lower()}_full.jpg"), dpi=150,
+        os.path.join(OUT, f"field_rate_images_{suffix}_full.jpg"), dpi=150,
         pil_kwargs={"quality": 88, "optimize": True},
     )
     plt.close(fig)
@@ -421,7 +440,7 @@ if __name__ == "__main__":
     for panels_dir, label, suffix in DARK_PANEL_SETS:
         dark_rate_images(panels_dir, label, suffix)
         dark_rate_images_full(panels_dir, label, suffix)
-    for detector in ("NRCA1", "NRCALONG"):
-        field_rate_images(detector)
-        field_rate_images_full(detector)
+    for root, detector, field, suffix, jwst_label, flat_fielded in FIELD_PANEL_SETS:
+        field_rate_images(root, detector, field, suffix, jwst_label, flat_fielded)
+        field_rate_images_full(root, detector, field, suffix, jwst_label, flat_fielded)
     print("figures written to", OUT)

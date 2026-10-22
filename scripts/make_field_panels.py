@@ -43,8 +43,15 @@ def main():
     parser.add_argument("--calib", required=True, help="reset calibration ASDF for this detector")
     parser.add_argument("--out", default=None)
     parser.add_argument(
-        "--background", default="integration_model",
-        help="background_method for stream_clean: integration_model (default), median (flat sky, as the jwst run), or none",
+        "--background", default="median",
+        help="comma-separated background settings for stream_clean: none, median, box32, box256, ... "
+        "(boxN is the fitted model with an N-pixel box); the first one also gets the reset fit and the "
+        "unsuffixed sirs_stream_clean_* files the figures read",
+    )
+    parser.add_argument(
+        "--apply-flat", action="store_true",
+        help="stream_clean divides by the flat before fitting and multiplies back after; needed on sky fields, "
+        "where the background is the sky times the detector response",
     )
     args = parser.parse_args()
 
@@ -66,27 +73,42 @@ def main():
     jwst_clean.close()
     rate.close()
 
-    background = None if args.background.lower() == "none" else args.background
-    cleaned = StreamCleanStep.call(
-        sirs, save_mask=True, output_dir=out_dir, background_method=background, reset_calib=args.calib
-    )
-    masks = sorted(glob.glob(os.path.join(out_dir, "*_mask.fits")))
-    if masks:
-        os.replace(masks[-1], os.path.join(out_dir, "stream_clean_mask.fits"))
-    rate, _ = RampFitStep.call(cleaned, algorithm="OLS_C")
-    save(out_dir, "sirs_stream_clean_ols", rate)
-    rate.close()
-    rate, _ = ResetRampFitStep.call(cleaned, reset_calib=args.calib, use_pedestal_mean=True, output_dir=out_dir)
-    save(out_dir, "sirs_stream_clean_reset", rate)
-    rate.close()
+    settings = [name.strip() for name in args.background.split(",")]
+    for index, name in enumerate(settings):
+        if name.lower() == "none":
+            kwargs = {"background_method": None}
+        elif name.startswith("box"):
+            size = int(name[3:])
+            kwargs = {"background_method": "integration_model", "background_box_size": (size, size)}
+        else:
+            kwargs = {"background_method": name}
+        cleaned = StreamCleanStep.call(
+            sirs, save_mask=index == 0, output_dir=out_dir, reset_calib=args.calib, apply_flat_field=args.apply_flat,
+            **kwargs,
+        )
+        if index == 0:
+            masks = sorted(glob.glob(os.path.join(out_dir, "*_mask.fits")))
+            if masks:
+                os.replace(masks[-1], os.path.join(out_dir, "stream_clean_mask.fits"))
+        rate, _ = RampFitStep.call(cleaned, algorithm="OLS_C")
+        save(out_dir, f"sirs_stream_clean_{name}_ols", rate)
+        if index == 0:
+            save(out_dir, "sirs_stream_clean_ols", rate)
+        rate.close()
+        if index == 0:
+            rate, _ = ResetRampFitStep.call(cleaned, reset_calib=args.calib, use_pedestal_mean=True, output_dir=out_dir)
+            save(out_dir, "sirs_stream_clean_reset", rate)
+            rate.close()
+        cleaned.close()
 
     with open(os.path.join(out_dir, "panels.json"), "w") as handle:
         json.dump(
             {
                 "file": os.path.basename(args.file), "detector": detector, "calib": args.calib,
                 "ngroups": int(sirs.data.shape[1]), "filter": sirs.meta.instrument.filter,
+                "readpatt": sirs.meta.exposure.readpatt,
                 "jwst_step": "fit_method=median, fit_by_channel=False, apply_flat_field=True, mask_science_regions=True",
-                "stream_clean_background": args.background,
+                "stream_clean_backgrounds": settings, "stream_clean_apply_flat": args.apply_flat,
             },
             handle,
         )

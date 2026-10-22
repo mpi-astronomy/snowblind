@@ -2114,3 +2114,180 @@ at the white-noise floor at every scale (white prediction at 101
 pixels 0.0002). The figures (`aperture_scatter.png`,
 `channel_spectra.png`) now read this run, with the no-background curve
 added.
+
+### 2026-10-22: CEERS F444W MEDIUM8, NRCALONG exposure 00001 (program 1345, 2022-06-22, 9 groups)
+
+`scripts/make_field_panels.py` now takes a list of background settings
+(`--background median,box32,box256,none`) and `--apply-flat`;
+`scripts/compare_backgrounds.py --flat` measures every chain on
+flat-fielded rates (the CRDS flat of the exposure divided out) with a
+large-scale change metric (scatter of 128-pixel block means of the
+change against SIRS over the sky pixels, as a fraction of the sky).
+
+Three things learnt, two of them about our own code.
+
+1. Measure and compare after flat-fielding (James's point). The LW
+rate image before the flat carries the detector's response, a 10
+percent large-scale pattern that dominates any row or column statistic
+and that a scalar background treats as slow structure. Pre-flat the
+numbers were meaningless: the jwst step (which applies the flat before
+fitting) seemed to do nothing (row-mean 0.0098 against 0.0097), and the
+stream clean with a scalar median seemed to win (0.0007) while in
+fact removing the response pattern (large-scale change 4.7 percent of
+the sky; the full-frame figure showed it plainly). On flat-fielded
+rates, sky 0.679 DN/s, full frame, DN/s:
+
+| chain | row-mean | col-mean | sky change | large-scale change | p5 / p95 |
+|---|---|---|---|---|---|
+| SIRS, OLS_C | 0.0014 | 0.0016 | 0 | 0 | 0 |
+| jwst median, flat applied | 0.0006 | 0.0016 | +0.03% | 0.11% | -0.002 / +0.002 |
+| stream_clean, median, no flat | 0.0099 | 0.0221 | +0.40% | 4.74% | -0.039 / +0.048 |
+| stream_clean, box32, no flat | 0.0017 | 0.0032 | +0.01% | 0.10% | -0.008 / +0.008 |
+| stream_clean, box256, no flat | 0.0063 | 0.0052 | -0.13% | 1.35% | -0.020 / +0.019 |
+| stream_clean, none, no flat | 0.0011 | 0.0016 | -100% | | sky removed |
+| stream_clean, flat applied, median | 0.0005 | 0.0004 | -0.07% | 0.22% | -0.005 / +0.003 |
+| stream_clean, flat applied, box32 | 0.0011 | 0.0015 | -0.03% | 0.04% | -0.003 / +0.003 |
+| stream_clean, flat applied, box256 | 0.0008 | 0.0013 | -0.04% | 0.13% | -0.004 / +0.003 |
+| stream_clean, flat applied, box512 | 0.0006 | 0.0007 | -0.06% | 0.20% | -0.005 / +0.003 |
+
+With the flat applied the scalar median is the best setting again:
+3 times below SIRS in row means and 4 times in column means, 3 times
+below the jwst step in column means (which the row median cannot
+touch), large-scale structure kept to 0.2 percent and the per-pixel
+change within +-0.005 DN/s. The background that a sky field needs is
+the sky times the detector response, so `apply_flat_field` must be on
+for sky fields; the step had it as an option, off by default, and the
+Omega Cen runs got away without it because stars dominated the sky.
+`background_method=None` removes the sky entirely (the filter's unit
+gain at zero frequency takes the channel mean): darks only. On this
+exposure the 1/f left by SIRS is small to begin with (9 groups of 107
+s average it down), so the gain over SIRS is a factor 3 to 4 rather
+than the factor 10 of the darks.
+
+2. The superbias correction of 2026-10-22 was wrong and is withdrawn.
+The 2022 exposure had superbias 0220 subtracted, the calibration darks
+0443, and the two references differ by 11700 DN (median; 745 DN pixel
+scatter): the superbias tracks the reset level of its epoch. Adding the
+difference to the pedestal map put the reset prior 11400 DN above the
+data. The fit survived because the likelihood jump search rejected the
+reset point for 99 percent of pixels (used fraction 0.0087), but the
+432 pixels saturated from group 2, which have no other anchor, got
+rates off by hundreds of DN/s. The residual against each epoch's own
+superbias is the quantity that transfers; the step now uses the map
+as it is and warns when the epochs differ (the per-pixel part of the
+residual is untested across epochs). The same alignment was removed
+from the calibration tool; for NIRISS, whose two darks had different
+references (0252 and 0257, 18 DN apart), the unaligned two-dark file
+of 2026-10-20 (sigma_b 24.3) is adopted as the calibration, since the
+darks have left the disk. The step's messages now reach the stpipe
+log (`get_stpipe_loggers` adds "snowblind"), so the warning is visible.
+
+3. The first-read shortfall is a delay in seconds, not a fraction.
+On MEDIUM8 (first-group time 48.3 s) the two-parameter fit gives
+k = 1.009 (per channel 0.996 to 1.026) and b = -3.7 DN, against
+k = 0.943 on BRIGHT1 (10.7 s). A fixed delay of (1 - 0.943) x 10.7 =
+0.61 s predicts k = 0.987 at 48.3 s, within the MEDIUM8 errors.
+The calibration now stores `t1_seconds`, the first-group time of the
+timing exposure (10.73677 s for the 6154 BRIGHT1 files, backfilled
+into all eleven files), and the step converts the scale to the
+exposure's own first-group time (`rescale_t1`). The reset offset b is
+the same few DN on both patterns.
+
+Panels rerun with the flat applied in stream_clean
+(`results/2026-10-22_ceers_panels_v3`, `--background median,box32,box256
+--apply-flat`), measured on flat-fielded rates, sky 0.678 DN/s:
+
+| chain | full row | full col | cutout row | cutout col | sky change | large-scale | p5 / p95 | finite |
+|---|---|---|---|---|---|---|---|---|
+| SIRS, OLS_C | 0.0013 | 0.0015 | 0.0014 | 0.0016 | 0 | 0 | 0 | 4146621 |
+| jwst median, flat applied, OLS_C | 0.0006 | 0.0015 | 0.0013 | 0.0016 | +0.03% | 0.11% | -0.002 / +0.002 | 4146621 |
+| stream_clean, flat, median, OLS_C | 0.0003 | 0.0003 | 0.0006 | 0.0010 | -0.06% | 0.22% | -0.005 / +0.003 | 4146621 |
+| stream_clean, flat, box32, OLS_C | 0.0010 | 0.0014 | 0.0009 | 0.0011 | -0.03% | 0.04% | -0.003 / +0.003 | 4146621 |
+| stream_clean, flat, box256, OLS_C | 0.0007 | 0.0011 | 0.0007 | 0.0011 | -0.04% | 0.13% | -0.004 / +0.003 | 4146621 |
+| stream_clean, flat, median, reset_rampfit | 0.0011 | 0.0008 | 0.0014 | 0.0013 | +0.01% | 0.23% | -0.008 / +0.008 | 4147610 |
+
+The scalar median with the flat applied is the configuration for this
+field: 4 to 5 times below SIRS and 2 (rows) to 5 (columns) times below
+the jwst step, with the large-scale structure kept to 0.2 percent. The
+reset check with the corrected prior and the delay model
+(`results/2026-10-22_ceers_reset_field_v2`): t1_scale carried to
+0.9874, used-reset fraction 0.846 (from 0.0087), all 432 pixels
+saturated from group 2 fitted, median rate 0.68993 against 0.69007
+(LIKELY) and 0.6893 (OLS_C); the warning about the superbias epochs
+and the timing-carry line now appear in the step log. Open point: on
+this exposure the reset fit has more row and column structure than
+OLS_C on the same cleaned ramp (0.0011 / 0.0008 against 0.0003 /
+0.0003), which did not happen on Omega Cen; the suspect is the
+pedestal map prior across superbias epochs, whose per-pixel residual
+may carry row-coherent differences (the two superbias references
+differ with 12.9 DN of row-mean scatter). Map prior against scalar
+prior under test.
+
+Order of operations with the flat (James): the background is measured
+on the flat-fielded difference, where the sky is smooth and the
+detector response is not, but what is subtracted from the raw
+difference is that background times the flat, and the noise fit runs
+in raw DN, where the 1/f noise is additive and does not pass through
+the quantum efficiency. Until now the step did what the jwst step
+does, divide the whole difference by the flat, fit and filter there,
+and multiply back, which modulates the noise estimate by the flat (a
+second-order error, invisible at the CEERS tails of +-0.005 DN/s, but
+wrong in principle). `prepare_difference` now returns a raw-DN
+residual and a raw-DN background (`background * flat`); the
+integration model, fitted to the flat-fielded slope, is multiplied by
+the flat at the same point; `clean_difference` no longer multiplies
+the result by the flat. Pixels where the flat is unusable are treated
+as missing. Two tests cover it. The CEERS panels are rerun with it.
+
+Reset-fit row structure on CEERS, prior test (scratch
+`ceers/prior_variants.py`, same cleaned ramp, flat-fielded sky pixels):
+OLS_C 0.0002 / 0.0002; reset fit with the map prior 0.0012 / 0.0009,
+with a scalar prior 0.0012 / 0.0009, with the map not high-passed
+0.0012 / 0.0009. So the prior is not the source; the structure enters
+through the first difference (group 0 minus prior) itself. On this
+ramp the reset point has weight: sigma_b 17.6 DN against a per-group
+scatter of about 9 DN (read noise over 8 frames plus the sky's Poisson
+noise over 107 s), so about a quarter of a group at the largest lever
+arm, and a row-coherent error of 2 DN in that difference is enough for
+0.001 DN/s. Candidates: residual 1/f of the reset frame itself after
+the first-read cleaning, or the 15 percent of pixels whose reset point
+the jump search rejects, in row-correlated patches. At 0.2 percent of
+the sky on sky pixels it is second order for this field, where the
+reset point only matters for the 432 saturated cores; open item,
+re-examine on a short ramp with a bright sky where the reset point
+weighs more.
+
+Panels rerun with the raw-DN flat formulation
+(`results/2026-10-22_ceers_panels_v4`): identical to v3 within 0.0001
+DN/s in every entry (median: rows 0.0003, columns 0.0002, large-scale
+0.22 percent, tails -0.0047 / +0.0033), as expected for a second-order
+change. The figures `field_rate_images_ceers_nrcalong{,_full}` read
+v4, displayed and measured flat-fielded.
+
+### 2026-10-22: the ZEROFRAME was not cleaned
+
+James suggested the noisy reset frame against the 8-frame-averaged
+first group as the source of the reset fit's row structure on CEERS.
+The frame in question is the ZEROFRAME: for frame-averaged readouts
+the pipeline carries the first frame of the first group separately,
+and the likelihood fit (`use_zeroframe`, default on) peels it out of
+the first group and uses it as its own resultant. The stream clean
+only touched the group cube, so that frame kept the full 1/f banding
+of a single read and the reset fit put it into the rate. BRIGHT1 has
+no separate zeroframe (the first group is the first frame), which is
+why Omega Cen never showed it. Test on the same cleaned CEERS ramp,
+flat-fielded sky pixels, row / column scatter: OLS_C 0.0003 / 0.0002;
+reset fit with the zeroframe 0.0012 / 0.0009, without it 0.0003 /
+0.0002; with sigma_b inflated to 50 DN the same two numbers, so the
+reset weight is irrelevant. Fix: stream_clean cleans the zeroframe as
+it cleans the first group, as a difference against the reset prior,
+with the background scaled to one frame time, keeping the pipeline's
+zero marker for unusable zeroframe pixels.
+
+Verified (`results/2026-10-22_ceers_panels_v5`, median background, flat
+applied, zeroframe cleaned): reset fit row / column scatter 0.0003 /
+0.0002, equal to OLS_C, with 4147611 finite pixels against 4146621;
+sky change +0.01 percent, large-scale 0.23 percent, tails -0.0074 /
++0.0074 (wider than OLS_C's -0.0047 / +0.0033 because the reset point
+adds the kTC-limited first difference to every pixel's fit, a per-pixel
+white term, not structure). The CEERS figures read v5.

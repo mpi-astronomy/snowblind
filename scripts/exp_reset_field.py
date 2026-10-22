@@ -199,6 +199,7 @@ def main():
             b_faint,
             t1_scale_channels=[c["k"] for c in per_channel_fit],
             reset_offset_channels=[c["b"] for c in per_channel_fit],
+            t1_seconds=float(t1),
             provenance={
                 "file": os.path.basename(args.file),
                 "k": "slope of R1 - a t1 against a t1 over first differences of 50 to 2000 DN, no flags",

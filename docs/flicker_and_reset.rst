@@ -621,6 +621,67 @@ residual, so it cannot shift the sky) has tails 40 percent shorter at
 model from the dithered mosaic was tried and does not help on this
 field (Open items): the blot's own errors are larger than the noise.
 
+A deep field: CEERS
+-------------------
+
+The same comparison on a CEERS exposure (program 1345, NRCALONG F444W,
+MEDIUM8, 9 groups of 107 s, observed 2022-06-22): a sparse field of
+galaxies on a bright, smooth sky, the common JWST case. Three things
+differ from the dark and Omega Cen runs. The images are compared after
+flat-fielding, because the long-wave rate image before the flat carries
+the detector's response, a 10 percent large-scale pattern that
+dominates any row or column statistic. The step applies the flat
+before measuring its background and subtracts that background times
+the flat from the raw difference, since the background of a sky field
+is the sky times the detector response, while the 1/f noise is additive
+in raw DN and is filtered there. And the background is the scalar
+median: with the flat applied the sky is smooth, and the box models
+hand back the slow 1/f for no gain.
+
+.. figure:: figures/field_rate_images_ceers_nrcalong.png
+   :width: 100%
+
+   CEERS on NRCALONG, flat-fielded, central 512 by 512 pixels, stretch
+   +- 2.5 sigma of the sky pixels about the sky. Over the full frame the
+   row-mean scatter of the sky pixels goes from 0.0013 DN/s (SIRS) to
+   0.0006 with the jwst step and 0.0003 with the stream clean, the
+   column-mean scatter from 0.0015 to 0.0015 and 0.0002: the row median
+   cannot see the per-column offsets, the stream clean removes them.
+   The sky changes by -0.06 percent, its large-scale structure by 0.2
+   percent, and the per-pixel change lies within -0.005 and +0.003 DN/s.
+   On a 9-group ramp of 107 s groups the 1/f left by SIRS is small to
+   begin with, so the gain is a factor 4 to 5 rather than the factor 10
+   of the darks.
+
+.. figure:: figures/field_rate_images_ceers_nrcalong_full.jpg
+   :width: 100%
+
+   The same on the full frame, binned 2 by 2 for display.
+
+The exposure predates the calibration darks by three years and had a
+different superbias subtracted (reference 0220 against 0443, 11700 DN
+apart). The reset step reports the mismatch and uses the pedestal map
+as the residual against the exposure's own superbias, which is the
+quantity that transfers between epochs; and it carries the first-read
+timing from the calibration's 10.7 s first-group time to this
+pattern's 48.3 s as a fixed delay of 0.6 s, which the two-parameter fit
+on this exposure confirms (k of 1.009 against 0.987 predicted, within
+its errors). With that, the reset point is used for 85 percent of
+pixels, all 432 pixels saturated from group 2 get a rate, and the
+median rate agrees with the likelihood fit to 0.02 percent.
+
+This exposure also found a frame the step had not been cleaning. For
+frame-averaged readouts the pipeline carries the first frame of the
+first group separately, the ZEROFRAME, and the likelihood fit uses it
+as a resultant of its own; BRIGHT1 has no separate zeroframe, so Omega
+Cen never exercised it. Left uncleaned it carried the full 1/f banding
+of a single read into the reset fit, which showed 0.0011 DN/s of row
+structure against 0.0002 for OLS_C on the same cleaned ramp. The step
+now cleans the zeroframe as it cleans the first read, as a difference
+against the reset prior with the background scaled to one frame time,
+and the reset fit matches OLS_C on this field (0.0003 and 0.0002 DN/s)
+while fitting 990 more pixels.
+
 What this builds on
 -------------------
 
