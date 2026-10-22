@@ -3,9 +3,9 @@ Algorithms for cleaning JWST data.
  - `SnowblindStep`: mask cosmic ray showers and snowballs
  - `JumpPlusStep`: Propagate JUMP_DET and SATURATED flags in GROUPDQ properly for frame-averaged groups
  - `PersistenceFlagStep`: flag pixels effected by persistence exposure-to-exposure
- - `OpenPixelStep`: flag new open pixels, hot pixels, or open adjacent pixels via self-cal
- - `StreamCleanStep`: remove 1/f (flicker) noise from NIR group data by filtering each output channel's readout stream
- - `ResetRampFitStep`: likelihood ramp fitting with the superbias-subtracted reset level as an extra resultant, so that pixels with a single unsaturated group still get a rate
+ - `OpenPixelStep`: flag new open pixels, hot pixels, or open adjacent pixels via self-cal.  Use with caution.  Needs tuning.
+ - `StreamCleanStep`: remove 1/f (flicker) noise from NIR group data by filtering each output channel's readout stream with a spatial filter tuned to each detector.  More accurate than row and column medians.
+ - `ResetRampFitStep`: likelihood ramp fitting as in the the standard JWST pipeline, but with the superbias-subtracted reset level as an extra resultant at the beginning, so that pixels with a single unsaturated group or ZEROFRAME still get a rate
 
 
 # Installation
@@ -18,15 +18,15 @@ Algorithms for cleaning JWST data.
 
 ## SnowblindStep and JumpPlusStep
 
-The steps in snowblind run like any other pipeline steps.  From the command line you can run `SnowblindStep` (aliased as `snowblind`) on the result file from JumpStep:
+The steps in snowblind run like any other pipeline steps.  From the command line you can run `SnowblindStep` (aliased as `snowblind`) to remove the halos from high-energy CR hits, i.e. "snowballs", on the result file from JumpStep:
 
     strun snowblind jw001234_010203_00001_nrcalong_jump.fits --suffix=snowblind
 
-Or you can run `SnowblindStep` and `JumpPlusStep` as post-hooks after `JumpStep` in a full pipeline, remembering to turn off the default snowball flagging.
+Or you can run `SnowblindStep` and/or `JumpPlusStep` as post-hooks after `JumpStep` in a full pipeline, remembering to turn off the default snowball flagging.
 
     strun calwebb_detector1 jw001234_010203_00001_nrcalong_uncal.fits --steps.jump.post_hooks="snowblind.SnowblindStep","snowblind.JumpPlusStep" --steps.jump.flag_large_events=False
 
-In Python, we can insert `SnowblindStep` and `JumpPlusStep` after `JumpStep` as a post-hook:
+In Python, we can insert `SnowblindStep` and `JumpPlusStep` after `JumpStep` as a post-hook too:
 
 ```python
 from snowblind import SnowblindStep, JumpPlusStep
@@ -45,6 +45,8 @@ steps = {
 
 Detector1Pipeline.call("jw001234_010203_00001_nrcalong_uncal.fits", steps=steps, save_results=True)
 ```
+
+which runs them with their step default parameters.  If you want more flexibility, run each step independently with its individual parameters.
 
 ## PersistenceFlagStep and OpenPixelStep
 
@@ -103,10 +105,10 @@ Both steps work on the `_jump` product and need the reference pixel step run wit
     strun reset_rampfit jw..._nrca1_jump.fits --reset_calib=nrca1_reset_calib.asdf
 
 Both steps build on published work:
-- the SIRS reference-pixel correction (Rauscher, Fixsen and Mosby 2022, JATIS 8, 028002)
-- the CEERS team's masked row and column striping removal (Bagley et al. 2023, ApJL 946, L12)
-- the likelihood ramp fitting of Brandt (2024, PASP, doi:10.1088/1538-3873/ad38d9 and ad38da) as implemented in `stcal`
-- the scene mask follows NoiseChisel (Akhlaghi and Ichikawa 2015, ApJS 220, 1)
-- comparisons are against the jwst `clean_flicker_noise` step, which descends from Chris Willott's image1overf (https://github.com/chriswillott/jwst) and from NSClean (Rauscher 2024, PASP 136, 015001).
+- the SIRS reference-pixel correction ([Rauscher, Fixsen and Mosby 2022, JATIS 8, 028002](https://arxiv.org/abs/2602.02253))
+- the CEERS team's masked row and column striping removal ([Bagley et al. 2023, ApJL 946, L12](https://doi.org/10.3847/2041-8213/acbb08))
+- the likelihood ramp fitting of Brandt (2024, PASP, https://doi.org/10.1088/1538-3873/ad38d9 and https://doi.org/10.1088/1538-3873/ad38da) as implemented in `stcal`
+- the scene mask follows NoiseChisel ([Akhlaghi and Ichikawa 2015, ApJS 220](https://doi.org/10.1088/0067-0049/220/1/1))
+- comparisons are against the jwst `clean_flicker_noise` step, which descends from Chris Willott's image1overf (https://github.com/chriswillott/jwst) and from NSClean ([Rauscher 2024, PASP 136, 015001](https://ui.adsabs.harvard.edu/abs/2024PASP..136a5001R/abstract)).
 
 Please open an issue if you have any problems!

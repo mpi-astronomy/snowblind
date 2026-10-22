@@ -506,10 +506,18 @@ median method over full rows, flat applied before fitting, science
 regions masked, scalar median background. The snowblind panels run
 ``stream_clean`` with the same kind of background, a scalar median, its
 first read cleaned against the reset prior, and otherwise its defaults.
-All panels start from the same SIRS-corrected ramp and the first three
-are fitted with OLS_C; the fourth is fitted with ``reset_rampfit``. The statistics in the titles are over the
-background pixels of the stream_clean scene mask that lie within 5 sigma
-of the sky, which is where faint sources are found.
+To be explicit about the two things the step keeps apart: the
+background that is subtracted before filtering and added back is here a
+single number per difference (``background_method='median'``), which
+was the best choice on this field, ahead of the fitted box model and of
+a scene model from the mosaic (both below); the pixels that feed the
+noise fit are still chosen by the NoiseChisel-style scene mask of
+section 4, which uses its own tiled sky estimate only to find sources
+and never subtracts it from the data. All panels start from the same
+SIRS-corrected ramp and the first three are fitted with OLS_C; the
+fourth is fitted with ``reset_rampfit``. The statistics in the titles
+are over the background pixels of that scene mask that lie within 5
+sigma of the sky, which is where faint sources are found.
 
 .. figure:: figures/field_rate_images_nrca1.png
    :width: 100%
@@ -579,9 +587,47 @@ unmasked wings, and on a field this crowded the scene mask cannot cover
 them all. The ``row_median`` estimator with the new ``anchor_mean``
 option (which gives a median-based estimate the masked mean of the
 residual, so it cannot shift the sky) has tails 40 percent shorter at
-0.0035 DN/s row-mean scatter, still well below the jwst step; the full
-answer is a scene model from the dithered mosaic (Open items), which
-removes the wings before the filter sees them.
+0.0035 DN/s row-mean scatter, still well below the jwst step. A scene
+model from the dithered mosaic was tried and does not help on this
+field (Open items): the blot's own errors are larger than the noise.
+
+What this builds on
+-------------------
+
+Neither step starts from scratch, and the comparisons in this write-up
+are against methods that do most of the work.
+
+* The reference-pixel correction is SIRS, Simple Improved Reference
+  Subtraction (Rauscher, Fixsen and Mosby 2022, JATIS 8, 028002,
+  doi:10.1117/1.JATIS.8.2.028002). Every chain here, including the jwst
+  one, runs on SIRS-corrected ramps, and SIRS is now the Detector1
+  default for NIRCam. ``stream_clean`` removes what SIRS leaves: the
+  1/f within and between the output channels that the reference
+  pixels cannot see, and the per-read even-odd and column offsets.
+* The idea of cleaning rows and columns after masking the sources is
+  the CEERS team's (Bagley et al. 2023, ApJL 946, L12,
+  doi:10.3847/2041-8213/acbb08), who subtract masked row medians per
+  amplifier and masked column medians from the rate images. The
+  per-column offsets of section 3 are that method's column pass moved
+  into the ramp as a mean, so that it stays linear.
+* The jwst ``clean_flicker_noise`` step, the comparison throughout,
+  descends from Chris Willott's image1overf for its median method and
+  from NSClean for its Fourier method, which is also the closest
+  relative of the Wiener clean. image1overf is software without a
+  paper of its own: Willott, C., ``image1overf.py`` in
+  https://github.com/chriswillott/jwst (GPL-3.0), described and
+  recommended on the STScI page on NIRCam 1/f noise removal methods
+  (https://jwst-docs.stsci.edu/known-issues/nircam-known-issues/nircam-1-f-noise-removal-methods).
+  NSClean is Rauscher 2024, PASP 136, 015001,
+  doi:10.1088/1538-3873/ad1b36.
+* The ramp fit is Timothy Brandt's likelihood method (Brandt 2024,
+  PASP, doi:10.1088/1538-3873/ad38d9, and the companion jump-detection
+  paper doi:10.1088/1538-3873/ad38da), as implemented in stcal as the
+  LIKELY algorithm. ``reset_rampfit`` only adds one resultant, the
+  reset level with its own variance and timing, to that machinery.
+* The scene mask follows NoiseChisel (Akhlaghi and Ichikawa 2015,
+  ApJS 220, 1).
+
 
 Observations on stcal and jwst
 ------------------------------
@@ -637,8 +683,26 @@ Open items
   chi-square of 2 points at, needs a brighter or repeated field to measure.
 * The dark and injection experiments on NRCALONG, and a NIRISS field.
 * A scene model from the dithered mosaic, blotted back into each
-  exposure, in place of the per-exposure background model: it would
-  remove the wings of bright stars before the filter sees them (the
-  streaks on Omega Cen) and let the box grow without losing sky.
+  exposure, in place of the per-exposure background model. Tried on
+  Omega Cen NRCA1 (four dithers, Image3 with tweakreg and skymatch
+  skipped, the outlier-detection blots times the flat as the model, the
+  step's ``scene_model`` option): it does not help there. The blot sits
+  5 percent above the exposure on the faintest pixels and its error
+  field on the sky is 0.014 DN/s rms in 16-pixel blocks, larger than
+  the 1/f being removed; the filter's unit gain at zero frequency turns
+  the mean of that error into a sky shift of 2 to 5 percent per channel
+  and its structure into row and column scatter four times that of the
+  scalar background, with star photometry unchanged to 0.2 percent.
+  Re-anchoring the model's level per channel repairs the sky but not the
+  structure; smoothing the blot before use goes the wrong way (a
+  4-pixel Gaussian lifts the sky by 15 percent, since it spreads star
+  light into the sky pixels), and removing the model's row-aligned part,
+  which is the other dithers' residual banding carried through the
+  mosaic, recovers 40 percent of the structure but not the rest. A
+  four-dither drizzled median of an undersampled crowded field is not
+  accurate enough at the slow scales; the route stays open
+  for sparse fields and smooth extended emission, where the blot error
+  is small and the box-size question is the one that matters, and a
+  crowded field would need a PSF-based star model instead.
 * Extended-source photometry has not been tested; the injection used
   compact Gaussians only.
