@@ -1,11 +1,11 @@
-Algorithms for cleaning JWST data.
+# Algorithms for cleaning JWST data
 
- - `SnowblindStep`: mask cosmic ray showers and snowballs
- - `JumpPlusStep`: Propagate JUMP_DET and SATURATED flags in GROUPDQ properly for frame-averaged groups
- - `PersistenceFlagStep`: flag pixels effected by persistence exposure-to-exposure
- - `OpenPixelStep`: flag new open pixels, hot pixels, or open adjacent pixels via self-cal.  Use with caution.  Needs tuning.
- - `StreamCleanStep`: remove 1/f (flicker) noise from NIR group data by filtering each output channel's readout stream with a spatial filter tuned to each detector.  More accurate than row and column medians.
- - `ResetRampFitStep`: likelihood ramp fitting as in the the standard JWST pipeline, but with the superbias-subtracted reset level as an extra resultant at the beginning, so that pixels with a single unsaturated group or ZEROFRAME still get a rate
+ - `SnowblindStep`: mask cosmic ray showers and snowball halos by growing the actual shape of each contiguous jump-detected region and the ring around its saturated core; works on ramps, rate images and rateints cubes, so it can be applied after the fact; replaces `expand_large_events` in the standard JWST pipeline jump step
+ - `JumpPlusStep`: for frame-averaged readouts (NFRAMES > 1), flag the group after a detected jump, which the cosmic ray also corrupts and which the pipeline's two-point jump detection leaves unflagged (though using the ramp fit likelyhood algorithm accounts for this correctly itself); replaces jump step's `after_jump_flag` mechanism; also flag the group before a saturated group as saturated, a conservative superset of the read-pattern check the pipeline's saturation step
+ - `PersistenceFlagStep`: flag pixels that saturated in an earlier exposure of the association for a chosen time afterwards
+ - `OpenPixelStep`: find open, hot and cross-shaped open-adjacent pixels that have appeared since the reference bad-pixel mask was made, by self-calibration against the other exposures of the same detector.  Use with caution.  Needs tuning.
+ - `StreamCleanStep`: remove 1/f (flicker) noise, the striping, from NIR group data with a Wiener filter along each output channel's readout stream, its gain taken from the exposure's own noise spectrum; the same linear filter on every group difference, so, unlike the per-group medians of the pipeline's `clean_flicker_noise` step, it adds no noise along the ramp and improves with the number of groups; also removes the per-read even-odd and column offsets
+ - `ResetRampFitStep`: likelihood ramp fitting as in the standard JWST pipeline, but with the superbias-subtracted reset level as an extra resultant at the beginning, so that pixels with a single unsaturated group or only a ZEROFRAME still get a rate; needs a per-detector calibration from dark ramps, made once with `snowblind-reset-calib`
 
 
 # Installation
