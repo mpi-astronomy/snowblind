@@ -35,7 +35,6 @@ test = [
     "pytest",
     "flake8",
     "flake8-pyproject",
-    "codecov",
     "pytest-cov",
 ]
 cff = [
