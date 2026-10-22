@@ -2,14 +2,12 @@
 cff-version: 1.2.0
 message: If you use this software, please cite as below.
 title: snowblind
-abstract: Mask cosmic ray showers (snowballs) in JWST data
+abstract: Algorithms for cleaning JWST data
 authors:
-- name: James Davies
+- name: James E. Davies
   email: jdavies@mpia.de
   orcid: https://orcid.org/0000-0002-5079-9098
-version: 0.2.1
-doi: 10.5281/zenodo.7038885
-date-released: '2024-02-08'
+doi: 10.5281/zenodo.15791614
 type: software
 license: BSD-3-Clause
 url: https://github.com/mpi-astronomy/snowblind

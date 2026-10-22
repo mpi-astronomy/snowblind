@@ -65,11 +65,13 @@ where = ["src"]
 write_to = "src/snowblind/_version.py"
 
 [tool.cff-from-621]
-order = ["cff-version", "message", "title", "abstract", "authors", "urls", "version", "date-released", "type", "keywords"]
+# no version or date-released: the tag, PyPI and Zenodo carry the version, and the DOI below is the concept DOI
+order = ["cff-version", "message", "title", "abstract", "authors", "urls", "doi", "type", "keywords"]
 
 [tool.cff-from-621.static]
 message = "If you use this software, please cite as below."
 license = "BSD-3-Clause"
+doi = "10.5281/zenodo.15791614"  # Zenodo concept DOI, resolves to the latest archived release
 authors = [
     {"name" = "James Davies", "email" = "jdavies@mpia.de", "orcid" = "https://orcid.org/0000-0002-5079-9098", "affiliation" = "Max Planck Institute for Astronomy"},
 ]
