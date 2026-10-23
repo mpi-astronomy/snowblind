@@ -105,6 +105,12 @@ def run_detector1_to_jump(
         if (keep_ints, keep_groups) != (nints, ngroups):
             trimmed = datamodels.RampModel(opened.data[:keep_ints, :keep_groups].astype(np.float32))
             trimmed.update(opened)
+            zeroframe = getattr(opened, "zeroframe", None)
+            if zeroframe is not None and np.ndim(zeroframe) == 3 and np.size(zeroframe) > 0:
+                trimmed.zeroframe = np.array(zeroframe[:keep_ints], dtype=np.float32)
+            int_times = getattr(opened, "int_times", None)
+            if int_times is not None and len(int_times) > 0:
+                trimmed.int_times = int_times[:keep_ints]
             trimmed.groupdq = np.zeros(trimmed.data.shape, dtype=np.uint8)
             trimmed.pixeldq = np.zeros(trimmed.data.shape[-2:], dtype=np.uint32)
             trimmed.meta.exposure.ngroups = keep_groups
@@ -137,6 +143,17 @@ def pedestal_cube(jump_model, readnoise_2d=None, gain_2d=None):
     Runs the stcal OLS_C fitter with the optional output enabled and
     one-group suppression disabled, exactly as the plan prescribes.  The
     read noise and gain come from CRDS unless both arrays are given.
+
+    Parameters
+    ----------
+    jump_model : `~stdatamodels.jwst.datamodels.RampModel`
+        A ramp after the jump step, with ``groupdq`` and ``pixeldq`` set.
+    readnoise_2d : ndarray or None, shape (nrows, ncols)
+        CDS read noise per pixel in DN, as in the readnoise reference file.
+        When this or ``gain_2d`` is None both are fetched from CRDS for the
+        model and cut to its subarray.
+    gain_2d : ndarray or None, shape (nrows, ncols)
+        Gain per pixel in e/DN.
 
     Returns
     -------
@@ -189,8 +206,10 @@ def remove_channel_offsets(pedestals, fastaxis, slowaxis):
     ----------
     pedestals : ndarray, shape (nints, nrows, ncols)
         Pedestal planes in the science frame, NaN where unusable.
-    fastaxis, slowaxis : int
-        Detector readout axis keywords.
+    fastaxis : int
+        Detector readout axis keyword ``meta.subarray.fastaxis``.
+    slowaxis : int
+        Detector readout axis keyword ``meta.subarray.slowaxis``.
 
     Returns
     -------
@@ -255,7 +274,14 @@ def sigma_b_from_pedestals(pedestals, sigma=3.0, read_noise=None, nframes=1):
 
 
 def _snowblind_version():
-    """Package version, looked up lazily to avoid a circular import at package load."""
+    """Package version, looked up lazily to avoid a circular import at package load.
+
+    Returns
+    -------
+    str
+        The installed version of ``snowblind``, or ``"dev"`` when the
+        package metadata is not found.
+    """
     from importlib.metadata import PackageNotFoundError, version
 
     try:
@@ -265,7 +291,14 @@ def _snowblind_version():
 
 
 def software_entry():
-    """The ``software`` record for ASDF history entries written by snowblind."""
+    """The ``software`` record for ASDF history entries written by snowblind.
+
+    Returns
+    -------
+    dict
+        Keys ``name``, ``version``, ``homepage`` and ``author``, as
+        ``asdf.AsdfFile.add_history_entry`` expects.
+    """
     return {
         "name": "snowblind",
         "version": _snowblind_version(),
@@ -275,17 +308,51 @@ def software_entry():
 
 
 def add_history(handle, description):
-    """Add a history entry to an ASDF file handle, naming snowblind as the software."""
+    """Add a history entry to an ASDF file handle, naming snowblind as the software.
+
+    Parameters
+    ----------
+    handle : `asdf.AsdfFile`
+        Open ASDF file to add the entry to.
+    description : str
+        Text of the history entry.
+    """
     handle.add_history_entry(description, software=software_entry())
 
 
 def reference_superbias(names):
-    """The superbias the calibration is expressed against: the latest delivery among the darks' files, or None."""
+    """The superbias the calibration is expressed against: the latest delivery among the darks' files, or None.
+
+    Parameters
+    ----------
+    names : iterable of str or None
+        Superbias reference file base names, one per dark; None entries are
+        ignored.
+
+    Returns
+    -------
+    str or None
+        The name with the largest serial number before ``.fits``, or None
+        when no name is known.
+    """
     known = sorted({name for name in names if name is not None})
     if not known:
         return None
 
     def number(name):
+        """Serial number of a reference file name, used as the sort key.
+
+        Parameters
+        ----------
+        name : str
+            Reference file base name such as ``jwst_nircam_superbias_0123.fits``.
+
+        Returns
+        -------
+        int
+            The digits before ``.fits``, or -1 when the name does not end
+            in digits followed by ``.fits``.
+        """
         digits = re.findall(r"(\d+)\.fits$", name)
         return int(digits[0]) if digits else -1
 
@@ -293,7 +360,19 @@ def reference_superbias(names):
 
 
 def superbias_basename(name):
-    """Base name of a reference file as stored in ``meta.ref_file`` (``crds://`` prefix and directories removed)."""
+    """Base name of a reference file as stored in ``meta.ref_file`` (``crds://`` prefix and directories removed).
+
+    Parameters
+    ----------
+    name : str or None
+        Reference file name or path, possibly with a ``crds://`` prefix.
+
+    Returns
+    -------
+    str or None
+        The base name, or None when ``name`` is None, empty, ``"N/A"`` or
+        ``"None"``.
+    """
     if name is None:
         return None
     name = str(name)
@@ -310,6 +389,26 @@ def superbias_difference(calibration_superbias, science_superbias, shape, locate
     superbias subtracted the prior is the map plus this difference.  The
     names are resolved through the CRDS cache (``crds.locate_file``) unless
     ``locate`` is given.
+
+    Parameters
+    ----------
+    calibration_superbias : str or None
+        Name of the superbias subtracted from the calibration darks, as
+        recorded in the calibration file.
+    science_superbias : str or None
+        Name of the superbias subtracted from the science data
+        (``meta.ref_file.superbias.name``).
+    shape : tuple of int
+        ``(nrows, ncols)`` of the data; both superbias images must match it.
+    locate : callable or None
+        Maps a reference file base name to a path on disk.  Default is
+        ``crds.locate_file(name, "jwst")``.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, ncols) or None
+        Calibration superbias minus science superbias in DN, or None when
+        either name is unknown or both are the same file.
     """
     cal = superbias_basename(calibration_superbias)
     sci = superbias_basename(science_superbias)
@@ -323,6 +422,19 @@ def superbias_difference(calibration_superbias, science_superbias, shape, locate
         from crds import locate_file
 
         def locate(name):
+            """Path of a reference file in the CRDS cache.
+
+            Parameters
+            ----------
+            name : str
+                Reference file base name.
+
+            Returns
+            -------
+            str
+                The path ``crds.locate_file`` gives for the ``jwst``
+                observatory.
+            """
             return locate_file(name, "jwst")
 
     from astropy.io import fits
@@ -369,6 +481,44 @@ def write_calibration(
     ``t1_scale`` and ``reset_offset`` are the detector-wide first-read model
     ``R1 = reset_offset + t1_scale * a * t1``; the ``*_channels`` lists hold
     the same per output channel and take precedence in the step when present.
+
+    Parameters
+    ----------
+    path : str
+        Output ASDF file path.
+    sigma_b : ndarray of float32, shape (nrows, ncols)
+        Reset scatter per pixel in DN; its median is also stored.
+    mean : ndarray of float32, shape (nrows, ncols)
+        Sigma-clipped mean pedestal per pixel in DN, stored as
+        ``pedestal_mean``.
+    count : ndarray of int32, shape (nrows, ncols)
+        Number of integrations per pixel, stored as ``n_integrations``.
+    detector : str
+        Detector name the calibration applies to.
+    input_files : sequence of str
+        Paths of the dark files; their base names go into the provenance.
+    t1_scale : float
+        Detector-wide first-read scale.
+    refpix_algorithm : str
+        Reference pixel algorithm the darks were processed with, recorded
+        in the provenance.
+    scatter : ndarray of float32 or None, shape (nrows, ncols)
+        Raw sigma-clipped pedestal scatter in DN, stored as
+        ``pedestal_scatter``; ``sigma_b`` is stored instead when None.
+    read_noise : ndarray or None, shape (nrows, ncols)
+        Single-read noise per pixel in DN; only its median is stored.
+    reset_offset : float
+        Detector-wide reset offset in DN.
+    t1_scale_channels : sequence of float or None
+        First-read scale per output channel.
+    reset_offset_channels : sequence of float or None
+        Reset offset per output channel in DN.
+    timing_provenance : dict or None
+        Where the timing parameters were measured, stored as it is.
+    superbias : str or None
+        Name of the superbias reference the pedestal map is relative to.
+    superbias_inputs : sequence of str or None
+        All superbias names found among the darks.
     """
     tree = {
         "detector": detector,
@@ -416,6 +566,25 @@ def update_timing(
     delay in seconds, ``(1 - t1_scale) * t1_seconds``, which is what the
     data show it to be (0.6 s on NIRCam: BRIGHT1 gives t1_scale 0.94 at a
     first-group time of 10.7 s, MEDIUM8 gives 1.0 at 48 s).
+
+    Parameters
+    ----------
+    path : str
+        Calibration ASDF file to update in place.
+    t1_scale : float
+        Detector-wide first-read scale.
+    reset_offset : float
+        Detector-wide reset offset in DN.
+    t1_scale_channels : sequence of float or None
+        First-read scale per output channel; None clears the entry.
+    reset_offset_channels : sequence of float or None
+        Reset offset per output channel in DN; None clears the entry.
+    provenance : dict or None
+        Where the timing was measured, stored as ``timing_provenance``.  Its
+        ``file`` entry, when present, is named in the history entry.
+    t1_seconds : float or None
+        Mean time since reset of the first group of the exposure the timing
+        was measured on, in seconds.
     """
     with asdf.open(path, mode="rw") as handle:
         tree = handle.tree
@@ -439,7 +608,20 @@ def update_timing(
 
 
 def read_calibration(path):
-    """Return the tree of a calibration ASDF file as a plain dict with arrays loaded."""
+    """Return the tree of a calibration ASDF file as a plain dict with arrays loaded.
+
+    Parameters
+    ----------
+    path : str
+        Calibration ASDF file written by `write_calibration`.
+
+    Returns
+    -------
+    dict
+        The tree without ``asdf_library`` and ``history``; ``sigma_b``,
+        ``pedestal_mean``, ``pedestal_scatter`` and ``n_integrations`` are
+        in-memory ``ndarray`` copies.
+    """
     with asdf.open(path, lazy_load=False, memmap=False) as handle:
         tree = dict(handle.tree)
         tree.pop("asdf_library", None)
@@ -451,7 +633,28 @@ def read_calibration(path):
 
 
 def calibrate(files, output, max_groups=None):
-    """Measure ``sigma_b`` from a list of dark files for one detector and write the ASDF."""
+    """Measure ``sigma_b`` from a list of dark files for one detector and write the ASDF.
+
+    Parameters
+    ----------
+    files : sequence of str
+        ``_jump`` or ``_uncal`` dark files, all of the same detector.  An
+        ``_uncal`` file is run through `run_detector1_to_jump` first.
+    output : str
+        Path of the calibration ASDF file to write.
+    max_groups : int or None
+        Passed to `run_detector1_to_jump` for ``_uncal`` inputs: keep only
+        the first ``max_groups`` groups.
+
+    Returns
+    -------
+    sigma_b : ndarray of float32, shape (nrows, ncols)
+        Reset scatter per pixel in DN.
+    mean : ndarray of float32, shape (nrows, ncols)
+        Sigma-clipped mean pedestal per pixel in DN.
+    count : ndarray of int32, shape (nrows, ncols)
+        Number of finite pedestal values per pixel.
+    """
     inputs = []  # (pedestal cube, superbias name, path)
     detector = None
     fastaxis = slowaxis = None
@@ -500,7 +703,15 @@ def calibrate(files, output, max_groups=None):
 
 
 def main(argv=None):
-    """Console script ``snowblind-reset-calib``."""
+    """Console script ``snowblind-reset-calib``.
+
+    Parameters
+    ----------
+    argv : list of str or None
+        Command-line arguments without the program name; None reads
+        ``sys.argv``.  Accepts the dark files, ``--output`` and
+        ``--max-groups``.
+    """
     parser = argparse.ArgumentParser(description="Measure the reset-level scatter sigma_b from dark ramps.")
     parser.add_argument("files", nargs="+", help="_jump or _uncal dark files for one detector")
     parser.add_argument("--output", "-o", required=True, help="output ASDF file")

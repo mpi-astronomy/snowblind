@@ -57,8 +57,10 @@ def to_detector_frame(array, fastaxis, slowaxis):
     ----------
     array : ndarray
         Array with at least two trailing image dimensions.
-    fastaxis, slowaxis : int
-        Values of ``meta.subarray.fastaxis`` and ``meta.subarray.slowaxis``.
+    fastaxis : int
+        Value of ``meta.subarray.fastaxis``.
+    slowaxis : int
+        Value of ``meta.subarray.slowaxis``.
 
     Returns
     -------
@@ -70,19 +72,62 @@ def to_detector_frame(array, fastaxis, slowaxis):
 
 
 def to_science_frame(array, fastaxis, slowaxis):
-    """Inverse of `to_detector_frame`."""
+    """Inverse of `to_detector_frame`.
+
+    Parameters
+    ----------
+    array : ndarray
+        Array in the detector frame, with at least two trailing image
+        dimensions.
+    fastaxis : int
+        Value of ``meta.subarray.fastaxis``.
+    slowaxis : int
+        Value of ``meta.subarray.slowaxis``.
+
+    Returns
+    -------
+    ndarray
+        A view of ``array`` in the science (DMS) frame.
+    """
     return detector_science_frame_transform(array, fastaxis, slowaxis)
 
 
 def channel_width(ncols):
-    """Return the number of columns per output channel."""
+    """Return the number of columns per output channel.
+
+    Parameters
+    ----------
+    ncols : int
+        Number of detector-frame columns; must be a multiple of `NOUTPUTS`.
+
+    Returns
+    -------
+    int
+        ``ncols // NOUTPUTS``.
+
+    Raises
+    ------
+    ValueError
+        If ``ncols`` is not a multiple of `NOUTPUTS`.
+    """
     if ncols % NOUTPUTS != 0:
         raise ValueError(f"{ncols} columns cannot be split into {NOUTPUTS} output channels")
     return ncols // NOUTPUTS
 
 
 def channel_slices(ncols):
-    """Return the column slice of each output channel in the detector frame."""
+    """Return the column slice of each output channel in the detector frame.
+
+    Parameters
+    ----------
+    ncols : int
+        Number of detector-frame columns.
+
+    Returns
+    -------
+    list of slice
+        One column slice per channel, in channel order.
+    """
     width = channel_width(ncols)
     return [slice(k * width, (k + 1) * width) for k in range(NOUTPUTS)]
 
@@ -92,6 +137,18 @@ def channel_direction(channel, first_direction=1):
 
     Adjacent outputs are read in opposite directions. ``first_direction``
     is the direction of channel 0; +1 means increasing detector column.
+
+    Parameters
+    ----------
+    channel : int
+        Channel index, 0 to ``NOUTPUTS - 1``.
+    first_direction : int
+        Readout direction of channel 0, +1 or -1.
+
+    Returns
+    -------
+    int
+        ``first_direction`` for even channels, its negative for odd ones.
     """
     return first_direction if channel % 2 == 0 else -first_direction
 
@@ -101,8 +158,10 @@ def clock_index(nrows, width, direction):
 
     Parameters
     ----------
-    nrows, width : int
-        Shape of the channel image.
+    nrows : int
+        Number of rows of the channel image.
+    width : int
+        Number of columns of the channel image.
     direction : int
         +1 if the channel is read in increasing column order, -1 otherwise.
 
@@ -118,7 +177,20 @@ def clock_index(nrows, width, direction):
 
 
 def stream_length(nrows, width):
-    """Return the number of clocks spanned by a channel image."""
+    """Return the number of clocks spanned by a channel image.
+
+    Parameters
+    ----------
+    nrows : int
+        Number of rows of the channel image.
+    width : int
+        Number of columns of the channel image.
+
+    Returns
+    -------
+    int
+        ``nrows * (width + LINE_OVERHEAD)``.
+    """
     return nrows * (width + LINE_OVERHEAD)
 
 
@@ -148,7 +220,24 @@ def to_stream(channel_image, direction, fill=0.0):
 
 
 def from_stream(stream, nrows, width, direction):
-    """Inverse of `to_stream`: drop the overhead clocks and restore column order."""
+    """Inverse of `to_stream`: drop the overhead clocks and restore column order.
+
+    Parameters
+    ----------
+    stream : ndarray, shape (nrows * (width + LINE_OVERHEAD),)
+        Stream on the clock grid, as laid out by `to_stream`.
+    nrows : int
+        Number of rows of the channel image.
+    width : int
+        Number of columns of the channel image.
+    direction : int
+        Readout direction of the channel, +1 or -1.
+
+    Returns
+    -------
+    ndarray, shape (nrows, width)
+        Contiguous channel image in the detector frame.
+    """
     image = stream.reshape(nrows, width + LINE_OVERHEAD)[:, :width]
     if direction < 0:
         image = image[:, ::-1]
@@ -156,7 +245,19 @@ def from_stream(stream, nrows, width, direction):
 
 
 def stream_valid(nrows, width):
-    """Return a boolean stream that is True at pixel clocks and False at overhead clocks."""
+    """Return a boolean stream that is True at pixel clocks and False at overhead clocks.
+
+    Parameters
+    ----------
+    nrows : int
+        Number of rows of the channel image.
+    width : int
+        Number of columns of the channel image.
+
+    Returns
+    -------
+    ndarray of bool, shape (nrows * (width + LINE_OVERHEAD),)
+    """
     return to_stream(np.ones((nrows, width), dtype=bool), 1, fill=False)
 
 
@@ -166,6 +267,20 @@ def channel_blocks(shape, fastaxis, slowaxis):
     Channels are column blocks in the detector frame; in the science frame
     they are column blocks for the NIRCam geometries and row blocks for
     NIRISS.  The blocks are returned in channel order.
+
+    Parameters
+    ----------
+    shape : tuple of int
+        Shape ``(nrows, ncols)`` of the science-frame image.
+    fastaxis : int
+        Value of ``meta.subarray.fastaxis``.
+    slowaxis : int
+        Value of ``meta.subarray.slowaxis``.
+
+    Returns
+    -------
+    list of tuple of slice
+        ``(rows, cols)`` science-frame slices, one per channel.
     """
     det_shape = to_detector_frame(np.zeros(shape, dtype=np.uint8), fastaxis, slowaxis).shape
     width = channel_width(det_shape[-1])

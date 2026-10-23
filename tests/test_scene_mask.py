@@ -196,3 +196,16 @@ def test_spike_mask_needs_a_saturated_core():
 
     assert nstars == 0
     np.testing.assert_array_equal(masked, core & np.isfinite(rate))
+
+
+def test_saturated_stars_with_zero_border_still_finds_the_star():
+    """saturated_stars with border=0 on a star-shaped mask around NaNs lists the star, instead of clearing the frame."""
+    from snowblind.scene_mask import saturated_stars
+
+    finite = np.ones((512, 512), dtype=bool)
+    finite[250:263, 250:263] = False
+    mask = star_shaped_mask((512, 512), 256, 256)
+
+    stars = saturated_stars(mask, finite, border=0)
+
+    assert len(stars) == 1

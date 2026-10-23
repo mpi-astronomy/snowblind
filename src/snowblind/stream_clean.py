@@ -35,7 +35,7 @@ from .noise_spectrum import (
     wiener_gain,
 )
 from .scene_mask import chisel_mask, spike_mask
-from .stream_filters import FILTERS
+from .stream_filters import FILTERS, boxcar_noise, row_median_noise, wiener_noise
 
 __all__ = [
     "StreamCleanStep",
@@ -74,6 +74,18 @@ class StreamCleanStep(Step):
     ``meta.cal_step.stream_clean`` set to COMPLETE.  Reference pixels are
     expected to have been handled upstream by the refpix step; they take
     part in the clock grid but are not used to fit the noise.
+
+    The main options (see ``spec`` for the full list and defaults):
+    ``fit_method`` picks the per-channel noise estimator (``wiener``,
+    ``boxcar`` or ``row_median``); ``background_method`` and
+    ``scene_model`` choose the background removed before the fit;
+    ``scene_mask``, ``user_mask``, ``mask_dilation`` and ``mask_spikes``
+    control which pixels count as background; ``clean_first_group`` and
+    ``reset_calib`` extend the cleaning to group 1 (and the zeroframe)
+    against zero or the reset-level prior; ``even_odd_columns``,
+    ``column_offsets`` and ``anchor_mean`` remove per-channel offsets
+    around the stream filter; ``save_mask``, ``save_noise`` and
+    ``save_spectra`` write intermediate products.
     """
 
     class_alias = "stream_clean"
@@ -116,15 +128,25 @@ class StreamCleanStep(Step):
     def process(self, input_data):
         """Clean the group data of a ramp.
 
+        The input is copied, the scene mask is built, every group difference
+        is cleaned with `clean_ramp` (repeated with a mask re-derived from the
+        cleaned ramp when ``mask_passes`` is 2 or more) and the optional
+        mask, noise and spectra products are saved.  Unsupported input (see
+        `_unsupported_reason`) or a mask whose shape does not match the data
+        leaves the copy unchanged with the step marked SKIPPED.
+
         Parameters
         ----------
         input_data : str or `~stdatamodels.jwst.datamodels.RampModel`
-            Group-level data with ``groupdq`` populated.
+            Group-level data with ``groupdq`` populated; a filename is
+            opened with `jwst.datamodels.open`.
 
         Returns
         -------
         `~stdatamodels.jwst.datamodels.RampModel`
-            Cleaned copy of the input.
+            Cleaned copy of the input, with ``data`` (and ``zeroframe`` when
+            it was cleaned) replaced and ``meta.cal_step.stream_clean`` set
+            to COMPLETE, or the unchanged copy marked SKIPPED.
         """
         with datamodels.open(input_data) as input_model:
             result = input_model.copy()
@@ -174,7 +196,7 @@ class StreamCleanStep(Step):
             draft = np.nanmean([slope_per_group(cleaned[i], result.groupdq[i]) for i in range(cleaned.shape[0])], axis=0)
             draft = draft / (result.meta.exposure.group_time or 1.0)
             draft[(result.pixeldq & dqflags.pixel["DO_NOT_USE"]) > 0] = np.nan
-            background_mask = exclude_reference_border(chisel_mask(draft))
+            background_mask = exclude_reference_border(self._chisel_scene_mask(draft))
             if self.mask_dilation > 0:
                 background_mask = dilate_sources(background_mask, self.mask_dilation)
             log.info(f"Scene mask pass {extra_pass + 1}: {100 * (~background_mask).mean():.2f} percent of pixels masked")
@@ -190,8 +212,8 @@ class StreamCleanStep(Step):
             self.save_model(noise_model, suffix="noise", force=True)
             noise_model.close()
         if mask_model is not None:
-            if self.mask_passes > 1:
-                mask_model.data = background_mask.astype(mask_model.data.dtype)
+            # the mask as used: border excluded, sources dilated, and re-derived when there were extra passes
+            mask_model.data = background_mask.astype(mask_model.data.dtype)
             self.save_model(mask_model, suffix="mask", force=True)
             mask_model.close()
 
@@ -202,7 +224,35 @@ class StreamCleanStep(Step):
         return result
 
     def _clean_with_mask(self, result, background_mask, flat, prior_alphas):
-        """Run `clean_ramp` with the step's parameters and a given background mask."""
+        """Run `clean_ramp` with the step's parameters and a given background mask.
+
+        Also builds the reset-level prior (with ``reset_calib``), the fixed
+        scene background in DN per group (with ``scene_model``) and takes a
+        copy of the zeroframe to clean alongside group 1; the cleaned
+        zeroframe is kept on ``self._cleaned_zeroframe`` (None when none).
+
+        Parameters
+        ----------
+        result : `~stdatamodels.jwst.datamodels.RampModel`
+            The model being cleaned; supplies ``data``, ``groupdq``,
+            ``zeroframe`` and the readout and exposure metadata.
+        background_mask : ndarray of bool, shape (nrows, ncols) or (nints, nrows, ncols)
+            Scene mask, True for background pixels.
+        flat : ndarray or None, shape (nrows, ncols)
+            Flat field from `read_flat_file`, or None when
+            ``apply_flat_field`` is off.
+        prior_alphas : sequence of float or None
+            Per-channel power-law slopes from `read_psd_prior` to hold fixed
+            in the ``wiener`` fit; None fits every slope.
+
+        Returns
+        -------
+        cleaned : ndarray of float32, shape (nints, ngroups, nrows, ncols)
+            Cleaned group data in DN.
+        spectra : list or None
+            Per-integration lists of per-channel dicts from `channel_gain`
+            (``wiener`` only; None otherwise).
+        """
         reference = None
         if self.reset_calib is not None and self.clean_first_group:
             from .reset_rampfit import reset_prior_map
@@ -261,12 +311,56 @@ class StreamCleanStep(Step):
             anchor_mean=self.anchor_mean,
         )
 
+    def _chisel_scene_mask(self, rate):
+        """The chisel scene mask of a rate image, with the scene model and the spike mask applied.
+
+        Parameters
+        ----------
+        rate : ndarray, shape (nrows, ncols)
+            Draft rate image in DN/s, NaN where unusable.  With a scene
+            model the mask is built on the residual against it, since the
+            mask then only has to cover where the model is wrong, and
+            pixels the model does not cover are masked.
+
+        Returns
+        -------
+        ndarray of bool, shape (nrows, ncols)
+            True for background pixels.
+        """
+        rate = np.array(rate, dtype=np.float64)
+        if self._scene is not None:
+            rate = rate - self._scene
+        background_mask = chisel_mask(rate)
+        if self._scene is not None:
+            background_mask &= np.isfinite(self._scene)
+        log.info(f"Scene mask (chisel): {100 * (~background_mask).mean():.2f} percent of pixels masked")
+        if self.mask_spikes:
+            background_mask, nstars = spike_mask(rate, background_mask)
+            log.info(f"Spike mask: {nstars} bright stars, {100 * (~background_mask).mean():.2f} percent of pixels masked")
+        return background_mask
+
     def _scene_mask(self, model, flat):
         """Build the background mask with the jwst helpers.
 
         With ``user_mask`` set the mask is read from that file.  Otherwise a
         draft rate image is made by running the ramp fit step and the mask
         is derived from it.
+
+        Parameters
+        ----------
+        model : `~stdatamodels.jwst.datamodels.RampModel`
+            The group-level model; the draft rate image is made from it, or
+            it stands in for the image model when ``user_mask`` is given.
+        flat : ndarray or None, shape (nrows, ncols)
+            Flat field handed to the jwst rate-image helper, or None.
+
+        Returns
+        -------
+        background_mask : ndarray of bool, shape (nrows, ncols)
+            True for background pixels.
+        mask_model : `~stdatamodels.jwst.datamodels.JwstDataModel` or None
+            Intermediate model holding the mask when ``save_mask`` is set,
+            else None.
         """
         if self.user_mask is None:
             image_model = make_processed_rate_image(
@@ -285,16 +379,7 @@ class StreamCleanStep(Step):
             rate = np.array(image_model.data, dtype=np.float64)
             if hasattr(image_model, "dq") and image_model.dq is not None:
                 rate[(image_model.dq & dqflags.pixel["DO_NOT_USE"]) > 0] = np.nan
-            if self._scene is not None:
-                # with a scene model the mask only has to cover where the model is wrong
-                rate = rate - self._scene
-            background_mask = chisel_mask(rate)
-            if self._scene is not None:
-                background_mask &= np.isfinite(self._scene)
-            log.info(f"Scene mask (chisel): {100 * (~background_mask).mean():.2f} percent of pixels masked")
-            if self.mask_spikes:
-                background_mask, nstars = spike_mask(rate, background_mask)
-                log.info(f"Spike mask: {nstars} bright stars, {100 * (~background_mask).mean():.2f} percent of pixels masked")
+            background_mask = self._chisel_scene_mask(rate)
             mask_model = make_intermediate_model(image_model, background_mask) if self.save_mask else None
         else:
             background_mask, mask_model = make_scene_mask(
@@ -316,6 +401,19 @@ def read_scene_model(path, shape):
 
     The image is taken from the SCI extension when present, else from the
     primary HDU.  Non-finite pixels mean no coverage.
+
+    Parameters
+    ----------
+    path : str
+        FITS file holding the scene image.
+    shape : tuple of int
+        Expected image shape ``(nrows, ncols)``; a mismatch raises
+        ``ValueError``.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, ncols)
+        The scene in DN/s.
     """
     from astropy.io import fits
 
@@ -333,12 +431,26 @@ def exclude_reference_border(background_mask, width=readout.NREFPIX):
     Reference pixels take part in the clock grid but carry no sky and are
     not light sensitive; the refpix step has already used them.  They must
     not enter the noise fit or the background model.
+
+    Parameters
+    ----------
+    background_mask : ndarray of bool, shape (..., nrows, ncols)
+        Scene mask, True for background pixels; not modified.
+    width : int
+        Width of the border in pixels on each of the four sides; default
+        ``readout.NREFPIX``.  Zero leaves the mask unchanged.
+
+    Returns
+    -------
+    ndarray of bool, same shape as ``background_mask``
+        Copy of the mask with the border set to False.
     """
     mask = np.array(background_mask, dtype=bool, copy=True)
-    mask[..., :width, :] = False
-    mask[..., -width:, :] = False
-    mask[..., :, :width] = False
-    mask[..., :, -width:] = False
+    if width > 0:
+        mask[..., :width, :] = False
+        mask[..., -width:, :] = False
+        mask[..., :, :width] = False
+        mask[..., :, -width:] = False
     return mask
 
 
@@ -348,6 +460,20 @@ def dilate_sources(background_mask, pixels):
     The scene mask from a sigma clip of the draft rate stops where a source
     drops below the clipping level; its wings extend further and would
     otherwise be filtered as noise.
+
+    Parameters
+    ----------
+    background_mask : ndarray of bool, shape (nrows, ncols) or (nints, nrows, ncols)
+        Scene mask, True for background pixels; a 3-D mask is dilated
+        plane by plane.
+    pixels : int
+        Number of binary-dilation iterations with a 4-connected structuring
+        element, i.e. the number of pixels the masked regions grow by.
+
+    Returns
+    -------
+    ndarray of bool, same shape as ``background_mask``
+        The mask with the grown source regions set to False.
     """
     from scipy import ndimage
 
@@ -366,6 +492,18 @@ def first_group_time_ratio(model):
     Follows the stcal convention that the first read comes one frame time
     after the reset, so the mean time of the first group is
     ``frame_time * (nframes + 1) / 2``.
+
+    Parameters
+    ----------
+    model : `~stdatamodels.jwst.datamodels.RampModel`
+        Supplies ``meta.exposure.nframes``, ``frame_time`` and
+        ``group_time``.
+
+    Returns
+    -------
+    float
+        The ratio, or 1.0 when the frame time or group time is missing or
+        zero.
     """
     nframes = model.meta.exposure.nframes or 1
     frame_time = model.meta.exposure.frame_time
@@ -376,7 +514,23 @@ def first_group_time_ratio(model):
 
 
 def _unsupported_reason(model):
-    """Return why the model cannot be cleaned, or None if it can."""
+    """Return why the model cannot be cleaned, or None if it can.
+
+    Supported input is NIRCam or NIRISS, group-level (4-D) data of the FULL
+    subarray whose column count splits into ``readout.NOUTPUTS`` channels.
+
+    Parameters
+    ----------
+    model : `~stdatamodels.jwst.datamodels.RampModel`
+        The input model; its instrument name, data shape and subarray name
+        are checked.
+
+    Returns
+    -------
+    str or None
+        A message naming the first failed check, or None when the model can
+        be cleaned.
+    """
     instrument = str(model.meta.instrument.name).upper()
     if instrument not in SUPPORTED_INSTRUMENTS:
         return f"Instrument {instrument} is not supported"
@@ -397,6 +551,34 @@ def iterate_differences(data, groupdq, background_mask, clean_first_group, first
     0`` and ``clean_first_group`` is set) as float32 in the science frame;
     ``mask`` is a fresh copy of the scene mask with DO_NOT_USE, JUMP_DET and
     SATURATED pixels of group ``j`` removed.
+
+    Parameters
+    ----------
+    data : ndarray, shape (nints, ngroups, nrows, ncols)
+        Group data in the science frame, in DN.
+    groupdq : ndarray of int, same shape as ``data``
+        Group DQ flags.
+    background_mask : ndarray of bool, shape (nrows, ncols) or (nints, nrows, ncols)
+        Scene mask, True for background pixels; a 3-D mask supplies one
+        plane per integration.
+    clean_first_group : bool
+        If True, group 0 is yielded as well (as itself or as the difference
+        against ``first_group_reference``); otherwise the loop starts at
+        group 1.
+    first_group_reference : ndarray or None, shape (nrows, ncols)
+        Image subtracted from group 0 when ``clean_first_group`` is set, in
+        DN; None yields group 0 as it is.
+
+    Yields
+    ------
+    i : int
+        Integration index.
+    j : int
+        Group index of the later group of the difference.
+    image : ndarray of float32, shape (nrows, ncols)
+        The difference image in DN.
+    mask : ndarray of bool, shape (nrows, ncols)
+        Usable background pixels of this difference.
     """
     nints, ngroups = data.shape[:2]
     first = 0 if clean_first_group else 1
@@ -444,7 +626,9 @@ def clean_ramp(
     scene_background=None,
     zeroframe=None,
     zeroframe_scale=None,
-    **filter_kwargs,
+    window_length=4096,
+    min_density=0.2,
+    protect_period=None,
 ):
     """Clean every group difference of every integration and rebuild the groups.
 
@@ -457,12 +641,29 @@ def clean_ramp(
         the later group of a difference are excluded from the noise fit.
     background_mask : ndarray of bool, shape (nrows, ncols) or (nints, nrows, ncols)
         Scene mask, True for background pixels.
-    fastaxis, slowaxis : int
-        Detector readout axis keywords.
+    fastaxis : int
+        Detector readout axis keyword ``meta.subarray.fastaxis``: the
+        science-frame axis and direction of the fast readout, used to
+        rotate the image into the detector frame.
+    slowaxis : int
+        Detector readout axis keyword ``meta.subarray.slowaxis``: the
+        science-frame axis and direction of the slow readout.
     fit_method : str
         Key into `snowblind.stream_filters.FILTERS`.
-    background_method, background_box_size, clip_sigma, iterations, flat
-        See `clean_difference`.
+    background_method : {'median', 'model', 'integration_model', 'exposure_model', None}
+        Background removed from each difference before the noise fit (see
+        `clean_difference`).  ``integration_model`` and ``exposure_model``
+        fit one model per integration or per exposure with
+        `integration_backgrounds`; ``scene_background`` overrides this.
+    background_box_size : tuple of int or None
+        Box size for the ``model`` and per-integration backgrounds.
+    clip_sigma : float
+        Per-difference clipping level of the background-subtracted image;
+        0 disables clipping (see `clean_difference`).
+    iterations : int
+        Number of noise estimates per difference (see `clean_difference`).
+    flat : ndarray or None, shape (nrows, ncols)
+        Flat field matching the images (see `clean_difference`).
     clean_first_group : bool
         If True, group 1 is cleaned as a difference against a plane of zeros.
     first_direction : int
@@ -482,11 +683,18 @@ def clean_ramp(
         ``wiener`` only: the gain is cut to zero for periods shorter than
         this many clocks, so that compact sources missed by the scene mask
         are not filtered.
-    even_odd_columns, column_offsets, anchor_mean : bool
-        See `estimate_noise`.
-    first_group_reference : ndarray or None
+    even_odd_columns : bool
+        Remove each channel's even-odd column offset per difference (see
+        `estimate_noise`).
+    column_offsets : bool
+        Remove each column's masked mean per difference (see
+        `estimate_noise`).
+    anchor_mean : bool
+        Anchor each channel's noise estimate to the masked mean of the
+        residual (see `estimate_noise`).
+    first_group_reference : ndarray or None, shape (nrows, ncols)
         With ``clean_first_group``, the image group 0 is cleaned against
-        (the reset-level prior); None cleans it against zero.
+        (the reset-level prior), in DN; None cleans it against zero.
     scene_background : ndarray or None
         The scene in DN per group (for example a blotted mosaic), used as
         the fixed background of every difference in place of the fitted
@@ -501,12 +709,18 @@ def clean_ramp(
     zeroframe_scale : float or None
         The frame time over the group time: scales a fixed background to
         the signal of one frame.
-    **filter_kwargs
-        Passed to the noise estimator.
+    window_length : int
+        Length in clocks of the running mean of the ``boxcar`` method.
+    min_density : float
+        Local background fraction below which the ``boxcar`` and ``wiener``
+        estimates blend toward the row median.
+    protect_period : int or None
+        For the ``wiener`` method, the period in clocks above which the
+        estimate is left to the background model; None keeps everything.
 
     Returns
     -------
-    cleaned : ndarray of float32
+    cleaned : ndarray of float32, shape (nints, ngroups, nrows, ncols)
         Cleaned group data.  Cleaned group j+1 is cleaned group j plus the
         cleaned difference, so the noise removed from one difference is not
         reintroduced by the next.
@@ -548,7 +762,7 @@ def clean_ramp(
             first_group_scale=first_group_scale,
             min_period=min_period,
         )
-        gains = [[{"gain": (ch["freq"], ch["gain"])} for ch in integration] for integration in spectra]
+        gains = [[(ch["freq"], ch["gain"]) for ch in integration] for integration in spectra]
         for i in range(nints):
             summary = ", ".join(
                 f"ch{k}: alpha={ch['alpha']:.2f} W={ch['white']:.3g} corner={ch['corner_period']:.0f} clocks"
@@ -573,12 +787,14 @@ def clean_ramp(
             iterations=iterations,
             flat=flat,
             first_direction=first_direction,
-            channel_kwargs=None if gains is None else gains[i],
+            channel_gains=None if gains is None else gains[i],
             fixed_background=_fixed_for(fixed, i, j, first_group_scale),
             even_odd_columns=even_odd_columns,
             column_offsets=column_offsets,
             anchor_mean=anchor_mean,
-            **filter_kwargs,
+            window_length=window_length,
+            min_density=min_density,
+            protect_period=protect_period,
         )
         if cleaned_image is None:
             log.warning(f"No usable data in integration {i + 1}, group {j + 1}; difference left as is")
@@ -607,12 +823,14 @@ def clean_ramp(
                 iterations=iterations,
                 flat=flat,
                 first_direction=first_direction,
-                channel_kwargs=None if gains is None else gains[i],
+                channel_gains=None if gains is None else gains[i],
                 fixed_background=None if fixed is None else fixed[i] * scale,
                 even_odd_columns=even_odd_columns,
                 column_offsets=column_offsets,
                 anchor_mean=anchor_mean,
-                **filter_kwargs,
+                window_length=window_length,
+                min_density=min_density,
+                protect_period=protect_period,
             )
             if cleaned_image is None:
                 log.warning(f"No usable data in the zeroframe of integration {i + 1}; left as is")
@@ -627,7 +845,29 @@ def clean_ramp(
 
 
 def _fixed_for(fixed, integration, group, first_group_scale):
-    """The fixed background for one difference, or None when none is in use."""
+    """The fixed background for one difference, or None when none is in use.
+
+    Parameters
+    ----------
+    fixed : list of ndarray or None
+        One background image per integration, in DN per group difference,
+        from `integration_backgrounds` or the scene model; None when no
+        fixed background is in use.
+    integration : int
+        Integration index into ``fixed``.
+    group : int
+        Group index of the difference; group 0 is the first group cleaned
+        against zero or the reset prior.
+    first_group_scale : float
+        Factor applied to the background of group 0: the first group's mean
+        time since reset over the group time.
+
+    Returns
+    -------
+    ndarray or None
+        ``fixed[integration]``, scaled by ``first_group_scale`` for group 0,
+        or None.
+    """
     if fixed is None:
         return None
     if group == 0:
@@ -655,6 +895,32 @@ def prepare_difference(
     step divides the whole image by the flat, fits in that space and
     multiplies back, which modulates the noise estimate by the flat.)  A
     ``fixed_background`` is in flat-fielded units when a flat is given.
+
+    Parameters
+    ----------
+    image : ndarray, shape (nrows, ncols)
+        Group-difference image in raw DN; copied, not modified.
+    mask : ndarray of bool, shape (nrows, ncols)
+        Background mask, True for usable pixels.  Updated in place: NaN
+        pixels, pixels without a valid flat and clipped pixels are set to
+        False.
+    background_method : {'median', 'model', 'integration_model', None}
+        How the background is found: ``median`` or ``model`` are passed to
+        the jwst ``background_level`` helper, ``integration_model``
+        requires ``fixed_background``, and None (or ``'none'``) removes no
+        background.
+    background_box_size : tuple of int or None
+        Box size for ``background_method='model'``.
+    clip_sigma : float
+        Clipping level, in sigma of the lower half of the background
+        distribution, applied to the background-subtracted image; 0 or less
+        disables clipping.
+    flat : ndarray or None, shape (nrows, ncols)
+        Flat field; pixels where it is not finite or not positive are
+        treated as NaN.
+    fixed_background : ndarray or float or None
+        Background to subtract instead of fitting one, in DN per group
+        difference (flat-fielded units when ``flat`` is given).
 
     Returns
     -------
@@ -706,6 +972,20 @@ def slope_per_group(data_int, groupdq_int):
 
     Pixels with any flagged group fall back to the mean of their usable
     differences, which is what a slope through two points reduces to.
+
+    Parameters
+    ----------
+    data_int : ndarray, shape (ngroups, nrows, ncols)
+        Group data of one integration, in DN.
+    groupdq_int : ndarray of int, shape (ngroups, nrows, ncols)
+        Group DQ flags of the same integration; any nonzero flag marks a
+        group as unusable.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, ncols)
+        Slope per pixel in DN per group; NaN where a flagged pixel has no
+        usable difference.
     """
     ngroups = data_int.shape[0]
     cube = data_int.astype(np.float64)
@@ -729,6 +1009,24 @@ def masked_mean_background(image, mask, box_size=None, filter_size=3):
     every box that has any usable pixel, so that the model is unbiased with
     respect to the masked pixels at scales above the box.  Boxes without a
     usable pixel are filled from their neighbours.
+
+    Parameters
+    ----------
+    image : ndarray, shape (nrows, ncols)
+        Image to model; non-finite pixels are excluded.
+    mask : ndarray of bool, shape (nrows, ncols)
+        True for usable (background) pixels.
+    box_size : tuple of int or None
+        Box size ``(ny, nx)`` in pixels; None uses ``(32, 32)``.
+    filter_size : int
+        Size of the median filter applied to the grid of box values, in
+        boxes.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, ncols)
+        The interpolated background, in the units of ``image``; all zeros
+        when no pixel is usable.
     """
     from photutils.background import Background2D, MeanBackground
 
@@ -773,6 +1071,24 @@ def integration_backgrounds(data, groupdq, background_mask, background_box_size=
     15 to 20 percent below the masked mean and took that much sky with it.
     Source rejection is the scene mask's job, not the model's.
 
+    Parameters
+    ----------
+    data : ndarray, shape (nints, ngroups, nrows, ncols)
+        Group data in the science frame, in DN.
+    groupdq : ndarray of int, same shape as ``data``
+        Group DQ flags, used to exclude flagged groups from the slope.
+    background_mask : ndarray of bool, shape (nrows, ncols) or (nints, nrows, ncols)
+        Scene mask, True for background pixels; with ``per_exposure`` a 3-D
+        mask is combined with a logical AND over integrations.
+    background_box_size : tuple of int or None
+        Box size for `masked_mean_background`; None uses its default.
+    flat : ndarray or None, shape (nrows, ncols)
+        Flat field; when given, the slope is divided by it before the model
+        is fitted, so the model is in flat-fielded units.
+    per_exposure : bool
+        If True, fit one model to the mean slope of all integrations and
+        return it for every integration.
+
     Returns
     -------
     list of ndarray
@@ -789,6 +1105,21 @@ def integration_backgrounds(data, groupdq, background_mask, background_box_size=
         slopes.append(slope)
 
     def model(image, mask):
+        """Fit the masked-mean box model to one slope image.
+
+        Parameters
+        ----------
+        image : ndarray, shape (nrows, ncols)
+            Slope image in DN per group (flat-fielded when a flat is given).
+        mask : ndarray of bool, shape (nrows, ncols)
+            True for background pixels.
+
+        Returns
+        -------
+        ndarray of float32, shape (nrows, ncols)
+            `masked_mean_background` of ``image`` with the enclosing
+            ``background_box_size``.
+        """
         return masked_mean_background(image, mask, background_box_size)
 
     if per_exposure:
@@ -825,11 +1156,58 @@ def estimate_channel_gains(
     over the differences of an integration (the noise is stationary, the
     scene residual is not) and passed to `channel_gain`.
 
+    Parameters
+    ----------
+    data : ndarray, shape (nints, ngroups, nrows, ncols)
+        Group data in the science frame, in DN.
+    groupdq : ndarray of int, same shape as ``data``
+        Group DQ flags.
+    background_mask : ndarray of bool, shape (nrows, ncols) or (nints, nrows, ncols)
+        Scene mask, True for background pixels.
+    fastaxis : int
+        Detector readout axis keyword ``meta.subarray.fastaxis``: the
+        science-frame axis and direction of the fast readout, used to
+        rotate the image into the detector frame.
+    slowaxis : int
+        Detector readout axis keyword ``meta.subarray.slowaxis``: the
+        science-frame axis and direction of the slow readout.
+    background_method : {'median', 'model', 'integration_model', None}
+        Background removed from each difference (see `prepare_difference`).
+    background_box_size : tuple of int or None
+        Box size for ``background_method='model'``.
+    clip_sigma : float
+        Per-difference clipping level; 0 disables clipping.
+    clean_first_group : bool
+        If True, group 0 (against zero or ``first_group_reference``) is
+        included in the spectra.
+    flat : ndarray or None, shape (nrows, ncols)
+        Flat field matching the images.
+    first_direction : int
+        Readout direction of channel 0 in the detector frame, 1 or -1.
+    max_lag : int
+        Requested autocorrelation length in clocks; capped at a quarter of
+        the stream length.
+    prior_alphas : sequence of float or None
+        Per-channel power-law slopes to hold fixed in the fit; None (for
+        the whole sequence or one entry) fits the slope.
+    fixed_backgrounds : list of ndarray or None
+        One background per integration in DN per group difference, from
+        `integration_backgrounds` or the scene model.
+    first_group_reference : ndarray or None, shape (nrows, ncols)
+        Image group 0 is differenced against when ``clean_first_group`` is
+        set, in DN.
+    first_group_scale : float
+        Scale of the fixed background for group 0 (see `_fixed_for`).
+    min_period : int or None
+        Period in clocks below which the gain is tapered to zero (see
+        `channel_gain`).
+
     Returns
     -------
     list
         One entry per integration, each a list of four dicts from
-        `channel_gain`.
+        `channel_gain` (`zero_gain` for a channel with no usable
+        difference).
     """
     nints = data.shape[0]
     det_shape = readout.to_detector_frame(data[0, 0], fastaxis, slowaxis).shape
@@ -873,7 +1251,21 @@ def estimate_channel_gains(
 
 
 def zero_gain(max_lag):
-    """A channel entry that removes nothing, for channels with no usable data."""
+    """A channel entry that removes nothing, for channels with no usable data.
+
+    Parameters
+    ----------
+    max_lag : int
+        Autocorrelation length in clocks; the frequency grid is that of a
+        ``2 * max_lag``-point real FFT.
+
+    Returns
+    -------
+    dict
+        Same keys as `channel_gain`: ``freq``, with ``spectrum``,
+        ``smooth`` and ``gain`` all zero, ``amplitude`` and ``white`` 0.0
+        and ``alpha`` and ``corner_period`` NaN.
+    """
     freq = np.fft.rfftfreq(2 * max_lag, d=1.0)
     zeros = np.zeros(freq.size, dtype=np.float32)
     return {
@@ -896,6 +1288,21 @@ def channel_gain(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, min_
     and the fit at the lowest frequencies (leakage) and the highest five
     percent (where the smoothing has few bins).  The gain is forced to one
     at zero frequency so that the normalized convolution is well defined.
+
+    Parameters
+    ----------
+    freq : ndarray, shape (nfreq,)
+        Frequencies in cycles per clock, from zero to the Nyquist frequency.
+    spectrum : ndarray, shape (nfreq,)
+        The channel's median noise power spectrum on ``freq``.
+    alpha_bounds : tuple of float
+        Allowed range of the power-law slope in the fit.
+    fixed_alpha : float or None
+        If given, the slope is held at this value and only the amplitude
+        and white floor are fitted.
+    min_period : int or None
+        Period in clocks below which the gain is ramped to zero
+        (`taper_high_frequencies`); None keeps all frequencies.
 
     Returns
     -------
@@ -935,7 +1342,22 @@ def channel_gain(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, min_
 
 
 def write_spectra(path, spectra, detector, first_direction, max_lag):
-    """Write the per-integration, per-channel spectra and gains to an ASDF file."""
+    """Write the per-integration, per-channel spectra and gains to an ASDF file.
+
+    Parameters
+    ----------
+    path : str
+        Output file path.
+    spectra : list
+        One entry per integration, each a list of per-channel dicts from
+        `channel_gain`.
+    detector : str
+        Detector name stored in the tree.
+    first_direction : int
+        Readout direction of channel 0 stored in the tree.
+    max_lag : int
+        Autocorrelation length in clocks stored in the tree.
+    """
     import asdf
 
     tree = {
@@ -966,7 +1388,19 @@ def write_spectra(path, spectra, detector, first_direction, max_lag):
 
 
 def read_psd_prior(path):
-    """Return the per-channel power-law slopes of the first integration in a spectra ASDF file (None where missing)."""
+    """Return the per-channel power-law slopes of the first integration in a spectra ASDF file (None where missing).
+
+    Parameters
+    ----------
+    path : str
+        ASDF file written by `write_spectra`.
+
+    Returns
+    -------
+    list of float or None
+        ``alpha`` of each channel of the first integration; None where the
+        stored slope is not finite.
+    """
     import asdf
 
     with asdf.open(path, lazy_load=False, memmap=False) as handle:
@@ -991,12 +1425,14 @@ def clean_difference(
     iterations=1,
     flat=None,
     first_direction=1,
-    channel_kwargs=None,
+    channel_gains=None,
     fixed_background=None,
     even_odd_columns=False,
     column_offsets=False,
     anchor_mean=False,
-    **filter_kwargs,
+    window_length=4096,
+    min_density=0.2,
+    protect_period=None,
 ):
     """Clean one group-difference image.
 
@@ -1010,14 +1446,20 @@ def clean_difference(
     ----------
     image : ndarray, shape (nrows, ncols)
         Difference image in the science frame.
-    mask : ndarray of bool
+    mask : ndarray of bool, shape (nrows, ncols)
         Background mask, True for usable pixels.  Updated in place.
-    fastaxis, slowaxis : int
-        Detector readout axis keywords.
+    fastaxis : int
+        Detector readout axis keyword ``meta.subarray.fastaxis``: the
+        science-frame axis and direction of the fast readout, used to
+        rotate the image into the detector frame.
+    slowaxis : int
+        Detector readout axis keyword ``meta.subarray.slowaxis``: the
+        science-frame axis and direction of the slow readout.
     fit_method : str
         Key into `snowblind.stream_filters.FILTERS`.
-    background_method : {'median', 'model', None}
-        Passed to the jwst ``background_level`` helper.
+    background_method : {'median', 'model', 'integration_model', None}
+        Passed to `prepare_difference`; ``median`` and ``model`` go to the
+        jwst ``background_level`` helper.
     background_box_size : tuple of int or None
         Box size for ``background_method='model'``.
     clip_sigma : float
@@ -1030,12 +1472,26 @@ def clean_difference(
         Flat field matching ``image``.
     first_direction : int
         Readout direction of channel 0 in the detector frame.
-    channel_kwargs : list of dict or None
-        Extra keyword arguments for the estimator, one dict per channel.
+    channel_gains : list of tuple or None
+        For the ``wiener`` method, the ``(freq, gain)`` of each channel from
+        `channel_gain`; None for the other methods.
     fixed_background : ndarray or None
         Background to subtract instead of fitting one to this image.
-    even_odd_columns, column_offsets, anchor_mean : bool
-        See `estimate_noise`.
+    even_odd_columns : bool
+        Remove each channel's even-odd column offset (see `estimate_noise`).
+    column_offsets : bool
+        Remove each column's masked mean (see `estimate_noise`).
+    anchor_mean : bool
+        Anchor each channel's noise estimate to the masked mean of the
+        residual (see `estimate_noise`).
+    window_length : int
+        Length in clocks of the running mean of the ``boxcar`` method.
+    min_density : float
+        Local background fraction below which the ``boxcar`` and ``wiener``
+        estimates blend toward the row median.
+    protect_period : int or None
+        For the ``wiener`` method, the period in clocks above which the
+        estimate is left to the background model; None keeps everything.
 
     Returns
     -------
@@ -1050,9 +1506,10 @@ def clean_difference(
     if bkg_sub is None:
         return None, None
 
-    offsets = {"even_odd_columns": even_odd_columns, "column_offsets": column_offsets, "anchor_mean": anchor_mean}
     noise = estimate_noise(
-        bkg_sub, mask, fastaxis, slowaxis, fit_method, first_direction, channel_kwargs, **offsets, **filter_kwargs
+        bkg_sub, mask, fastaxis, slowaxis, fit_method, first_direction, channel_gains,
+        even_odd_columns=even_odd_columns, column_offsets=column_offsets, anchor_mean=anchor_mean,
+        window_length=window_length, min_density=min_density, protect_period=protect_period,
     )
     for _ in range(1, iterations):
         if clip_sigma > 0:
@@ -1060,7 +1517,9 @@ def clean_difference(
                 bkg_sub - noise, mask, sigma_lower=clip_sigma, sigma_upper=clip_sigma, lower_half_only=True
             )
         noise = estimate_noise(
-            bkg_sub, mask, fastaxis, slowaxis, fit_method, first_direction, channel_kwargs, **offsets, **filter_kwargs
+            bkg_sub, mask, fastaxis, slowaxis, fit_method, first_direction, channel_gains,
+            even_odd_columns=even_odd_columns, column_offsets=column_offsets, anchor_mean=anchor_mean,
+            window_length=window_length, min_density=min_density, protect_period=protect_period,
         )
 
     cleaned = bkg_sub - noise + background
@@ -1069,7 +1528,22 @@ def clean_difference(
 
 
 def even_odd_pattern(channel_image, channel_mask):
-    """The alternating-column offset of one channel: +d on even columns, -d on odd, from the masked means."""
+    """The alternating-column offset of one channel: +d on even columns, -d on odd, from the masked means.
+
+    Parameters
+    ----------
+    channel_image : ndarray, shape (nrows, width)
+        One channel's block of a background-subtracted difference, in DN.
+    channel_mask : ndarray of bool, shape (nrows, width)
+        True for usable pixels.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, width)
+        Half the difference of the even and odd masked means, positive on
+        even columns and negative on odd; all zeros when either mean is not
+        finite.
+    """
     masked = np.where(channel_mask, channel_image, np.nan)
     with np.errstate(all="ignore"):
         even = np.nanmean(masked[:, ::2])
@@ -1089,6 +1563,22 @@ def column_offset_pattern(channel_image, channel_mask, min_pixels=16):
     zero.  The mean is a fixed linear operation on the difference, so the
     per-difference estimates add up to the column mean of the rate image
     and nothing accumulates along the ramp.
+
+    Parameters
+    ----------
+    channel_image : ndarray, shape (nrows, width)
+        One channel's block of a background-subtracted difference, in DN.
+    channel_mask : ndarray of bool, shape (nrows, width)
+        True for usable pixels.
+    min_pixels : int
+        Minimum number of usable pixels for a column to get a nonzero
+        offset.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, width)
+        Each column's masked mean broadcast down the column (a read-only
+        view).
     """
     masked = np.where(channel_mask, channel_image, 0.0)
     count = channel_mask.sum(axis=0)
@@ -1105,11 +1595,13 @@ def estimate_noise(
     slowaxis,
     fit_method,
     first_direction=1,
-    channel_kwargs=None,
+    channel_gains=None,
     even_odd_columns=False,
     column_offsets=False,
     anchor_mean=False,
-    **filter_kwargs,
+    window_length=4096,
+    min_density=0.2,
+    protect_period=None,
 ):
     """Estimate the 1/f noise of a background-subtracted image, channel by channel.
 
@@ -1117,17 +1609,22 @@ def estimate_noise(
     ----------
     image : ndarray, shape (nrows, ncols)
         Background-subtracted difference image in the science frame.
-    mask : ndarray of bool
+    mask : ndarray of bool, shape (nrows, ncols)
         Background mask, True for usable pixels.
-    fastaxis, slowaxis : int
-        Detector readout axis keywords.
+    fastaxis : int
+        Detector readout axis keyword ``meta.subarray.fastaxis``: the
+        science-frame axis and direction of the fast readout, used to
+        rotate the image into the detector frame.
+    slowaxis : int
+        Detector readout axis keyword ``meta.subarray.slowaxis``: the
+        science-frame axis and direction of the slow readout.
     fit_method : str
         Key into `snowblind.stream_filters.FILTERS`.
     first_direction : int
         Readout direction of channel 0 in the detector frame.
-    channel_kwargs : list of dict or None
-        Extra keyword arguments for the estimator, one dict per channel
-        (the ``wiener`` method's per-channel gain).
+    channel_gains : list of tuple or None
+        For the ``wiener`` method, the ``(freq, gain)`` of each channel from
+        `channel_gain`; None for the other methods.
     even_odd_columns : bool
         Also remove each channel's even-odd column offset, measured from
         the masked pixels of this difference.  A fixed linear operation,
@@ -1144,29 +1641,43 @@ def estimate_noise(
         frequency); a median-based estimator does not, and on a crowded
         field, where the background distribution is skewed, a median sits
         below the mean and would raise the sky.
+    window_length : int
+        Length in clocks of the running mean of the ``boxcar`` method.
+    min_density : float
+        Local background fraction below which the ``boxcar`` and ``wiener``
+        estimates blend toward the row median.
+    protect_period : int or None
+        For the ``wiener`` method, the period in clocks above which the
+        estimate is left to the background model; None keeps everything.
 
     Returns
     -------
-    ndarray of float32
-        Noise estimate for every pixel, in the science frame.
+    ndarray of float32, shape (nrows, ncols)
+        Noise estimate for every pixel in DN, in the science frame.
     """
-    try:
-        estimator = FILTERS[fit_method]
-    except KeyError:
-        raise ValueError(f"Unknown fit_method {fit_method!r}; choose from {sorted(FILTERS)}") from None
+    if fit_method not in FILTERS:
+        raise ValueError(f"Unknown fit_method {fit_method!r}; choose from {sorted(FILTERS)}")
 
     image_det = readout.to_detector_frame(image, fastaxis, slowaxis)
     mask_det = readout.to_detector_frame(mask, fastaxis, slowaxis)
     noise_det = np.zeros(image_det.shape, dtype=np.float32)
     for channel, columns in enumerate(readout.channel_slices(image_det.shape[-1])):
         direction = readout.channel_direction(channel, first_direction)
-        extra = {} if channel_kwargs is None else channel_kwargs[channel]
         block = np.ascontiguousarray(image_det[:, columns])
         block_mask = np.ascontiguousarray(mask_det[:, columns])
         alternating = even_odd_pattern(block, block_mask) if even_odd_columns else 0.0
         per_column = column_offset_pattern(block - alternating, block_mask) if column_offsets else 0.0
         fixed = alternating + per_column
-        estimate = estimator(block - fixed, block_mask, direction=direction, **extra, **filter_kwargs)
+        residual = block - fixed
+        if fit_method == "row_median":
+            estimate = row_median_noise(residual, block_mask, direction)
+        elif fit_method == "boxcar":
+            estimate = boxcar_noise(residual, block_mask, direction, window_length=window_length, min_density=min_density)
+        else:
+            gain = None if channel_gains is None else channel_gains[channel]
+            estimate = wiener_noise(
+                residual, block_mask, direction, min_density=min_density, gain=gain, protect_period=protect_period
+            )
         if anchor_mean and np.any(block_mask):
             estimate = estimate + (np.mean((block - fixed)[block_mask]) - np.mean(estimate[block_mask]))
         noise_det[:, columns] = fixed + estimate

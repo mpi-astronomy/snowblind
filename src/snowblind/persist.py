@@ -32,6 +32,23 @@ class PersistenceFlagStep(Step):
     class_alias = "persist"
 
     def process(self, input_data):
+        """Flag persistence from earlier saturated exposures in each image of an association.
+
+        Parameters
+        ----------
+        input_data : str or ModelContainer
+            Association file or container of image datamodels (``_rate`` or ``_cal``
+            products) with ``dq`` arrays of shape (nrows, ncols).  The models are
+            grouped by ``meta.instrument.detector`` and each group is handled on its
+            own.  The matching ``_jump`` files are read from ``self.input_dir``.
+
+        Returns
+        -------
+        ModelContainer
+            Copy of the input in which pixels saturated in an earlier exposure of the
+            same detector, started less than ``self.time`` seconds before, have
+            ``DO_NOT_USE | PERSISTENCE`` set in ``dq``.
+        """
         with datamodels.open(input_data) as images:
             # Find detector names in the association
             images_grouped_by_detector = {}
@@ -63,6 +80,19 @@ class PersistenceFlagStep(Step):
 
     def sort_by_start_times(self, images):
         """Returns sorted lists of datamodels and time_deltas between them [sec]
+
+        Parameters
+        ----------
+        images : list of DataModel
+            Exposures of one detector; sorted by ``meta.exposure.start_time`` (MJD).
+
+        Returns
+        -------
+        models_sorted : list of DataModel
+            The input models in order of increasing start time.
+        time_deltas : list of float
+            Seconds from the start of each exposure to the start of the one before
+            it; the first entry is 0.
         """
         start_times = []
         for image in images:
@@ -82,6 +112,21 @@ class PersistenceFlagStep(Step):
 
     def flag_saturated_in_subsequent(self, models_sorted, time_deltas):
         """Flag as many subsequent SATURATED exposures as allowed by self.time
+
+        Parameters
+        ----------
+        models_sorted : list of DataModel
+            Exposures of one detector in start-time order, as from
+            ``sort_by_start_times``.
+        time_deltas : list of float
+            Seconds between consecutive start times, first entry 0, as from
+            ``sort_by_start_times``.
+
+        Returns
+        -------
+        ndarray of bool, shape (nexposures, nrows, ncols)
+            For each exposure, the pixels saturated in any earlier exposure whose
+            start lies less than ``self.time`` seconds before this exposure's start.
         """
         # Find how man subsequent slices need to be flagged for each slice
         n_after = []
@@ -103,9 +148,37 @@ class PersistenceFlagStep(Step):
 
     def get_saturation_masks(self, models_sorted):
         """Get boolean SATURATION mask from output of JumpStep
+
+        Parameters
+        ----------
+        models_sorted : list of DataModel
+            Exposures whose ``meta.filename`` names the ``_jump.fits`` file to read
+            from ``self.input_dir``.  When ``self.save_mask`` is set, each saturation
+            cube is also written to a ``_satmask`` FITS file.
+
+        Returns
+        -------
+        ndarray of bool, shape (nexposures, nrows, ncols)
+            SATURATED pixels of the last group of the last integration of each
+            ``_jump`` file.
         """
         # For the list of input files, convert them to the _jump.fits filenames
         def jumpify(filename):
+            """Replace the product suffix of a standard JWST filename with ``_jump.fits``.
+
+            Parameters
+            ----------
+            filename : str
+                Exposure filename in the fixed-width JWST layout
+                ``jwPPPPPOOOVVV_GGSAA_EEEEE_<detector>_<suffix>.fits``; the first 26
+                characters and the rest of the detector name up to the next
+                underscore are kept.
+
+            Returns
+            -------
+            str
+                The corresponding ``_jump.fits`` filename.
+            """
             return filename[:26] + filename[26:26+filename[26:].find("_")] + \
                 "_jump.fits"
 

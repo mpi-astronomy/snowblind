@@ -18,7 +18,22 @@ __all__ = ["chisel_mask", "clip_mask", "tiled_sky", "remove_stripes", "saturated
 
 
 def clip_mask(rate, n_sigma=2.0):
-    """Background mask by sigma clipping, as the jwst step does: True where background."""
+    """Background mask by sigma clipping, as the jwst step does: True where background.
+
+    Parameters
+    ----------
+    rate : ndarray, shape (nrows, ncols)
+        Draft rate image in DN/s.  Non-finite pixels are masked.
+    n_sigma : float
+        A pixel is background where its rate is less than ``n_sigma`` times
+        the robust standard deviation (``mad_std``) above the median of the
+        finite pixels.
+
+    Returns
+    -------
+    ndarray of bool, shape (nrows, ncols)
+        True for background pixels.
+    """
     good = np.isfinite(rate)
     level = np.median(rate[good])
     sigma = mad_std(rate[good], ignore_nan=True)
@@ -26,6 +41,24 @@ def clip_mask(rate, n_sigma=2.0):
 
 
 def _candidates(convolved, threshold, erode, opening):
+    """Threshold the convolved image and clean the binary result by erosion and opening.
+
+    Parameters
+    ----------
+    convolved : ndarray, shape (nrows, ncols)
+        Sky-subtracted, destriped image after Gaussian convolution.
+    threshold : float
+        Pixels above this value are candidates.
+    erode : int
+        Iterations of binary erosion with a 4-connected structure; 0 skips it.
+    opening : int
+        Iterations of binary opening with an 8-connected structure; 0 skips it.
+
+    Returns
+    -------
+    ndarray of bool, shape (nrows, ncols)
+        True for candidate detection pixels.
+    """
     binary = convolved > threshold
     if erode:
         binary = ndimage.binary_erosion(binary, ndimage.generate_binary_structure(2, 1), iterations=erode)
@@ -35,7 +68,24 @@ def _candidates(convolved, threshold, erode, opening):
 
 
 def _blob_snr(image, labels, nlabels, sigma):
-    """Signal-to-noise of each labelled blob: summed signal over sigma times the square root of its area."""
+    """Signal-to-noise of each labelled blob: summed signal over sigma times the square root of its area.
+
+    Parameters
+    ----------
+    image : ndarray, shape (nrows, ncols)
+        Image whose values are summed within each blob.
+    labels : ndarray of int, shape (nrows, ncols)
+        Blob labels from ``scipy.ndimage.label``, 0 where there is no blob.
+    nlabels : int
+        Number of blobs, the largest label value.
+    sigma : float
+        Per-pixel noise standard deviation of ``image``.
+
+    Returns
+    -------
+    ndarray, shape (nlabels,)
+        Signal-to-noise of blobs 1 to ``nlabels``; empty when ``nlabels`` is 0.
+    """
     if nlabels == 0:
         return np.array([])
     index = np.arange(1, nlabels + 1)
@@ -90,9 +140,12 @@ def chisel_mask(
         pass any signal-to-noise cut, and the growth step then spreads
         from them (18 percent of a pure-noise image masked, against 1.5
         percent at 0.5, with a 3-sigma source still caught).
-    erode, opening : int
-        Iterations of binary erosion (4-connected) and opening (8-connected)
-        applied to the candidates to remove what noise alone produces.
+    erode : int
+        Iterations of binary erosion (4-connected) applied to the candidates
+        to remove what noise alone produces.
+    opening : int
+        Iterations of binary opening (8-connected) applied to the candidates
+        after the erosion, for the same purpose.
     snquant : float
         Quantile of the signal-to-noise distribution of pseudo-detections
         (the same candidates found in the sign-flipped image, which holds
@@ -116,6 +169,21 @@ def chisel_mask(
         Tile size in pixels of the default sky model.
     passes : int
         Detection passes; each refits the sky with the last mask applied.
+    coarse_fwhm : float or None
+        FWHM in pixels of the convolution kernel of the coarse tier.  None
+        (or 0) disables the coarse tier.  The coarse tier runs only when
+        ``background`` is None; with a given background a single fine pass
+        is returned.
+    coarse_qthresh : float
+        Detection quantile of the coarse tier, in place of ``qthresh``.
+    coarse_erode : int
+        Erosion iterations of the coarse tier, in place of ``erode``; the
+        opening iterations are ``opening`` as in the fine pass.
+    coarse_sky_box : int
+        Tile size in pixels of the sky model refitted for the coarse tier
+        with the fine-pass detections masked.
+    coarse_max_grow : int
+        Growth cap in pixels of the coarse tier, in place of ``max_grow``.
 
     Returns
     -------
@@ -147,6 +215,20 @@ def tiled_sky(rate, mask, box):
     A light 3-by-3 median over the tile grid, as NoiseChisel's tiled sky
     rather than the heavier smoothing of the cleaner's background model, so
     that sky structure on scales of a few tiles is followed, not detected.
+
+    Parameters
+    ----------
+    rate : ndarray, shape (nrows, ncols)
+        Image to model, in DN/s.  Non-finite pixels are excluded from the fit.
+    mask : ndarray of bool, shape (nrows, ncols)
+        True for pixels that may enter the sky estimate.
+    box : int
+        Tile size in pixels; tiles are ``box`` by ``box``.
+
+    Returns
+    -------
+    ndarray of float64, shape (nrows, ncols)
+        Sky value at every pixel.
     """
     from astropy.stats import SigmaClip
     from photutils.background import Background2D, MedianBackground
@@ -172,6 +254,18 @@ def remove_stripes(image, finite):
     remove; left in, its ridges are connected along rows in the convolved
     image and let a detection grow along a band.  Compact sources barely
     move a row or column median.
+
+    Parameters
+    ----------
+    image : ndarray, shape (nrows, ncols)
+        Image to destripe.
+    finite : ndarray of bool, shape (nrows, ncols)
+        True for pixels that enter the medians; the others are ignored.
+
+    Returns
+    -------
+    ndarray, shape (nrows, ncols)
+        The destriped image, with 0.0 where ``finite`` is False.
     """
     import warnings
 
@@ -186,6 +280,49 @@ def remove_stripes(image, finite):
 
 
 def _chisel_pass(rate, finite, background, kernel_fwhm, qthresh, erode, opening, snquant, detgrowquant, max_hole, max_grow):
+    """One NoiseChisel-style detection pass against a given background: True where background.
+
+    The background-subtracted image is destriped (`remove_stripes`),
+    convolved with a Gaussian, thresholded at the ``qthresh`` quantile and
+    cleaned by erosion and opening (`_candidates`).  Pseudo-detections, the
+    same procedure on the sign-flipped image, set the signal-to-noise a
+    detection must exceed: their ``snquant`` quantile, or 0 when fewer than
+    20 of them exist.  The surviving detections are dilated back over the
+    eroded border, grown one pixel per iteration into connected pixels above
+    the ``detgrowquant`` quantile for up to ``max_grow`` iterations, and
+    holes of up to ``max_hole`` pixels inside them are filled.
+
+    Parameters
+    ----------
+    rate : ndarray of float64, shape (nrows, ncols)
+        Draft rate image in DN/s.
+    finite : ndarray of bool, shape (nrows, ncols)
+        True where ``rate`` is finite; other pixels are treated as masked.
+    background : ndarray, shape (nrows, ncols)
+        Background subtracted from ``rate`` before detection.
+    kernel_fwhm : float
+        FWHM in pixels of the Gaussian convolution kernel.
+    qthresh : float
+        Quantile of the convolved finite pixels used as the detection threshold.
+    erode : int
+        Binary erosion iterations (4-connected) applied to the candidates.
+    opening : int
+        Binary opening iterations (8-connected) applied to the candidates.
+    snquant : float
+        Quantile of the pseudo-detection signal-to-noise distribution that a
+        detection must exceed.
+    detgrowquant : float
+        Quantile of the convolved finite pixels above which detections may grow.
+    max_hole : int
+        Largest hole, in pixels, filled inside a grown detection; 0 fills none.
+    max_grow : int
+        Maximum number of one-pixel growth iterations.
+
+    Returns
+    -------
+    ndarray of bool, shape (nrows, ncols)
+        True for background pixels: finite and not part of a grown detection.
+    """
     image = remove_stripes(np.where(finite, rate - background, 0.0), finite)
 
     sigma_kernel = kernel_fwhm / 2.3548
@@ -214,7 +351,6 @@ def _chisel_pass(rate, finite, background, kernel_fwhm, qthresh, erode, opening,
         if not np.any(step & ~grown):
             break
         grown |= step
-    _chisel_pass.last_growth_iterations = iteration
     if max_hole > 0:
         holes = ndimage.binary_fill_holes(grown) & ~grown
         hole_labels, n_holes = ndimage.label(holes)
@@ -240,10 +376,33 @@ def saturated_stars(background_mask, finite, min_halo=10000, max_fill=0.4, max_s
 
     Returns a list of (y, x) centres of the largest cluster of saturated
     pixels in each region, the star's core, largest region first.
+
+    Parameters
+    ----------
+    background_mask : ndarray of bool, shape (nrows, ncols)
+        Scene mask, True where background; its False regions are examined.
+    finite : ndarray of bool, shape (nrows, ncols)
+        True where the rate image is finite; False marks saturated pixels.
+    min_halo : int
+        Smallest masked region, in pixels, that can count as a star.
+    max_fill : float
+        Largest fraction of its bounding box that a star's region may fill.
+    max_stars : int
+        Number of stars returned, the largest regions first.
+    border : int
+        Rows and columns at each frame edge set aside before labelling.
+
+    Returns
+    -------
+    list of tuple of float
+        ``(y, x)`` centre of mass of the largest cluster of saturated pixels
+        in each star's region, in pixel coordinates of the full image,
+        largest region first.
     """
     interior = ~np.asarray(background_mask, dtype=bool)
-    interior[:border] = interior[-border:] = False
-    interior[:, :border] = interior[:, -border:] = False
+    if border > 0:
+        interior[:border] = interior[-border:] = False
+        interior[:, :border] = interior[:, -border:] = False
     regions, nregions = ndimage.label(interior)
     stars = []
     for k, window in enumerate(ndimage.find_objects(regions)):
@@ -290,6 +449,50 @@ def spike_mask(
 
     Returns the mask with the spikes removed from the background (True where
     background), and the number of stars treated.
+
+    Parameters
+    ----------
+    rate : ndarray, shape (nrows, ncols)
+        Draft rate image in DN/s.  Non-finite pixels are masked.
+    background_mask : ndarray of bool, shape (nrows, ncols)
+        Scene mask, True where background.
+    min_halo : int
+        Passed to :func:`saturated_stars`: smallest masked region, in
+        pixels, that counts as a star.
+    max_fill : float
+        Passed to :func:`saturated_stars`: largest fraction of its bounding
+        box that a star's region may fill.
+    max_stars : int
+        Passed to :func:`saturated_stars`: number of stars treated.
+    half_width : int
+        Columns either side of the current spike centre that enter the
+        profile.
+    block : int
+        Rows per block of the walk along the column.
+    near : int
+        Columns within this distance of the centre may be detected; columns
+        more than ``near + 10`` away define the local background level.
+    min_excess : float
+        Detection threshold on a column's excess as a fraction of the sky
+        level (median of the background pixels of ``rate``).
+    nsigma : float
+        Detection threshold on a column's excess in units of the noise of
+        its masked mean, from the robust standard deviation of the
+        background pixels divided by the square root of the sample count.
+    patience : int
+        Consecutive blocks without a detection after which the walk ends.
+    border : int
+        Rows and columns of reference pixels at each frame edge excluded
+        from the walk; also passed to :func:`saturated_stars`.
+
+    Returns
+    -------
+    mask : ndarray of bool, shape (nrows, ncols)
+        The background mask restricted to finite pixels, with the detected
+        spike columns (plus one column either side) set to False in each
+        block where they were found.
+    nstars : int
+        Number of stars treated; 0 when there is no background or no star.
     """
     rate = np.asarray(rate, dtype=np.float64)
     finite = np.isfinite(rate)

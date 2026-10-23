@@ -40,6 +40,17 @@ class ResetRampFitStep(Step):
     `~stdatamodels.jwst.datamodels.CubeModel` as from the jwst ramp_fit step.
     ``meta.cal_step.ramp_fit`` is set to COMPLETE as well so that downstream
     steps treat the result as a rate product.
+
+    The prior on the reset level comes from a calibration ASDF file written
+    by ``snowblind-reset-calib`` (``reset_calib``), or from a scalar
+    ``sigma_b``.  Main options: ``per_pixel_sigma_b`` and
+    ``use_pedestal_mean`` take the per-pixel scatter and the mean reset
+    level from the file; ``t1_scale`` and ``per_channel_timing`` set the
+    first-read timing; ``anchor_offset_to_sky`` and
+    ``anchor_timing_to_stars`` measure the reset offset and first-read scale
+    per output channel from the exposure itself; ``save_opt`` writes the
+    ``used_reset`` and ``d0_resid`` diagnostics.  Fewer than ``MIN_NGROUPS``
+    groups gives no rate products, as in the jwst step.
     """
 
     class_alias = "reset_rampfit"
@@ -52,7 +63,7 @@ class ResetRampFitStep(Step):
         per_pixel_sigma_b = boolean(default=False)  # use the per-pixel sigma_b image from the calibration file
         use_pedestal_mean = boolean(default=False)  # prior mean of the reset level from the calibration file's pedestal_mean map
         prior_highpass = boolean(default=True)  # remove the pedestal map's row, even-odd and column structure, as stream_clean removes it from the first read
-        reset_offset = float(default=0.0)  # DN added to the prior mean of the reset level, on top of the file's value
+        reset_offset = float(default=0.0)  # DN added to the prior mean of the reset level, on top of the file's or the anchored value
         anchor_offset_to_sky = boolean(default=True)  # measure the reset offset per channel from this exposure's own faint pixels instead of the file's
         anchor_max_signal = float(default=50.0)  # DN; pixels whose first-resultant signal is below this count as sky for the anchor
         anchor_min_pixels = integer(default=1000)  # fewer sky pixels than this in a channel keeps the file's offset there
@@ -72,11 +83,16 @@ class ResetRampFitStep(Step):
         Parameters
         ----------
         step_input : str or `~stdatamodels.jwst.datamodels.RampModel`
+            A ``_jump`` ramp or its path; data shape
+            (nints, ngroups, nrows, ncols) in DN.
 
         Returns
         -------
-        out_model : `~stdatamodels.jwst.datamodels.ImageModel`
-        int_model : `~stdatamodels.jwst.datamodels.CubeModel`
+        out_model : `~stdatamodels.jwst.datamodels.ImageModel` or None
+            The rate product in DN/s, averaged over integrations.
+        int_model : `~stdatamodels.jwst.datamodels.CubeModel` or None
+            The per-integration rate product in DN/s.  Both are None when
+            the ramp has fewer than ``MIN_NGROUPS`` groups.
         """
         result = self.prepare_output(step_input, open_as_type=datamodels.RampModel)
 
@@ -126,14 +142,14 @@ class ResetRampFitStep(Step):
         blocks = readout.channel_blocks(result.data.shape[-2:], result.meta.subarray.fastaxis, result.meta.subarray.slowaxis)
         if self.anchor_offset_to_sky and result.data.shape[1] >= 3:
             t1_scales = channel_timing[0] if channel_timing else [t1_scale] * len(blocks)
-            # the prior without any scalar offset: the map (or zero) plus the step's own offset
-            base = np.asarray(reset_level, dtype=np.float32) - np.float32(self._scalar_offset) + np.float32(self.reset_offset)
+            # the prior without any scalar offset: the map (or zero); the step's own offset goes on top of the anchored value
+            base = np.asarray(reset_level, dtype=np.float32) - np.float32(self._scalar_offset)
             # the file's absolute offsets per channel (channel_timing holds them relative to the file's scalar offset)
             file_scalar = self._scalar_offset - self.reset_offset
             file_offsets = [o + file_scalar for o in channel_timing[1]] if channel_timing else [file_scalar] * len(blocks)
             if self.anchor_timing_to_stars:
                 fitted = star_anchored_scales(
-                    result, base, blocks, self.use_zeroframe, self.anchor_max_signal, self.anchor_min_bright,
+                    result, base, blocks, self.use_zeroframe, self.anchor_min_bright,
                     fallback=list(t1_scales),
                 )
                 log.info(
@@ -151,7 +167,7 @@ class ResetRampFitStep(Step):
                 + ", ".join(f"{b:+.2f}" for b in anchored)
                 + " DN (calibration file: " + ", ".join(f"{b:+.2f}" for b in file_offsets) + ")"
             )
-            channel_timing = (t1_scales, [float(b) for b in anchored])
+            channel_timing = (t1_scales, [float(b) + self.reset_offset for b in anchored])
             reset_level = base
         if channel_timing:
             t1_scales, offsets = channel_timing
@@ -201,6 +217,24 @@ class ResetRampFitStep(Step):
         the file carries them and ``per_channel_timing`` is set and no
         ``t1_scale`` override was given; otherwise None.  The step's
         ``reset_offset`` is added on top of the file's offsets.
+
+        Parameters
+        ----------
+        model : `~stdatamodels.jwst.datamodels.RampModel`
+            The ramp being fitted; supplies the detector name, image shape,
+            readout axes, subtracted superbias and first-group time.
+
+        Returns
+        -------
+        sigma_b : float or ndarray of float64, shape (nrows, ncols)
+            Reset-level scatter in DN.
+        t1_scale : float
+            First-read scale, carried to this exposure's first-group time
+            when the file records ``t1_seconds``.
+        reset_level : float32 or ndarray of float32, shape (nrows, ncols)
+            Prior mean of the reset level in DN.
+        channel_timing : tuple or None
+            ``(t1_scales, reset_offsets)`` lists per channel, or None.
         """
         t1_scale = self.t1_scale
         sigma_b = self.sigma_b
@@ -284,6 +318,28 @@ def calibrated_pedestal_map(tree, shape, fastaxis, slowaxis, highpass=True, scie
     transfers between epochs, and the map is used as it is for an exposure
     processed with a different superbias.  The step says so, because the
     per-pixel part of the residual has not been checked across epochs.
+
+    Parameters
+    ----------
+    tree : dict
+        Calibration tree from `~snowblind.reset_calib.read_calibration`;
+        ``pedestal_mean`` and ``provenance["superbias"]`` are used.
+    shape : tuple of int
+        ``(nrows, ncols)`` of the data; the map must match it.
+    fastaxis : int
+        ``meta.subarray.fastaxis`` of the data, for the high-pass.
+    slowaxis : int
+        ``meta.subarray.slowaxis`` of the data.
+    highpass : bool
+        Apply `highpass_prior` to the map.
+    science_superbias : str or None
+        Name of the superbias subtracted from the data, compared with the
+        calibration's to decide whether to warn.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, ncols)
+        The pedestal map in DN, NaN where the calibration has no value.
     """
     mean = np.array(tree["pedestal_mean"], dtype=np.float32)
     if mean.shape != tuple(shape):
@@ -312,6 +368,33 @@ def reset_prior_map(
     the two agree.  ``science_superbias`` is the name of the superbias
     subtracted from the data; when it differs from the calibration's the
     map is corrected by the difference of the two reference images.
+
+    Parameters
+    ----------
+    calib_path : str
+        Calibration ASDF file from ``snowblind-reset-calib``.
+    shape : tuple of int
+        ``(nrows, ncols)`` of the data.
+    fastaxis : int
+        ``meta.subarray.fastaxis`` of the data.
+    slowaxis : int
+        ``meta.subarray.slowaxis`` of the data.
+    highpass : bool
+        Apply `highpass_prior` to the pedestal map.
+    per_channel_timing : bool
+        Add the file's ``reset_offset_channels`` per output channel when it
+        has them; otherwise the scalar ``reset_offset`` is added everywhere.
+    reset_offset : float
+        Extra offset in DN added on top of the file's.
+    science_superbias : str or None
+        Name of the superbias subtracted from the data, passed to
+        `calibrated_pedestal_map`.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, ncols)
+        Prior mean of the reset level in DN; zero where the map has no
+        value, plus the offsets.
     """
     tree = read_calibration(calib_path)
     mean = calibrated_pedestal_map(tree, shape, fastaxis, slowaxis, highpass=highpass, science_superbias=science_superbias)
@@ -329,7 +412,34 @@ def reset_prior_map(
 
 
 def _first_resultant(model, use_zeroframe):
-    """The first resultant the fit uses, its time since reset, a usable mask, the later-group slope (DN/s) and t1."""
+    """The first resultant the fit uses, its time since reset, a usable mask, the later-group slope (DN/s) and t1.
+
+    Only the first integration is used.
+
+    Parameters
+    ----------
+    model : `~stdatamodels.jwst.datamodels.RampModel`
+        The ramp; ``data``, ``groupdq``, ``pixeldq``, ``zeroframe`` and the
+        exposure timing keywords are read.
+    use_zeroframe : bool
+        Take the zeroframe as the first resultant when the model has one
+        with any non-zero pixel; otherwise group 0 is used.
+
+    Returns
+    -------
+    first : ndarray of float64, shape (nrows, ncols)
+        The first resultant in DN (zeroframe or group 0).
+    t_first : float
+        Its time since reset in seconds: the frame time for the zeroframe,
+        else the first group's mean time.
+    clean : ndarray of bool, shape (nrows, ncols)
+        Pixels with no group flag, no DO_NOT_USE pixel flag, a usable
+        first resultant and finite values.
+    rest : ndarray of float64, shape (nrows, ncols)
+        Slope of groups 1 onwards in DN/s.
+    t1 : float
+        Mean time since reset of the first group in seconds.
+    """
     from .stream_clean import slope_per_group
 
     exposure = model.meta.exposure
@@ -351,7 +461,7 @@ def _first_resultant(model, use_zeroframe):
     return first, t_first, clean, rest, t1
 
 
-def star_anchored_scales(model, base_level, blocks, use_zeroframe, max_signal=50.0, min_bright=500, fallback=None,
+def star_anchored_scales(model, base_level, blocks, use_zeroframe, min_bright=500, fallback=None,
                          bright_range=(50.0, 2000.0), nbins=6, min_per_bin=20):
     """The first-read scale per channel from the exposure's own bright, unsaturated pixels.
 
@@ -365,6 +475,37 @@ def star_anchored_scales(model, base_level, blocks, use_zeroframe, max_signal=50
     0.04 biases the rate of every pixel the reset point weighs on by about
     a percent.  Channels with fewer than ``min_bright`` such pixels, or whose
     fit leaves fewer than 3 bins, keep their ``fallback`` scale.
+
+    Parameters
+    ----------
+    model : `~stdatamodels.jwst.datamodels.RampModel`
+        The ramp, read through `_first_resultant`.
+    base_level : float or ndarray, shape (nrows, ncols)
+        Prior mean of the reset level in DN, subtracted from the first
+        resultant.
+    blocks : sequence of (slice, slice)
+        Science-frame ``(rows, cols)`` of each output channel.
+    use_zeroframe : bool
+        Passed to `_first_resultant`.
+    min_bright : int
+        Fewer bright pixels than this in a channel keeps its fallback scale.
+    fallback : sequence of float or None
+        Scale per channel to keep when the fit is not possible; None means
+        1.0 everywhere.
+    bright_range : tuple of float
+        ``(low, high)`` in DN of the nominal first-resultant signal for a
+        pixel to count as bright.
+    nbins : int
+        Number of logarithmic bins of the slope between the ends of
+        ``bright_range``.
+    min_per_bin : int
+        Bins with fewer pixels are left out of the line fit.
+
+    Returns
+    -------
+    list of float
+        First-read scale per channel, each fitted value clipped to
+        ``[0.7, 1.1]``.
     """
     first, t_first, clean, rest, t1 = _first_resultant(model, use_zeroframe)
     base = np.broadcast_to(np.asarray(base_level, dtype=np.float64), first.shape)
@@ -412,6 +553,32 @@ def sky_anchored_offsets(
     few percent of the first read on a faint sky.  Channels with fewer than
     ``min_pixels`` sky pixels keep their ``fallback`` offset (the
     calibration file's) with a warning.
+
+    Parameters
+    ----------
+    model : `~stdatamodels.jwst.datamodels.RampModel`
+        The ramp, read through `_first_resultant`.
+    base_level : float or ndarray, shape (nrows, ncols)
+        Prior mean of the reset level in DN without any scalar offset.
+    t1_scales : sequence of float
+        First-read scale ``k`` per channel.
+    blocks : sequence of (slice, slice)
+        Science-frame ``(rows, cols)`` of each output channel.
+    use_zeroframe : bool
+        Passed to `_first_resultant`.
+    max_signal : float
+        Pixels whose expected first-resultant signal is below this (and
+        above ``-0.4 * max_signal``), in DN, count as sky.
+    min_pixels : int
+        Fewer sky pixels than this in a channel keeps its fallback offset.
+    fallback : sequence of float or None
+        Offset per channel in DN to keep when there are too few sky pixels;
+        None means 0.0 everywhere.
+
+    Returns
+    -------
+    list of float
+        Reset offset per channel in DN.
     """
     first, t_first, clean, rest, t1 = _first_resultant(model, use_zeroframe)
     base = np.broadcast_to(np.asarray(base_level, dtype=np.float64), first.shape)
@@ -430,13 +597,39 @@ def sky_anchored_offsets(
 
 
 def first_group_time(model):
-    """Mean time since reset of the first group's reads, in seconds (the stcal convention)."""
+    """Mean time since reset of the first group's reads, in seconds (the stcal convention).
+
+    Parameters
+    ----------
+    model : `~stdatamodels.jwst.datamodels.RampModel`
+        Supplies ``meta.exposure.frame_time`` and ``meta.exposure.nframes``.
+
+    Returns
+    -------
+    float
+        ``frame_time * (nframes + 1) / 2`` in seconds.
+    """
     exposure = model.meta.exposure
     return float(exposure.frame_time) * (int(exposure.nframes) + 1) / 2.0
 
 
 def rescale_t1(t1_scale, t1_calibration, t1_data):
-    """Carry a first-read scale measured at one first-group time to another, as a fixed delay in seconds."""
+    """Carry a first-read scale measured at one first-group time to another, as a fixed delay in seconds.
+
+    Parameters
+    ----------
+    t1_scale : float
+        First-read scale measured on the calibration exposure.
+    t1_calibration : float
+        First-group time of the calibration exposure in seconds.
+    t1_data : float
+        First-group time of the exposure being fitted in seconds.
+
+    Returns
+    -------
+    float
+        ``1 - (1 - t1_scale) * t1_calibration / t1_data``.
+    """
     delay = (1.0 - float(t1_scale)) * float(t1_calibration)
     return 1.0 - delay / float(t1_data)
 
@@ -453,6 +646,20 @@ def highpass_prior(pedestal_mean, fastaxis, slowaxis):
     not noise, but it is in both the first read and the map and cancels
     only if both are treated alike.  The per-channel mean of the map is
     kept, since the sky-anchored reset offsets are defined relative to it.
+
+    Parameters
+    ----------
+    pedestal_mean : ndarray, shape (nrows, ncols)
+        Pedestal map in the science frame, DN, NaN where unknown.
+    fastaxis : int
+        ``meta.subarray.fastaxis`` of the data.
+    slowaxis : int
+        ``meta.subarray.slowaxis`` of the data.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, ncols)
+        The map minus its slow structure, DN; NaN where the input was.
     """
     from .stream_clean import estimate_noise
 
@@ -470,7 +677,27 @@ def highpass_prior(pedestal_mean, fastaxis, slowaxis):
 
 
 def write_resetfit(path, integ_info, sigma_b, t1_scale, detector, reset_level=0.0):
-    """Write the reset diagnostics of a fit to an ASDF file."""
+    """Write the reset diagnostics of a fit to an ASDF file.
+
+    Parameters
+    ----------
+    path : str
+        Output ASDF file path.
+    integ_info : dict
+        Per-integration results of `likely_ramp_fit_reset`; the
+        ``used_reset`` and ``d0_resid`` planes, shape
+        (nints, nrows, ncols), are written along with their mean fraction
+        and mean squared value.
+    sigma_b : float or ndarray, shape (nrows, ncols)
+        Reset-level scatter used by the fit, DN.
+    t1_scale : float
+        First-read scale used by the fit.
+    detector : str
+        Detector name.
+    reset_level : float or ndarray, shape (nrows, ncols)
+        Prior mean of the reset level used by the fit, DN; its median is
+        stored as well.
+    """
     used = np.asarray(integ_info["used_reset"])
     resid = np.asarray(integ_info["d0_resid"], dtype=np.float32)
     finite = np.isfinite(resid) & used

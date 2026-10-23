@@ -98,14 +98,20 @@ def channel_spectra(image_det, mask_det, first_direction=1, max_lag=65536):
 
     Parameters
     ----------
-    image_det, mask_det : ndarray, shape (nrows, ncols)
-        Background-subtracted image and background mask in the detector frame.
+    image_det : ndarray, shape (nrows, ncols)
+        Background-subtracted image in the detector frame.
+    mask_det : ndarray of bool, shape (nrows, ncols)
+        Background mask in the detector frame, True for usable pixels.
     first_direction : int
+        Readout direction of channel 0, +1 or -1; adjacent channels alternate.
     max_lag : int
+        Requested autocorrelation length in clocks, before the cap.
 
     Returns
     -------
-    freq : ndarray
+    freq : ndarray, shape (lag + 1,)
+        Frequencies in cycles per clock, from 0 to 0.5, where ``lag`` is the
+        capped autocorrelation length.
     spectra : list
         One spectrum per channel, or None for a channel without usable pixels.
     """
@@ -160,6 +166,16 @@ def log_binned_spectrum(freq, spectrum, nbins=48):
 
     The zero frequency is dropped.  Empty bins are omitted.
 
+    Parameters
+    ----------
+    freq : ndarray, shape (nfreq,)
+        Frequencies in cycles per clock.
+    spectrum : ndarray, shape (nfreq,)
+        Power at each frequency.
+    nbins : int
+        Number of logarithmically spaced bins between the lowest and highest
+        positive frequency.
+
     Returns
     -------
     bin_freq : ndarray
@@ -186,6 +202,21 @@ def smooth_spectrum(freq, spectrum, nbins=48):
 
     Interpolation is linear in log frequency and log power; the zero
     frequency gets the lowest-bin value.
+
+    Parameters
+    ----------
+    freq : ndarray, shape (nfreq,)
+        Frequencies in cycles per clock.
+    spectrum : ndarray, shape (nfreq,)
+        Power at each frequency.
+    nbins : int
+        Number of log bins passed to `log_binned_spectrum`.  Bins with
+        non-positive median power are left out of the interpolation.
+
+    Returns
+    -------
+    ndarray, shape (nfreq,)
+        Smoothed power at each frequency of ``freq``.
     """
     bin_freq, bin_spectrum = log_binned_spectrum(freq, spectrum, nbins)
     positive = bin_spectrum > 0
@@ -196,7 +227,24 @@ def smooth_spectrum(freq, spectrum, nbins=48):
 
 
 def power_law(freq, amplitude, alpha, white):
-    """``amplitude * freq**-alpha + white``."""
+    """``amplitude * freq**-alpha + white``.
+
+    Parameters
+    ----------
+    freq : ndarray or float
+        Frequency in cycles per clock.
+    amplitude : float
+        Power of the colored component at unit frequency.
+    alpha : float
+        Power-law slope.
+    white : float
+        White noise floor added to every frequency.
+
+    Returns
+    -------
+    ndarray or float
+        Model power at ``freq``; infinite at zero frequency.
+    """
     with np.errstate(divide="ignore"):
         return amplitude * np.power(freq, -alpha) + white
 
@@ -213,19 +261,33 @@ def fit_power_law(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, nbi
 
     Parameters
     ----------
-    freq, spectrum : ndarray
+    freq : ndarray, shape (nfreq,)
+        Frequencies in cycles per clock; ``freq[1]`` is the resolution.
+    spectrum : ndarray, shape (nfreq,)
+        Power at each frequency.
     alpha_bounds : tuple of float
         Allowed range of the slope.
     fixed_alpha : float or None
         If given, only ``amplitude`` and ``white`` are fitted.
     nbins : int
+        Number of log bins passed to `log_binned_spectrum`.
     min_freq : float or None
         Lowest frequency used.  Default is ``LEAKAGE_BINS`` times the
         frequency resolution.
 
     Returns
     -------
-    amplitude, alpha, white : float
+    amplitude : float
+        Power of the colored component at unit frequency.
+    alpha : float
+        Fitted slope, or ``fixed_alpha`` when given.
+    white : float
+        White noise floor.
+
+    Raises
+    ------
+    ValueError
+        If fewer than three log bins have positive power.
     """
     if min_freq is None:
         min_freq = LEAKAGE_BINS * freq[1]
@@ -239,6 +301,18 @@ def fit_power_law(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, nbi
     amp0 = max(s[0] - white0, 1e-3 * white0) * f[0]
     if fixed_alpha is None:
         def residual(p):
+            """Log-power residual of the three-parameter model at the binned frequencies.
+
+            Parameters
+            ----------
+            p : sequence of float, length 3
+                ``(log amplitude, alpha, log white)``.
+
+            Returns
+            -------
+            ndarray
+                ``log(model) - log(binned spectrum)`` at each usable bin.
+            """
             return np.log(power_law(f, np.exp(p[0]), p[1], np.exp(p[2]))) - np.log(s)
 
         alpha0 = float(np.clip(1.0, *alpha_bounds))
@@ -250,6 +324,18 @@ def fit_power_law(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, nbi
         return float(np.exp(result.x[0])), float(result.x[1]), float(np.exp(result.x[2]))
 
     def residual_fixed(p):
+        """Log-power residual of the model with the slope held at ``fixed_alpha``.
+
+        Parameters
+        ----------
+        p : sequence of float, length 2
+            ``(log amplitude, log white)``.
+
+        Returns
+        -------
+        ndarray
+            ``log(model) - log(binned spectrum)`` at each usable bin.
+        """
         return np.log(power_law(f, np.exp(p[0]), fixed_alpha, np.exp(p[1]))) - np.log(s)
 
     result = optimize.least_squares(residual_fixed, [np.log(amp0), np.log(white0)])
@@ -257,7 +343,20 @@ def fit_power_law(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, nbi
 
 
 def wiener_gain(spectrum, white):
-    """``max(S - W, 0) / S`` with non-finite or non-positive S giving zero gain."""
+    """``max(S - W, 0) / S`` with non-finite or non-positive S giving zero gain.
+
+    Parameters
+    ----------
+    spectrum : ndarray
+        Total power S at each frequency.
+    white : float
+        White noise floor W.
+
+    Returns
+    -------
+    ndarray
+        Gain between 0 and 1 at each frequency of ``spectrum``.
+    """
     with np.errstate(invalid="ignore", divide="ignore"):
         gain = (spectrum - white) / spectrum
     gain = np.where(np.isfinite(gain) & (spectrum > 0), gain, 0.0)
@@ -272,8 +371,15 @@ def taper_low_frequencies(freq, gain, cutoff_period):
     freq : ndarray
         Cycles per clock.
     gain : ndarray
+        Gain at each frequency of ``freq``.
     cutoff_period : float
         Period in clocks; anything slower is left to the background model.
+
+    Returns
+    -------
+    ndarray
+        ``gain`` multiplied by a raised-cosine ramp that is 0 below half the
+        cutoff frequency and 1 at and above it.
     """
     cutoff = 1.0 / cutoff_period
     ramp = np.clip((freq - 0.5 * cutoff) / (0.5 * cutoff), 0.0, 1.0)
@@ -287,6 +393,22 @@ def taper_high_frequencies(freq, gain, min_period):
     Compact sources that escaped the scene mask live at high stream
     frequencies, where the 1/f power is weak; cutting the gain there makes
     the filter blind to them at a small cost in cleaning.
+
+    Parameters
+    ----------
+    freq : ndarray
+        Cycles per clock.
+    gain : ndarray
+        Gain at each frequency of ``freq``.
+    min_period : float
+        Period in clocks above whose frequency the gain is zero.
+
+    Returns
+    -------
+    ndarray
+        ``gain`` multiplied by a raised-cosine ramp that is 1 at and below
+        the frequency of period ``2 * min_period`` and 0 at and above the
+        frequency of period ``min_period``.
     """
     cutoff = 1.0 / min_period
     ramp = np.clip((cutoff - freq) / (0.5 * cutoff), 0.0, 1.0)
@@ -295,7 +417,23 @@ def taper_high_frequencies(freq, gain, min_period):
 
 
 def interpolate_gain(freq, gain, nfft):
-    """Interpolate a gain defined on ``freq`` onto the rfft grid of an ``nfft``-point transform."""
+    """Interpolate a gain defined on ``freq`` onto the rfft grid of an ``nfft``-point transform.
+
+    Parameters
+    ----------
+    freq : ndarray
+        Frequencies in cycles per clock, increasing.
+    gain : ndarray
+        Gain at each frequency of ``freq``.
+    nfft : int
+        Transform length.
+
+    Returns
+    -------
+    ndarray, shape (nfft // 2 + 1,)
+        Gain linearly interpolated onto ``np.fft.rfftfreq(nfft)``; held at
+        the end values outside the range of ``freq``.
+    """
     target = np.fft.rfftfreq(nfft, d=1.0)
     return np.interp(target, freq, gain)
 
@@ -306,6 +444,24 @@ def synthetic_stream(n, alpha, amplitude, white_sigma, rng):
     The normalization matches `spectrum_from_autocorrelation`: white noise
     of standard deviation ``white_sigma`` has a flat spectrum of value
     ``white_sigma**2``.
+
+    Parameters
+    ----------
+    n : int
+        Number of clocks in the stream.
+    alpha : float
+        Power-law slope of the colored component.
+    amplitude : float
+        Power of the colored component at unit frequency.
+    white_sigma : float
+        Standard deviation of the white noise.
+    rng : numpy.random.Generator
+        Source of the normal deviates.
+
+    Returns
+    -------
+    ndarray, shape (n,)
+        The simulated stream.
     """
     white = rng.normal(scale=white_sigma, size=n)
     seed = rng.normal(size=n)

@@ -88,3 +88,19 @@ def test_boxcar_window_longer_than_stream_is_clamped():
         noise = boxcar_noise(image, mask, direction=1, window_length=4096, min_density=0.2)
 
     np.testing.assert_allclose(noise, 3.0, atol=1e-4)
+
+
+def test_wiener_noise_caps_protect_period_at_the_stream_length():
+    """wiener_noise with a protect_period longer than the stream warns and returns a finite estimate."""
+    from snowblind.stream_filters import wiener_noise
+
+    rng = np.random.default_rng(3)
+    image = rng.normal(0.0, 1.0, (32, 64)).astype(np.float32)
+    mask = np.ones(image.shape, dtype=bool)
+    freq = np.linspace(0.0, 0.5, 65)
+    gain = (freq, np.ones(65))
+
+    with pytest.warns(UserWarning, match="protect_period"):
+        noise = wiener_noise(image, mask, direction=1, gain=gain, protect_period=10**7)
+
+    assert np.isfinite(noise).all()

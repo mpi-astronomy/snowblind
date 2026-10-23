@@ -16,5 +16,12 @@ class Step(JwstStep):
 
     @classmethod
     def get_stpipe_loggers(cls):
-        """The jwst loggers plus this package's."""
+        """The jwst loggers plus this package's.
+
+        Returns
+        -------
+        tuple of str
+            The logger names from ``jwst.stpipe.Step.get_stpipe_loggers`` followed
+            by ``"snowblind"``.
+        """
         return super().get_stpipe_loggers() + ("snowblind",)

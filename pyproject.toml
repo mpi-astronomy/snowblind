@@ -15,7 +15,7 @@ requires-python = ">=3.11"
 dependencies = [
     "asdf",
     "astropy",
-    "jwst",
+    "jwst>=2.0.0",
     "numpy",
     "scikit-image>=0.20.0",
     "scipy",

@@ -36,7 +36,8 @@ its GitHub release.
   becomes `open_pixel`, and its module `snowblind.rc_selfcal` becomes
   `snowblind.selfcal`. Imports, `strun rc_selfcal` invocations and
   parameter files using the old names must be updated.
-- Python 3.11 or later is required; tested on 3.11 to 3.14.
+- Python 3.11 or later and jwst 2.0.0 or later are required; tested on
+  Python 3.11 to 3.14.
 - All steps log through module loggers under the `snowblind` namespace,
   which a shared base class names to stpipe so the messages reach the
   step log; `Step.log`, deprecated by stpipe 0.9, is no longer used.

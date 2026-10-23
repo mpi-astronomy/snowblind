@@ -15,7 +15,7 @@ class JumpPlusStep(Step):
 
     For NIR readout modes that average together more than one frames
     per group, i.e NFRAMES > 1, this propagates the detected JUMPS to
-    the successive group, as CR hit within a group effects the slope of
+    the successive group, as a cosmic ray arriving within a group affects the slope of
     the one before and potentially the one after.
 
     Frame-averaged groups that are saturated often got saturated in a
@@ -27,6 +27,24 @@ class JumpPlusStep(Step):
     class_alias = "jump_plus"
 
     def process(self, input_data):
+        """Propagate JUMP_DET flags to the next group and SATURATED flags to the previous one.
+
+        Parameters
+        ----------
+        input_data : str or RampModel
+            Filename or ramp datamodel after jump detection, with a ``groupdq`` array
+            of shape (nints, ngroups, nrows, ncols).  When ``meta.exposure.nframes``
+            is 1 the step is skipped.
+
+        Returns
+        -------
+        RampModel
+            Copy of the input.  With frame averaging, each group's JUMP_DET flags are
+            also set in the following group, each group's SATURATED flags are also set
+            in the preceding group, and ``meta.cal_step.jump_plus`` is ``"COMPLETE"``.
+            Without frame averaging the copy is unchanged, ``self.skip`` is set and
+            ``meta.cal_step.jump_plus`` is ``"SKIPPED"``.
+        """
         with datamodels.open(input_data) as jump:
             # If there is more than one frame averaged into a group,
             # then jumps events are to be flagged for 2 frames

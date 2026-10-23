@@ -74,19 +74,52 @@ class ResetIntegInfo(IntegInfo):
     """IntegInfo with two extra planes: whether the reset difference was used, and its residual."""
 
     def __init__(self, nints, nrows, ncols):
+        """Allocate stcal's per-integration output arrays plus the two reset planes.
+
+        Parameters
+        ----------
+        nints : int
+            Number of integrations.
+        nrows : int
+            Number of image rows.
+        ncols : int
+            Number of image columns.
+        """
         super().__init__(nints, nrows, ncols)
         self.used_reset = np.zeros((nints, nrows, ncols), dtype=bool)
         self.d0_resid = np.full((nints, nrows, ncols), np.nan, dtype=np.float32)
 
     def prepare_info(self):
-        """Arrange output arrays as a dict, as the ramp fit step expects, plus the two extra planes."""
+        """Arrange output arrays as a dict, as the ramp fit step expects, plus the two extra planes.
+
+        Returns
+        -------
+        dict
+            stcal's ``integ_info`` dictionary with the added keys
+            ``used_reset`` (bool, shape (nints, nrows, ncols)) and
+            ``d0_resid`` (float32, same shape).
+        """
         info = super().prepare_info()
         info["used_reset"] = self.used_reset
         info["d0_resid"] = self.d0_resid
         return info
 
     def get_results(self, result, integ, row, used_reset=None):
-        """Store a row's results, including the reset diagnostics."""
+        """Store a row's results, including the reset diagnostics.
+
+        Parameters
+        ----------
+        result : RampResult
+            Fit of one row from `fit_ramps_reset`; its ``d0_resid``
+            attribute, when present, is copied into the ``d0_resid`` plane.
+        integ : int
+            Integration index.
+        row : int
+            Row index.
+        used_reset : ndarray or None, shape (ncols,)
+            Whether the reset difference was kept for each pixel of the row;
+            None leaves the ``used_reset`` plane unchanged.
+        """
         super().get_results(result, integ, row)
         if used_reset is not None:
             self.used_reset[integ, row, :] = used_reset.astype(bool)
@@ -154,6 +187,13 @@ def likely_ramp_fit_reset(
     # interval is unchanged.  Scaling the first group's read times instead
     # would also stretch the first ordinary interval and bias that difference.
     reset_time = (1.0 - t1_scale) * first_group_time
+    first_time = float(readtimes[0][0])
+    if reset_time >= first_time:
+        log.warning(
+            f"First-read scale {t1_scale:.3f} puts the reset {reset_time:.2f} s after the nominal reset, at or after "
+            f"the first resultant at {first_time:.2f} s; placing it at half that time instead"
+        )
+        reset_time = 0.5 * first_time
     readtimes.insert(0, np.array([reset_time]))
     covar = Covar(readtimes)
 
@@ -264,8 +304,16 @@ def likely_ramp_fit_reset_blocks(
     Parameters
     ----------
     ramp_data : RampData
-    readnoise_2d, gain_2d : ndarray
-    sigma_b : float or ndarray
+        Full-frame ramp data as built by
+        ``stcal.ramp_fitting.ramp_fit.create_ramp_fit_class``; a shallow
+        copy with its arrays sliced is handed to each block fit.
+    readnoise_2d : ndarray, shape (nrows, ncols)
+        CDS read noise per pixel, DN.
+    gain_2d : ndarray, shape (nrows, ncols)
+        Gain per pixel, e/DN.
+    sigma_b : float or ndarray, shape (nrows, ncols)
+        Reset-level scatter in DN, broadcast to the full frame and sliced
+        per block.
     blocks : sequence of (slice, slice)
         Science-frame ``(rows, cols)`` of each block.
     t1_scales : sequence of float
@@ -273,6 +321,7 @@ def likely_ramp_fit_reset_blocks(
     reset_levels : sequence of float or ndarray
         One per block; an array is the full-frame prior mean, sliced here.
     use_zeroframe : bool
+        Passed to `likely_ramp_fit_reset`.
 
     Returns
     -------
@@ -327,18 +376,33 @@ def mask_jumps_reset(
     Parameters
     ----------
     diffs : ndarray, shape (ndiffs, ncols)
+        Resultant differences of one row divided by their time intervals,
+        DN/s; the first entry is the reset difference.
     covar : Covar
-    rnoise, gain : ndarray, shape (ncols,)
+        Read-time covariance coefficients from stcal's ``Covar``, built with
+        the reset resultant as the first read time.
+    rnoise : ndarray, shape (ncols,)
+        Single-read noise per pixel of the row, DN.
+    gain : ndarray, shape (ncols,)
+        Gain per pixel of the row, e/DN.
     sigma_b : ndarray of shape (ncols,) or None
         Per-pixel reset scatter for the row; None leaves stcal's read-noise
         term for the first difference unchanged.
-    threshold_one_omit, threshold_two_omit : float
+    threshold_one_omit : float
+        Minimum chi-squared improvement for dropping one difference.
+    threshold_two_omit : float
+        Minimum chi-squared improvement for dropping two adjacent
+        differences.
     diffs2use : ndarray of shape (ndiffs, ncols) or None
+        Initial mask of usable differences (1 usable, 0 not); None uses all.
+        Modified in place.
 
     Returns
     -------
-    diffs2use : ndarray
-    countrate : ndarray
+    diffs2use : ndarray of uint8, shape (ndiffs, ncols)
+        The mask with the detected jumps removed.
+    countrate : ndarray, shape (ncols,)
+        Count rate per pixel from the last fit, DN/s.
     """
     loc_diff = diffs
 
@@ -452,6 +516,39 @@ def fit_ramps_reset(
     carries ``d0_resid``, the first difference minus the fitted rate in
     units of the first difference's standard deviation, NaN where the first
     difference was not used.
+
+    Parameters
+    ----------
+    diffs : ndarray, shape (ndiffs, ncols)
+        Resultant differences of one row divided by their time intervals,
+        DN/s; the first entry is the reset difference.
+    covar : Covar
+        Read-time covariance coefficients from stcal's ``Covar``.
+    gain : ndarray, shape (ncols,)
+        Gain per pixel of the row, e/DN.
+    rnoise : ndarray, shape (ncols,)
+        Single-read noise per pixel of the row, DN.
+    sigma_b : ndarray of shape (ncols,) or None
+        Per-pixel reset scatter for the row in DN, or None for the scalar
+        form (stcal's unchanged read-noise term).
+    count_rate_guess : ndarray or None, shape (ncols,) or (1, ncols)
+        Count rate used for the photon-noise part of the covariance, DN/s;
+        None takes stcal's initial guess from the differences.
+    diffs2use : ndarray or None, shape (ndiffs, ncols)
+        Mask of usable differences (1 usable, 0 not); None uses all.
+    detect_jumps : bool
+        Also compute the one- and two-omit chi-squared values that
+        `mask_jumps_reset` searches.
+    rescale : bool
+        Rescale the covariance to keep the recursion numerically stable, as
+        in stcal.
+    dn_scale : float
+        How often (in differences) the rescaling is applied.
+
+    Returns
+    -------
+    RampResult
+        stcal's result for the row with the extra attribute ``d0_resid``.
     """
     if diffs2use is None:
         diffs2use = np.ones(diffs.shape, np.uint8)
@@ -504,6 +601,39 @@ def compute_alphas_betas_reset(count_rate_guess, gain, rnoise, covar, rescale, d
 
     With ``sigma_b`` given, the read-noise part of the first diagonal
     element is replaced by ``(sigma_b**2 + rnoise**2 / N_1) / dt_0**2``.
+
+    Parameters
+    ----------
+    count_rate_guess : ndarray, shape (ncols,) or (1, ncols)
+        Count rate per pixel for the photon-noise terms, DN/s.
+    gain : ndarray, shape (ncols,)
+        Gain per pixel, e/DN.
+    rnoise : ndarray, shape (ncols,)
+        Single-read noise per pixel, DN.
+    covar : Covar
+        Read-time coefficients ``alpha_phnoise``, ``alpha_readnoise``,
+        ``beta_phnoise``, ``beta_readnoise``, ``Nreads`` and ``delta_t``.
+    rescale : bool
+        Rescale ``alpha`` and ``beta`` by a running factor so that the
+        theta recursion stays of order one.
+    diffs : ndarray, shape (ndiffs, ncols)
+        Differences; only their shape is used.
+    dn_scale : float
+        The rescaling factor is refreshed every ``int(dn_scale)`` differences.
+    sigma_b : ndarray of shape (ncols,) or None
+        Per-pixel reset scatter in DN; None keeps stcal's first element.
+
+    Returns
+    -------
+    alpha_tuple : tuple of ndarray
+        ``(alpha, alpha_phnoise, alpha_readnoise)``, the covariance diagonal
+        and its photon- and read-noise parts, shape (ndiffs, ncols); only
+        ``alpha`` is rescaled.
+    beta_tuple : tuple of ndarray
+        ``(beta, beta_phnoise, beta_readnoise)``, the off-diagonal and its
+        parts, shape (ndiffs - 1, ncols); only ``beta`` is rescaled.
+    scale : ndarray or int
+        The rescaling factor per pixel, or 1 when ``rescale`` is False.
     """
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", ".*invalid value.*", RuntimeWarning)

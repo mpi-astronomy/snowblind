@@ -10,6 +10,8 @@
 
 # Installation
 
+snowblind needs jwst 2.0.0 or later.  Earlier releases of snowblind work
+with earlier jwst releases.
 
     pip install snowblind
 

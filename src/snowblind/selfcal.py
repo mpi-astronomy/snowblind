@@ -41,6 +41,24 @@ class OpenPixelStep(Step):
     class_alias = "open_pixel"
 
     def process(self, input_data):
+        """Flag hot (and optionally low-signal) pixels found in the per-detector median image.
+
+        Parameters
+        ----------
+        input_data : str or ModelContainer
+            Association file or container of image datamodels (``_rate`` or ``_cal``
+            products) with ``data`` and ``dq`` arrays of shape (nrows, ncols).  The
+            models are grouped by ``meta.instrument.detector``; a mask is made from
+            the median of each group and applied to every member of that group.
+            With ``self.save_mask`` the mask and the median image of each detector
+            are saved with the ``mask`` and ``median`` suffixes.
+
+        Returns
+        -------
+        ModelContainer
+            Copy of the input with ``DO_NOT_USE | ADJ_OPEN`` set in ``dq`` on the
+            flagged pixels; the science data are unchanged.
+        """
         with datamodels.open(input_data) as images:
 
             # Sort into a dict of lists, grouped by detector
@@ -77,6 +95,16 @@ class OpenPixelStep(Step):
     def get_selfcal_stack(self, images):
         """
         Get a stack of exposures taken with same detector as the data
+
+        Parameters
+        ----------
+        images : list of ImageModel
+            Exposures of one detector, each with ``data`` of shape (nrows, ncols).
+
+        Returns
+        -------
+        ndarray, shape (nexposures, nrows, ncols)
+            The ``data`` arrays stacked along the first axis.
         """
         stack = []
         for model in images:
@@ -85,6 +113,23 @@ class OpenPixelStep(Step):
         return np.array(stack)
 
     def create_hotpixel_mask(self, image_stack):
+        """Median-collapse the stack and flag pixels far from its sigma-clipped median.
+
+        Parameters
+        ----------
+        image_stack : ndarray, shape (nexposures, nrows, ncols)
+            Science images of one detector.  The NaN-ignoring median over the first
+            axis is compared with its own sigma-clipped median and standard deviation;
+            pixels more than ``self.threshold`` sigma above are flagged, and with
+            ``self.flag_low_signal_pix`` also those as far below.
+
+        Returns
+        -------
+        mask : ndarray of bool, shape (nrows, ncols)
+            True for the flagged pixels.
+        median2d : ndarray, shape (nrows, ncols)
+            The median image over the stack.
+        """
         # Median collapse the stack of images
         with warnings.catch_warnings():
             warnings.filterwarnings(action="ignore", message="All-NaN slice encountered")

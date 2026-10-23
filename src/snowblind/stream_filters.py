@@ -16,13 +16,27 @@ from .noise_spectrum import interpolate_gain
 __all__ = ["row_median_noise", "boxcar_noise", "wiener_noise", "normalized_stream_filter", "boxcar_response", "FILTERS"]
 
 
-def row_median_noise(channel_image, channel_mask, direction=1, **kwargs):
+def row_median_noise(channel_image, channel_mask, direction=1):
     """Estimate the noise as the masked median of each row of the channel.
 
     Rows with no usable pixel get an estimate of zero.  This reproduces
     ``jwst.clean_flicker_noise.clean_flicker_noise.median_clean`` with
     ``fit_by_channel=True`` and is the baseline the other estimators are
     compared against.
+
+    Parameters
+    ----------
+    channel_image : ndarray, shape (nrows, width)
+        Channel image in the detector frame; the estimate is in its units.
+    channel_mask : ndarray of bool, shape (nrows, width)
+        Background mask, True for pixels that may be used.
+    direction : int
+        Readout direction of the channel; not used by this estimator.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, width)
+        The masked median of each row, repeated across the row.
     """
     masked = np.where(channel_mask, channel_image, np.nan).astype(np.float32)
     with warnings.catch_warnings():
@@ -32,7 +46,7 @@ def row_median_noise(channel_image, channel_mask, direction=1, **kwargs):
     return np.repeat(stripes[:, np.newaxis], channel_image.shape[1], axis=1).astype(np.float32)
 
 
-def normalized_stream_filter(channel_image, channel_mask, direction, response, min_density, **kwargs):
+def normalized_stream_filter(channel_image, channel_mask, direction, response, min_density):
     """Filter the masked readout stream of a channel with a given frequency response.
 
     The estimate on the full clock grid is the normalized masked convolution
@@ -44,18 +58,24 @@ def normalized_stream_filter(channel_image, channel_mask, direction, response, m
 
     Parameters
     ----------
-    channel_image, channel_mask : ndarray, shape (nrows, width)
+    channel_image : ndarray, shape (nrows, width)
+        Channel image in the detector frame; the estimate is in its units.
+        Non-finite pixels are treated as masked.
+    channel_mask : ndarray of bool, shape (nrows, width)
+        Background mask, True for pixels that may be used.
     direction : int
         Readout direction of the channel.
     response : callable
         ``response(nfft) -> ndarray`` giving the real, non-negative gain on
         ``np.fft.rfftfreq(nfft)``.
     min_density : float
-        Density below which the blend toward the row median starts.
+        Density below which the blend toward the row median starts.  Zero
+        or negative returns the ratio without any blending.
 
     Returns
     -------
     ndarray of float32, shape (nrows, width)
+        Noise estimate for every pixel of the channel.
     """
     nrows, width = channel_image.shape
     mask = channel_mask & np.isfinite(channel_image)
@@ -76,13 +96,34 @@ def normalized_stream_filter(channel_image, channel_mask, direction, response, m
     return (blend * estimate + (1.0 - blend) * fallback).astype(np.float32)
 
 
-def boxcar_noise(channel_image, channel_mask, direction=1, window_length=4096, min_density=0.2, **kwargs):
+def boxcar_noise(channel_image, channel_mask, direction=1, window_length=4096, min_density=0.2):
     """Estimate the noise as a normalized running mean of ``window_length`` clocks along the readout stream.
 
     A sanity-check estimator: it is the normalized masked convolution of
     `normalized_stream_filter` with a boxcar response.  The density is the
     fraction of the window holding background samples, so ``min_density``
     is compared against that fraction.
+
+    Parameters
+    ----------
+    channel_image : ndarray, shape (nrows, width)
+        Channel image in the detector frame; the estimate is in its units.
+    channel_mask : ndarray of bool, shape (nrows, width)
+        Background mask, True for pixels that may be used.
+    direction : int
+        Readout direction of the channel, +1 or -1.
+    window_length : int
+        Length of the running mean in clocks.  A value longer than the
+        stream is reduced to the stream length, with a warning.
+    min_density : float
+        Fraction of the window that must hold background samples; below it
+        the estimate blends toward the row median, see
+        `normalized_stream_filter`.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, width)
+        Noise estimate for every pixel of the channel.
     """
     window = int(min(window_length, readout.stream_length(*channel_image.shape)))
     if window != window_length:
@@ -91,8 +132,34 @@ def boxcar_noise(channel_image, channel_mask, direction=1, window_length=4096, m
 
 
 def boxcar_response(window_length):
-    """Return a ``response(nfft)`` callable for a centered boxcar of ``window_length`` clocks."""
+    """Return a ``response(nfft)`` callable for a centered boxcar of ``window_length`` clocks.
+
+    Parameters
+    ----------
+    window_length : int
+        Width of the boxcar in clocks.
+
+    Returns
+    -------
+    callable
+        ``response(nfft)`` returning the frequency response, on
+        ``np.fft.rfftfreq(nfft)``, of a boxcar of ``window_length`` clocks
+        with unit sum, centered on clock zero (its first half wraps around
+        the end of the ``nfft``-point kernel).
+    """
     def response(nfft):
+        """Frequency response of the centered boxcar on the rfft grid of an ``nfft``-point transform.
+
+        Parameters
+        ----------
+        nfft : int
+            Transform length; the boxcar is laid out on ``nfft`` clocks.
+
+        Returns
+        -------
+        ndarray, shape (nfft // 2 + 1,)
+            Real part of the rfft of the boxcar kernel.
+        """
         kernel = np.zeros(nfft)
         half = window_length // 2
         kernel[: window_length - half] = 1.0 / window_length
@@ -102,13 +169,17 @@ def boxcar_response(window_length):
     return response
 
 
-def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain=None, protect_period=None, **kwargs):
+def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain=None, protect_period=None):
     """Estimate the noise with a Wiener gain derived from the channel's own spectrum.
 
     Parameters
     ----------
-    channel_image, channel_mask : ndarray, shape (nrows, width)
+    channel_image : ndarray, shape (nrows, width)
+        Channel image in the detector frame; the estimate is in its units.
+    channel_mask : ndarray of bool, shape (nrows, width)
+        Background mask, True for pixels that may be used.
     direction : int
+        Readout direction of the channel, +1 or -1.
     min_density : float
         See `normalized_stream_filter`.
     gain : tuple of ndarray
@@ -122,19 +193,44 @@ def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain
         length), leaving anything that slow to the background model.  This
         is the well-posed form of tapering the gain to zero at the lowest
         frequencies, which cannot be done inside a normalized convolution.
+        A value longer than the stream is reduced to the stream length,
+        with a warning.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, width)
+        Noise estimate for every pixel of the channel.
+
+    Raises
+    ------
+    ValueError
+        If ``gain`` is None.
     """
     if gain is None:
         raise ValueError("wiener_noise needs the (freq, gain) pair estimated for this channel")
     freq, values = gain
 
     def response(nfft):
+        """Interpolate the channel's gain onto the rfft grid of an ``nfft``-point transform.
+
+        Parameters
+        ----------
+        nfft : int
+            Transform length.
+
+        Returns
+        -------
+        ndarray, shape (nfft // 2 + 1,)
+            Gain at ``np.fft.rfftfreq(nfft)``.
+        """
         return interpolate_gain(freq, values, nfft)
 
     estimate = normalized_stream_filter(channel_image, channel_mask, direction, response, min_density)
     if protect_period is not None:
-        slow = normalized_stream_filter(
-            estimate, np.ones_like(channel_mask), direction, boxcar_response(int(protect_period)), 0.0
-        )
+        period = int(min(protect_period, readout.stream_length(*channel_image.shape)))
+        if period != int(protect_period):
+            warnings.warn(f"protect_period {protect_period} exceeds the stream length; using {period}", stacklevel=2)
+        slow = normalized_stream_filter(estimate, np.ones_like(channel_mask), direction, boxcar_response(period), 0.0)
         estimate = estimate - slow
     return estimate.astype(np.float32)
 

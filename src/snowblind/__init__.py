@@ -27,6 +27,12 @@ __all__ = [
 
 def _get_steps():
     """These steps are provided to stpipe by this package
+
+    Returns
+    -------
+    list of tuple
+        One ``(class_name, class_alias, is_pipeline)`` entry per step: the fully
+        qualified class name, the ``strun`` alias and False, as none is a pipeline.
     """
     return [
         ("snowblind.SnowblindStep", 'snowblind', False),

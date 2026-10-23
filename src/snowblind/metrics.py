@@ -24,7 +24,18 @@ __all__ = [
 
 
 def robust_sigma(values):
-    """Standard deviation estimated from the median absolute deviation of finite values (astropy's mad_std)."""
+    """Standard deviation estimated from the median absolute deviation of finite values (astropy's mad_std).
+
+    Parameters
+    ----------
+    values : array_like
+        Sample values of any shape; non-finite entries are left out.
+
+    Returns
+    -------
+    float
+        The MAD-based standard deviation, or NaN when no finite value is left.
+    """
     values = np.asarray(values, dtype=np.float64)
     values = values[np.isfinite(values)]
     if values.size == 0:
@@ -40,8 +51,13 @@ def channel_psd(diff_cube, mask, fastaxis, slowaxis, max_lag=2**14, first_direct
     diff_cube : ndarray, shape (ndiffs, nrows, ncols)
         Group differences in the science frame.
     mask : ndarray of bool, shape (nrows, ncols) or (ndiffs, nrows, ncols)
-        Background mask, True for usable pixels.
-    fastaxis, slowaxis : int
+        Background mask, True for usable pixels.  A single plane is applied
+        to every difference.
+    fastaxis : int
+        ``meta.subarray.fastaxis`` of the data, used to turn the arrays into
+        the detector frame.
+    slowaxis : int
+        ``meta.subarray.slowaxis`` of the data.
     max_lag : int
         Autocorrelation length in clocks.
     first_direction : int
@@ -74,9 +90,14 @@ def row_banding_power(rate_image, mask, fastaxis, slowaxis):
     Parameters
     ----------
     rate_image : ndarray, shape (nrows, ncols)
-    mask : ndarray of bool
+        Rate image in the science frame, DN/s.
+    mask : ndarray of bool, shape (nrows, ncols)
         Background mask, True for usable pixels.
-    fastaxis, slowaxis : int
+    fastaxis : int
+        ``meta.subarray.fastaxis`` of the data, used to turn the arrays into
+        the detector frame.
+    slowaxis : int
+        ``meta.subarray.slowaxis`` of the data.
 
     Returns
     -------
@@ -112,7 +133,8 @@ def aperture_scatter(rate_image, mask, sizes, pixel_sigma=None, min_fraction=0.9
     Parameters
     ----------
     rate_image : ndarray, shape (nrows, ncols)
-    mask : ndarray of bool
+        Rate image, DN/s.
+    mask : ndarray of bool, shape (nrows, ncols)
         Background mask, True for usable pixels.  The mean in an aperture
         is taken over its usable pixels only.
     sizes : sequence of int
@@ -188,8 +210,10 @@ def recovered_fraction(rate, reference_rate, mask=None):
 
     Parameters
     ----------
-    rate, reference_rate : ndarray
-        Rate images from the fit under test and from the reference fit.
+    rate : ndarray, shape (nrows, ncols)
+        Rate image from the fit under test, DN/s.
+    reference_rate : ndarray, shape (nrows, ncols)
+        Rate image from the reference fit, DN/s.
     mask : ndarray of bool or None
         Pixels to consider; default all.
 
@@ -228,15 +252,25 @@ def injected_flux_bias(
 
     Parameters
     ----------
-    rate, reference_rate : ndarray, shape (nrows, ncols)
-    x, y : ndarray
-        Source positions, zero-based pixel coordinates.
-    true_flux : ndarray
-        Injected total flux per source in rate units.
-    mask : ndarray of bool
+    rate : ndarray, shape (nrows, ncols)
+        Cleaned rate image, DN/s.
+    reference_rate : ndarray, shape (nrows, ncols)
+        Rate image of the same data without cleaning, DN/s.
+    x : ndarray, shape (nsources,)
+        Source column positions, zero-based pixel coordinates.
+    y : ndarray, shape (nsources,)
+        Source row positions, zero-based pixel coordinates.
+    true_flux : ndarray, shape (nsources,)
+        Injected total flux per source in rate units (DN/s).
+    mask : ndarray of bool, shape (nrows, ncols)
         Background mask used by the cleaner, True for background pixels.
-    r_ap, r_in, r_out : float
-        Aperture and annulus radii in pixels.
+    r_ap : float
+        Aperture radius in pixels.
+    r_in : float
+        Inner radius of the background annulus in pixels.
+    r_out : float
+        Outer radius of the background annulus in pixels.  Sources closer
+        than ``ceil(r_out) + 1`` to an image edge get NaN fluxes.
     density_box : int
         Side of the box for the local mask density.
 
@@ -258,6 +292,25 @@ def injected_flux_bias(
     dbox = density_box // 2
 
     def aperture_flux(image, xc, yc):
+        """Background-subtracted flux of one source in the circular aperture.
+
+        Parameters
+        ----------
+        image : ndarray, shape (nrows, ncols)
+            Rate image to measure on, DN/s.
+        xc : float
+            Source column position, zero-based pixels.
+        yc : float
+            Source row position, zero-based pixels.
+
+        Returns
+        -------
+        float
+            Sum over pixels within ``r_ap`` of the image minus the median of
+            the ``r_in`` to ``r_out`` annulus; NaN when the cutout leaves the
+            image, the aperture has no finite pixel or the annulus has fewer
+            than 8.
+        """
         x0, x1 = int(round(xc)) - half, int(round(xc)) + half + 1
         y0, y1 = int(round(yc)) - half, int(round(yc)) + half + 1
         if x0 < 0 or y0 < 0 or x1 > ncols or y1 > nrows:
@@ -291,6 +344,23 @@ def injected_flux_bias(
         neighbor = np.full(x.size, np.inf)
 
     def binned(values, edges):
+        """Median relative bias of the sources in each bin of ``values``.
+
+        Parameters
+        ----------
+        values : ndarray, shape (nsources,)
+            Per-source quantity to bin on (mask density, neighbour distance
+            or true flux).
+        edges : ndarray, shape (nbins + 1,)
+            Bin edges; a source belongs to a bin when ``low <= value < high``.
+
+        Returns
+        -------
+        list of tuple
+            One ``(low, high, n, median_bias, scatter)`` per bin that holds
+            at least one source with a finite relative bias; ``scatter`` is
+            the robust sigma of the biases in the bin.
+        """
         rows = []
         for low, high in zip(edges[:-1], edges[1:]):
             selected = (values >= low) & (values < high) & np.isfinite(relative_bias)

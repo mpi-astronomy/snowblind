@@ -319,6 +319,17 @@ def test_write_calibration_records_superbias(tmp_path):
         assert handle.tree["provenance"]["superbias"] == "jwst_nircam_superbias_0454.fits"
 
 
+def superbias_warnings(caplog):
+    """The messages of the captured WARNING (or higher) records that mention the superbias."""
+    import logging
+
+    messages = []
+    for record in caplog.records:
+        if record.levelno >= logging.WARNING and "superbias" in record.getMessage():
+            messages.append(record.getMessage())
+    return messages
+
+
 def test_call_warns_when_data_superbias_differs_from_best_reference(tmp_path, caplog):
     """ResetRampFitStep.call on data recorded with superbias 0001 and override_superbias naming 0002 warns naming both."""
     import logging
@@ -334,8 +345,9 @@ def test_call_warns_when_data_superbias_differs_from_best_reference(tmp_path, ca
             model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=str(other)
         )
 
-    messages = [record.getMessage() for record in caplog.records if "superbias" in record.getMessage()]
-    assert any("jwst_nircam_superbias_0001.fits" in m and "jwst_nircam_superbias_0002.fits" in m for m in messages)
+    message = superbias_warnings(caplog)[0]
+    assert "jwst_nircam_superbias_0001.fits" in message
+    assert "jwst_nircam_superbias_0002.fits" in message
 
 
 def test_call_no_warning_when_data_superbias_matches_best_reference(tmp_path, caplog):
@@ -351,7 +363,7 @@ def test_call_no_warning_when_data_superbias_matches_best_reference(tmp_path, ca
     with caplog.at_level(logging.WARNING):
         ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=str(same))
 
-    assert not [r for r in caplog.records if "superbias" in r.getMessage() and r.levelno >= logging.WARNING]
+    assert superbias_warnings(caplog) == []
 
 
 def test_calibrated_pedestal_map_is_unchanged_for_another_superbias(caplog):

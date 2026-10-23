@@ -779,3 +779,14 @@ def test_clean_ramp_cleans_the_zeroframe_against_the_reference_and_keeps_zero_ma
     good = np.ones((NY, NX), dtype=bool)
     good[3, 5] = good[10, 20] = False
     np.testing.assert_allclose(zeroframe[0][good], reference[good], atol=1e-3)
+
+
+def test_exclude_reference_border_with_zero_width_returns_the_mask_unchanged():
+    """exclude_reference_border with width=0 on an all-True mask returns an all-True mask."""
+    from snowblind.stream_clean import exclude_reference_border
+
+    mask = np.ones((16, 16), dtype=bool)
+
+    out = exclude_reference_border(mask, width=0)
+
+    assert out.all()
