@@ -2291,3 +2291,98 @@ sky change +0.01 percent, large-scale 0.23 percent, tails -0.0074 /
 +0.0074 (wider than OLS_C's -0.0047 / +0.0033 because the reset point
 adds the kTC-limited first difference to every pixel's fit, a per-pixel
 white term, not structure). The CEERS figures read v5.
+
+### 2026-10-22: all six CEERS F444W MEDIUM8 exposures
+
+`results/2026-10-22_ceers_all/<exposure>/<DET>/`, scalar median, flat
+applied, zeroframe cleaned, reset fit with the map prior; measured on
+flat-fielded sky pixels, full frame, DN/s (row-mean / column-mean
+scatter; sky change and large-scale change in percent of the sky):
+
+| exposure | sky | SIRS | jwst | stream_clean, OLS_C | stream_clean, reset fit | reset: sky, LS, finite - OLS_C |
+|---|---|---|---|---|---|---|
+| NRCALONG 00001 | 0.678 | 0.0013 / 0.0015 | 0.0006 / 0.0015 | 0.0003 / 0.0002 | 0.0003 / 0.0002 | +0.01, 0.23, +990 |
+| NRCALONG 00002 | 0.676 | 0.0012 / 0.0017 | 0.0006 / 0.0017 | 0.0003 / 0.0003 | 0.0003 / 0.0002 | +0.04, 0.29, +902 |
+| NRCALONG 00003 | 0.679 | 0.0013 / 0.0016 | 0.0006 / 0.0017 | 0.0003 / 0.0002 | 0.0003 / 0.0002 | +0.02, 0.22, +1255 |
+| NRCBLONG 00001 | 0.706 | 0.0021 / 0.0011 | 0.0007 / 0.0011 | 0.0003 / 0.0002 | 0.0003 / 0.0002 | -0.04, 0.29, +2133 |
+| NRCBLONG 00002 | 0.707 | 0.0022 / 0.0015 | 0.0007 / 0.0015 | 0.0003 / 0.0002 | 0.0003 / 0.0002 | -0.24, 0.31, +1503 |
+| NRCBLONG 00003 | 0.708 | 0.0018 / 0.0011 | 0.0006 / 0.0011 | 0.0003 / 0.0002 | 0.0003 / 0.0002 | -0.13, 0.26, +1462 |
+
+The six are the same to the last digit: stream_clean 0.0003 / 0.0002
+on every exposure of both detectors, against 0.0012 to 0.0022 /
+0.0011 to 0.0017 for SIRS and 0.0006 to 0.0007 / unchanged for the
+jwst median; the sky change is -0.06 percent on every one and the
+large-scale change 0.21 to 0.30 percent; the per-pixel tails -0.005 /
++0.004. The reset fit matches OLS_C in structure on all six and fits
+900 to 2100 more pixels; its sky change varies between -0.24 and +0.04
+percent (the OLS_C clean is -0.06 on all), which is the reset-level
+offset b of the B-module calibration (positive on NRCBLONG, +0.7 to
++2.4 DN) entering through the first difference; small, but worth
+re-deriving b on this field rather than Omega Cen if the B module is
+used in anger. NRCBLONG has more row banding after SIRS than NRCALONG
+(0.0021 against 0.0013) and the same column structure. Figures:
+`field_rate_images_ceers_{nrcalong,nrcblong}{,_full}` from exposure
+00001. Remaining for CEERS: the photometry comparison against James's
+iterated remstriping reduction, which needs his products.
+
+### 2026-10-23: snowball expansion in the jump step for the dark figures
+
+James saw snowball rings in the NIRISS dark figure and asked whether
+`expand_large_events` was on. It was: the NIRISS jump parameter
+reference (0075 in the run, 0087 in context 1598, same values for
+darks and images) sets expand_large_events True, min_jump_area 15,
+expand_factor 1.75, sat_required_snowball True; NIRCam's sets area 5,
+factor 2. The NIRISS Detector1 parameter references (0004 darks, 0005
+images) override nothing. The rings are the halo beyond the expanded
+disc: in the annulus 2 to 25 pixels past the flagged edge of the three
+largest events the rate sits 0.01 to 0.03 DN/s above the frame.
+James's choice: area 8, factor at least 2; the SnowblindStep route is
+not wanted for now (the helper's `snowblind` option now also switches
+the jump expansion off, since Snowblind grows the raw regions and
+would otherwise grow the circles again; `jump_params` and the scripts'
+`--jump key=value` override the reference). Test (scratch
+`snowballs/jump_test.py`, 20 groups, OLS_C; halo = median excess rate
+in the annulus 2 to 30 px beyond each flagged region of 100 px or
+more; "jump px" = JUMP_DET pixels in the rate DQ, which OLS_C still
+fits from the other segments, so no pixel is lost):
+
+| dark | setting | events >= 100 px | jump px | halo median (DN/s) | halo 90th pct |
+|---|---|---|---|---|---|
+| NIRISS | CRDS (area 15, factor 1.75, sat) | 15 | 50496 | +0.0059 | +0.0177 |
+| NIRISS | area 8, factor 2 | 17 | 53804 | +0.0055 | +0.0131 |
+| NIRISS | area 8, factor 2.5 | 21 | 61757 | +0.0035 | +0.0095 |
+| NIRISS | area 8, factor 2, no sat required | 18 | 62199 | +0.0051 | +0.0123 |
+| NIRISS | area 8, factor 3, no sat required | 39 | 106526 | +0.0015 | +0.0069 |
+| NRCA1 | CRDS (area 5, factor 2, sat) | 10 | 71231 | +0.0008 | +0.0077 |
+| NRCA1 | area 8, factor 2 | 10 | 70852 | +0.0008 | +0.0077 |
+| NRCA1 | area 8, factor 2.5 | 11 | 73872 | +0.0006 | +0.0062 |
+| NRCA1 | area 8, factor 2, no sat required | 16 | 90874 | +0.0008 | +0.0048 |
+| NRCA1 | area 8, factor 3, no sat required | 47 | 155521 | +0.0011 | +0.0037 |
+
+The halo falls off slowly, so the expansion factor is the lever and
+the area threshold barely matters at 20 groups: on NIRISS factor 2
+takes the median halo from 0.0059 to 0.0055, factor 2.5 to 0.0035
+(90th percentile 0.0177 -> 0.0095) for 15 percent more flagged
+pixels, and only factor 3 without the saturation requirement reaches
+0.0015, at twice the flagged pixels (2.6 percent of the detector).
+NRCA1 halos are 5 times smaller to begin with. Chosen for the figures:
+area 8, factor 2.5, saturation required, on both darks
+(`--jump min_jump_area=8,expand_factor=2.5`;
+`results/2026-10-23_rate_images_{nis,nrca1}`). The remaining halo at
+factor 2.5 is the tail of the charge profile; a profile-following
+growth is what SnowblindStep does, kept for later.
+
+James asked for more expansion on NIRISS, factor 3. Measured with the
+saturation requirement kept (the earlier factor-3 row was without it):
+
+| dark | setting | events >= 100 px | jump px | halo median (DN/s) | halo 90th pct |
+|---|---|---|---|---|---|
+| NIRISS | area 8, factor 3 | 21 | 71446 | +0.0030 | +0.0080 |
+| NIRISS | area 8, factor 4 | 27 | 96081 | +0.0031 | +0.0076 |
+
+Factor 3 takes the median halo from 0.0035 (factor 2.5) to 0.0030 and
+the 90th percentile from 0.0095 to 0.0080 for 16 percent more flagged
+pixels; factor 4 gains nothing further at 35 percent more, so the
+halo beyond 3 times the core is at the measurement floor of this
+annulus statistic. NIRISS figures now use area 8, factor 3
+(`results/2026-10-23_rate_images_nis_f3`); NRCA1 stays at 2.5.

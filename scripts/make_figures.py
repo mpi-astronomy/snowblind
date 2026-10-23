@@ -168,9 +168,10 @@ def first_read():
 NGROUPS_ROOT = "results/2026-10-21_darks_vs_ngroups"
 RATE_PANELS = "results/2026-10-21_rate_images_v5/NRCA1"
 # the same panels on a NIRISS dark: (panel directory, label for the titles, suffix of the figure files)
+# jump step with min_jump_area 8 and expand_factor 2.5 (NRCA1) or 3 (NIRISS); plan section D, 2026-10-23
 DARK_PANEL_SETS = [
-    (RATE_PANELS, "NRCA1 dark", ""),
-    ("results/2026-10-22_rate_images_nis/NIS", "NIRISS dark", "_nis"),
+    ("results/2026-10-23_rate_images_nrca1/NRCA1", "NRCA1 dark", ""),
+    ("results/2026-10-23_rate_images_nis_f3/NIS", "NIRISS dark", "_nis"),
 ]
 
 
@@ -312,7 +313,8 @@ FIELD_PANELS = "results/2026-10-21_field_panels_v4"
 FIELD_PANEL_SETS = [
     (FIELD_PANELS, "NRCA1", "Omega Cen", "nrca1", "median, flat applied, as run\nfor this program", False),
     (FIELD_PANELS, "NRCALONG", "Omega Cen", "nrcalong", "median, flat applied, as run\nfor this program", False),
-    ("results/2026-10-22_ceers_panels_v5", "NRCALONG", "CEERS", "ceers_nrcalong", "median, flat applied", True),
+    ("results/2026-10-22_ceers_all/00001", "NRCALONG", "CEERS", "ceers_nrcalong", "median, flat applied", True),
+    ("results/2026-10-22_ceers_all/00001", "NRCBLONG", "CEERS", "ceers_nrcblong", "median, flat applied", True),
 ]
 
 

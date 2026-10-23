@@ -37,6 +37,24 @@ def save(out_dir, name, model):
     np.savez_compressed(os.path.join(out_dir, f"{name}.npz"), rate=model.data.astype(np.float32), dq=model.dq)
 
 
+def parse_jump_params(text):
+    """Turn ``key=value,key=value`` into a dict with numbers and booleans converted."""
+    if not text:
+        return None
+    out = {}
+    for item in text.split(","):
+        key, value = item.split("=", 1)
+        value = value.strip()
+        if value.lower() in ("true", "false"):
+            out[key.strip()] = value.lower() == "true"
+        else:
+            try:
+                out[key.strip()] = int(value)
+            except ValueError:
+                out[key.strip()] = float(value)
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("file")
@@ -53,10 +71,17 @@ def main():
         help="stream_clean divides by the flat before fitting and multiplies back after; needed on sky fields, "
         "where the background is the sky times the detector response",
     )
+    parser.add_argument("--snowblind", action="store_true", help="run SnowblindStep after the jump step")
+    parser.add_argument(
+        "--jump", default=None,
+        help="jump step parameters overriding the CRDS reference, as key=value pairs separated by commas, "
+        "e.g. min_jump_area=8,expand_factor=2.0",
+    )
     args = parser.parse_args()
+    jump_params = parse_jump_params(args.jump)
 
     out_root = args.out or os.path.join("results", f"{datetime.date.today().isoformat()}_field_panels")
-    sirs = run_detector1_to_jump(args.file, refpix_algorithm="sirs")
+    sirs = run_detector1_to_jump(args.file, refpix_algorithm="sirs", snowblind=args.snowblind, jump_params=jump_params)
     detector = sirs.meta.instrument.detector
     out_dir = os.path.join(out_root, detector)
     os.makedirs(out_dir, exist_ok=True)

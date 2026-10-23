@@ -418,8 +418,17 @@ cleaning differs between the panels: every one is fitted with OLS_C over
 20 groups and shown at the same stretch, and both cleaning steps run with
 no background subtraction, which is the right setting for a dark. All
 Detector1 steps up to and including jump run with the pipeline's CRDS
-parameters, so snowball expansion in the jump step is on (266 snowballs
-flagged on this 20-group dark). A
+parameters, except that the jump step's snowball expansion runs with a
+minimum jump area of 8 pixels and an expansion factor of 2.5 on NRCA1
+and 3 on NIRISS in place of the reference values (area 5 and factor 2
+for NIRCam, 15 and 1.75 for NIRISS): the halo of a snowball falls off
+slowly and the reference expansion leaves 0.01 to 0.03 DN/s of it in
+the rate image around the largest events, visible at the stretch of
+these figures; the larger factors remove about half of that for 15 to
+40 percent more flagged pixels, which OLS_C still fits from the other
+segments, and a factor of 4 gains nothing further. The remaining ring around
+the largest events in every panel is the tail of that halo, the same in
+all four since they share the jump product. A
 background model exists to protect the sky from the cleaning, and a dark
 has none; a smooth model fitted across the whole detector also ignores
 the real discontinuities in the 1/f noise at the amplifier boundaries and
@@ -658,6 +667,19 @@ hand back the slow 1/f for no gain.
 
    The same on the full frame, binned 2 by 2 for display.
 
+The other five exposures of the visit, two more dithers on NRCALONG and
+three on NRCBLONG, give the same numbers to the last digit: 0.0003 and
+0.0002 DN/s for the stream clean on every one, against 0.0012 to 0.0022
+and 0.0011 to 0.0017 for SIRS, with the sky changed by -0.06 percent
+and its large-scale structure by 0.2 to 0.3 percent on each. NRCBLONG
+has more row banding after SIRS than NRCALONG and the same column
+structure.
+
+.. figure:: figures/field_rate_images_ceers_nrcblong.png
+   :width: 100%
+
+   CEERS on NRCBLONG, exposure 00001, same layout and statistics.
+
 The exposure predates the calibration darks by three years and had a
 different superbias subtracted (reference 0220 against 0443, 11700 DN
 apart). The reset step reports the mismatch and uses the pedestal map
@@ -679,8 +701,8 @@ of a single read into the reset fit, which showed 0.0011 DN/s of row
 structure against 0.0002 for OLS_C on the same cleaned ramp. The step
 now cleans the zeroframe as it cleans the first read, as a difference
 against the reset prior with the background scaled to one frame time,
-and the reset fit matches OLS_C on this field (0.0003 and 0.0002 DN/s)
-while fitting 990 more pixels.
+and the reset fit matches OLS_C on all six exposures (0.0003 and 0.0002
+DN/s) while fitting 900 to 2100 more pixels each.
 
 What this builds on
 -------------------

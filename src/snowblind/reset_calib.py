@@ -61,7 +61,9 @@ DETECTOR1_TO_JUMP = (
 )
 
 
-def run_detector1_to_jump(model, max_groups=None, max_ints=None, refpix_algorithm="sirs"):
+def run_detector1_to_jump(
+    model, max_groups=None, max_ints=None, refpix_algorithm="sirs", snowblind=False, jump_params=None
+):
     """Run the Detector1 steps up to and including jump, in memory, with SIRS refpix.
 
     Parameters
@@ -75,6 +77,16 @@ def run_detector1_to_jump(model, max_groups=None, max_ints=None, refpix_algorith
         If given, only the first ``max_ints`` integrations are kept.
     refpix_algorithm : str
         ``"sirs"`` (default) or ``"median"``, passed to the refpix step.
+    snowblind : bool
+        Also run `~snowblind.SnowblindStep` after the jump step, growing the
+        jump-detected snowballs to their actual extent (the jump step's own
+        expansion is a circle of 1.75 to 2 times the core and leaves the
+        halos below the jump threshold in the rate image).  The jump step's
+        ``expand_large_events`` is then switched off, since Snowblind grows
+        the raw jump regions and would otherwise grow the circles again.
+    jump_params : dict or None
+        Jump step parameters that override the CRDS parameter reference,
+        for example ``{"min_jump_area": 8, "expand_factor": 2.0}``.
 
     Returns
     -------
@@ -105,7 +117,17 @@ def run_detector1_to_jump(model, max_groups=None, max_ints=None, refpix_algorith
         step_class = getattr(importlib.import_module(module_name), class_name)
         if class_name == "RefPixStep":
             params = {**params, "refpix_algorithm": refpix_algorithm}
+        if class_name == "JumpStep":
+            params = {**params, **(jump_params or {})}
+            if snowblind:
+                params["expand_large_events"] = False
+            if params:
+                log.info(f"Jump step parameters overriding the reference: {params}")
         result = step_class.call(result, **params)
+    if snowblind:
+        from .snowblind import SnowblindStep
+
+        result = SnowblindStep.call(result)
     return result
 
 

@@ -251,3 +251,25 @@ def test_reference_superbias_picks_the_latest_delivery():
 
     assert chosen == "jwst_niriss_superbias_0257.fits"
     assert reference_superbias([None]) is None
+
+
+def test_run_detector1_to_jump_accepts_the_snowblind_flag():
+    """run_detector1_to_jump has a snowblind keyword, default False, so the panel scripts can request SnowblindStep."""
+    import inspect
+
+    from snowblind.reset_calib import run_detector1_to_jump
+
+    parameter = inspect.signature(run_detector1_to_jump).parameters["snowblind"]
+
+    assert parameter.default is False
+
+
+def test_run_detector1_to_jump_accepts_jump_params():
+    """run_detector1_to_jump has a jump_params keyword, default None, for overriding the jump step's reference parameters."""
+    import inspect
+
+    from snowblind.reset_calib import run_detector1_to_jump
+
+    parameter = inspect.signature(run_detector1_to_jump).parameters["jump_params"]
+
+    assert parameter.default is None
