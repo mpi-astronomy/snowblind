@@ -122,3 +122,77 @@ def test_chisel_mask_is_not_fooled_by_row_banding():
     background = chisel_mask(rate)
 
     assert (~background).mean() < 0.03
+
+
+def test_chisel_mask_coarse_tier_masks_a_smooth_halo():
+    """chisel_mask on noise plus a wide Gaussian halo of 0.3 sigma peak masks most of the halo core only with the coarse tier."""
+    rng = np.random.default_rng(31)
+    rate = rng.normal(1.0, 0.1, (512, 512))
+    yy, xx = np.mgrid[0:512, 0:512]
+    halo = 0.03 * np.exp(-((yy - 256) ** 2 + (xx - 256) ** 2) / (2 * 60.0 ** 2))
+    rate = rate + halo
+
+    with_tier = chisel_mask(rate)
+    without_tier = chisel_mask(rate, coarse_fwhm=None)
+
+    core = (np.hypot(yy - 256, xx - 256) < 60)
+    assert (~with_tier[core]).mean() > 0.5
+    assert (~without_tier[core]).mean() < 0.2
+
+
+def star_shaped_mask(shape, cy, cx):
+    """A scene mask (True where background) with a star-shaped hole: a 60 px core and 300 x 20 px arms."""
+    mask = np.ones(shape, dtype=bool)
+    mask[cy - 30:cy + 30, cx - 30:cx + 30] = False
+    mask[cy - 150:cy + 150, cx - 10:cx + 10] = False
+    mask[cy - 10:cy + 10, cx - 150:cx + 150] = False
+    return mask
+
+
+def test_saturated_stars_takes_spike_shaped_regions_with_saturated_pixels():
+    """saturated_stars on a mask with a star-shaped hole around NaNs and a filled square around NaNs lists the star only."""
+    from snowblind.scene_mask import saturated_stars
+
+    finite = np.ones((512, 512), dtype=bool)
+    finite[250:263, 250:263] = False  # the star's saturated core
+    finite[100:105, 100:105] = False  # saturated pixels in a galaxy-like region
+    mask = star_shaped_mask((512, 512), 256, 256)
+    mask[40:170, 40:170] = False
+
+    stars = saturated_stars(mask, finite)
+
+    assert len(stars) == 1
+    assert abs(stars[0][0] - 256) < 1 and abs(stars[0][1] - 256) < 1
+
+
+def test_spike_mask_follows_a_spike_beyond_the_core_mask():
+    """spike_mask on a saturated star with a vertical spike of 0.1 sky masks the spike where the star mask stopped."""
+    from snowblind.scene_mask import spike_mask
+
+    rng = np.random.default_rng(41)
+    rate = rng.normal(1.0, 0.05, (512, 512))
+    rate[20:406, 254:259] += 0.1  # a vertical spike through the star
+    rate[250:263, 250:263] = np.nan  # the saturated core
+    core = star_shaped_mask((512, 512), 256, 256)  # the arm ends at row 106
+
+    masked, nstars = spike_mask(rate, core)
+
+    assert nstars == 1
+    assert (~masked[64:106, 256]).mean() > 0.9
+    assert masked[64:106, 300].mean() > 0.95
+
+
+def test_spike_mask_needs_a_saturated_core():
+    """spike_mask on a bright but unsaturated source with a spike treats no star and returns the mask unchanged."""
+    from snowblind.scene_mask import spike_mask
+
+    rng = np.random.default_rng(42)
+    rate = rng.normal(1.0, 0.05, (512, 512))
+    rate[256, 256] += 50.0
+    rate[20:406, 254:259] += 0.1
+    core = star_shaped_mask((512, 512), 256, 256)
+
+    masked, nstars = spike_mask(rate, core)
+
+    assert nstars == 0
+    np.testing.assert_array_equal(masked, core & np.isfinite(rate))

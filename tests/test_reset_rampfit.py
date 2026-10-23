@@ -380,3 +380,61 @@ def test_rescale_t1_keeps_the_delay_in_seconds():
 
     assert scale == pytest.approx(1.0 - (1.0 - 0.943) * 10.74 / 48.3, rel=1e-9)
     assert scale == pytest.approx(0.9873, abs=5e-4)
+
+
+def test_call_anchors_the_reset_offset_to_the_sky(tmp_path):
+    """ResetRampFitStep.call with anchor_offset_to_sky on a ramp whose reset level is 7 DN above the file's gives RATE."""
+    rn, gain = reference_files(tmp_path)
+    model = make_ramp()
+    model.data[0] += 7.0
+    model.groupdq[0, 1:, 4, 4] = SAT
+    calib = tmp_path / "nrca1_reset_calib.asdf"
+    write_calibration(
+        calib, np.full((NY, NX), 12.0, dtype=np.float32), np.zeros((NY, NX), dtype=np.float32),
+        np.full((NY, NX), 10, dtype=np.int32), "NRCA1", [],
+    )
+
+    rate, _ = ResetRampFitStep.call(
+        model, reset_calib=str(calib), use_pedestal_mean=True, prior_highpass=False, anchor_offset_to_sky=True,
+        anchor_max_signal=1e9, anchor_min_pixels=10, override_readnoise=rn, override_gain=gain,
+    )
+
+    assert rate.data[4, 4] == pytest.approx(RATE, rel=1e-4)
+
+
+def test_call_without_anchoring_is_biased_by_a_wrong_offset(tmp_path):
+    """ResetRampFitStep.call without anchoring, reset 7 DN above the file's prior: the one-group pixel is 7/t1 too high."""
+    rn, gain = reference_files(tmp_path)
+    model = make_ramp()
+    model.data[0] += 7.0
+    model.groupdq[0, 1:, 4, 4] = SAT
+    calib = tmp_path / "nrca1_reset_calib.asdf"
+    write_calibration(
+        calib, np.full((NY, NX), 12.0, dtype=np.float32), np.zeros((NY, NX), dtype=np.float32),
+        np.full((NY, NX), 10, dtype=np.int32), "NRCA1", [],
+    )
+
+    rate, _ = ResetRampFitStep.call(
+        model, reset_calib=str(calib), use_pedestal_mean=True, prior_highpass=False, anchor_offset_to_sky=False,
+        override_readnoise=rn, override_gain=gain,
+    )
+
+    assert rate.data[4, 4] == pytest.approx(RATE + 7.0 / FRAME_TIME, rel=1e-4)
+
+
+def test_star_anchored_scales_recovers_a_short_first_read():
+    """star_anchored_scales on ramps whose first read holds 80 percent of its nominal signal returns 0.8 per channel."""
+    from snowblind import readout
+    from snowblind.reset_rampfit import star_anchored_scales
+
+    model = make_ramp()
+    rng = np.random.default_rng(21)
+    rates = rng.uniform(5.0, 150.0, (NY, NX))  # nominal first-read signal 54 to 1600 DN
+    t = FRAME_TIME * np.arange(1, 6)
+    model.data[0] = rates[None] * t[:, None, None]
+    model.data[0, 0] = rates * (t[0] - 0.2 * FRAME_TIME)
+    blocks = readout.channel_blocks((NY, NX), -1, 2)
+
+    scales = star_anchored_scales(model, 0.0, blocks, use_zeroframe=False, min_bright=5, fallback=[1.0] * 4, min_per_bin=1)
+
+    np.testing.assert_allclose(scales, 0.8, atol=2e-3)

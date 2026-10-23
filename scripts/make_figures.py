@@ -315,6 +315,12 @@ FIELD_PANEL_SETS = [
     (FIELD_PANELS, "NRCALONG", "Omega Cen", "nrcalong", "median, flat applied, as run\nfor this program", False),
     ("results/2026-10-22_ceers_all/00001", "NRCALONG", "CEERS", "ceers_nrcalong", "median, flat applied", True),
     ("results/2026-10-22_ceers_all/00001", "NRCBLONG", "CEERS", "ceers_nrcblong", "median, flat applied", True),
+    ("results/2026-10-23_spike_mask/jw05105014014_05101_00002_nrcb2", "NRCB2", "NEXUS bright star", "nexus_nrcb2",
+     "median, flat applied", True),
+    ("results/2026-10-23_coarse_mask/jw05105014018_08101_00001_nrca1", "NRCA1", "NEXUS", "nexus_nrca1",
+     "median, flat applied", True),
+    ("results/2026-10-23_spike_mask/jw09263005003_03201_00001_nrcblong", "NRCBLONG", "NEXUS", "nexus_nrcblong",
+     "median, flat applied", True),
 ]
 
 
@@ -327,6 +333,11 @@ def _field_panels(root, detector, jwst_label, flat_fielded=False):
         ("sirs_stream_clean_ols.npz", "SIRS + snowblind stream_clean\n(median background), OLS_C"),
         ("sirs_stream_clean_reset.npz", "SIRS + snowblind stream_clean\n(median background),\nsnowblind reset_rampfit"),
     ]
+    if os.path.exists(os.path.join(folder, "sirs_remstriping_ols.npz")):
+        # CEERS: the team's remstriping on the SIRS rate takes the place of the reset-fit panel, which equals
+        # the OLS_C one there, and goes before the stream clean
+        remstriping = ("sirs_remstriping_ols.npz", "SIRS + CEERS remstriping\n(iterated threshold), OLS_C")
+        panels = [panels[0], panels[1], remstriping, panels[2]]
     if not os.path.exists(os.path.join(folder, panels[-1][0])):
         return None
     with datamodels.open(os.path.join(folder, "stream_clean_mask.fits")) as mask_model:
@@ -422,8 +433,8 @@ def field_rate_images_full(root, detector, field, suffix, jwst_label, flat_field
     fig.suptitle(
         f"{field}, {detector} {info['filter']} {info.get('readpatt', '')}, {info['ngroups']} groups"
         + (", flat-fielded" if flat_fielded else "") + f", full frame binned {binning} x {binning} "
-        f"for display, stretch +- {width:.3f} DN/s about the sky\n",
-        fontsize=base * scale * 0.85,
+        f"for display, stretch +- {width:.3f} DN/s\n",
+        fontsize=base * scale * 0.75,
     )
     fig.savefig(
         os.path.join(OUT, f"field_rate_images_{suffix}_full.jpg"), dpi=150,

@@ -34,6 +34,7 @@ import os
 import warnings
 
 import numpy as np
+from astropy.stats import mad_std
 from jwst.dq_init import DQInitStep
 from jwst.group_scale import GroupScaleStep
 from jwst.saturation import SaturationStep
@@ -126,7 +127,7 @@ def hot_pixel_statistic(channel_diffs, nsigma=20.0):
     finite = np.isfinite(rate)
     rate = np.nan_to_num(rate, nan=np.nanmedian(rate))
     level = np.median(rate)
-    scatter = 1.4826 * np.median(np.abs(rate - level))
+    scatter = mad_std(rate)
     hot = (rate - level > nsigma * scatter) & finite
     # keep hot pixels whose neighbourhood holds no other hot pixel and no edge
     neighbours = ndimage.uniform_filter(hot.astype(float), size=2 * HOT_HALFWIDTH + 1) * (2 * HOT_HALFWIDTH + 1) ** 2

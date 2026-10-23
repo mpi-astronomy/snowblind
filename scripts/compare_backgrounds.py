@@ -53,7 +53,10 @@ def main():
     dist = ndimage.distance_transform_edt(mask)
     region = (slice(768, 1280), slice(768, 1280))
 
-    files = {"sirs": "sirs_ols.npz", "jwst": "sirs_jwst_usage_ols.npz"}
+    files = {
+        "sirs": "sirs_ols.npz", "jwst": "sirs_jwst_usage_ols.npz", "remstriping": "sirs_remstriping_ols.npz",
+        "remstriping (James cal)": "remstriping_james_ols.npz",
+    }
     for path in sorted(glob.glob(os.path.join(d, "sirs_stream_clean_*_ols.npz"))):
         name = os.path.basename(path)[len("sirs_stream_clean_"):-len("_ols.npz")]
         files[f"stream_clean {name}"] = os.path.basename(path)

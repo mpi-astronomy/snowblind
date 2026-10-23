@@ -6,6 +6,7 @@ axis keywords, and returns numbers that the experiment scripts under
 them.
 """
 import numpy as np
+from astropy.stats import mad_std
 from scipy import ndimage
 
 from . import readout
@@ -23,12 +24,12 @@ __all__ = [
 
 
 def robust_sigma(values):
-    """Standard deviation estimated from the median absolute deviation of finite values."""
+    """Standard deviation estimated from the median absolute deviation of finite values (astropy's mad_std)."""
     values = np.asarray(values, dtype=np.float64)
     values = values[np.isfinite(values)]
     if values.size == 0:
         return np.nan
-    return 1.4826 * np.median(np.abs(values - np.median(values)))
+    return float(mad_std(values))
 
 
 def channel_psd(diff_cube, mask, fastaxis, slowaxis, max_lag=2**14, first_direction=1):

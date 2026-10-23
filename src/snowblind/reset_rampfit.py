@@ -53,6 +53,11 @@ class ResetRampFitStep(Step):
         use_pedestal_mean = boolean(default=False)  # prior mean of the reset level from the calibration file's pedestal_mean map
         prior_highpass = boolean(default=True)  # remove the pedestal map's row, even-odd and column structure, as stream_clean removes it from the first read
         reset_offset = float(default=0.0)  # DN added to the prior mean of the reset level, on top of the file's value
+        anchor_offset_to_sky = boolean(default=True)  # measure the reset offset per channel from this exposure's own faint pixels instead of the file's
+        anchor_max_signal = float(default=50.0)  # DN; pixels whose first-resultant signal is below this count as sky for the anchor
+        anchor_min_pixels = integer(default=1000)  # fewer sky pixels than this in a channel keeps the file's offset there
+        anchor_timing_to_stars = boolean(default=False)  # also fit the first-read scale per channel from this exposure's bright unsaturated pixels (needs many bright pixels)
+        anchor_min_bright = integer(default=500)  # fewer bright pixels than this in a channel keeps the file's first-read scale there
         use_zeroframe = boolean(default=True)  # use the zeroframe when present
         rejection_threshold = float(default=None)  # sigma threshold of the likelihood jump search; None for stcal default
         save_opt = boolean(default=False)  # save used_reset and d0_resid as a _resetfit ASDF product
@@ -118,9 +123,38 @@ class ResetRampFitStep(Step):
             f"reset level median {float(np.nanmedian(reset_level)):.2f} DN"
             + (f", per channel t1_scale {channel_timing[0]} offsets {channel_timing[1]}" if channel_timing else "")
         )
+        blocks = readout.channel_blocks(result.data.shape[-2:], result.meta.subarray.fastaxis, result.meta.subarray.slowaxis)
+        if self.anchor_offset_to_sky and result.data.shape[1] >= 3:
+            t1_scales = channel_timing[0] if channel_timing else [t1_scale] * len(blocks)
+            # the prior without any scalar offset: the map (or zero) plus the step's own offset
+            base = np.asarray(reset_level, dtype=np.float32) - np.float32(self._scalar_offset) + np.float32(self.reset_offset)
+            # the file's absolute offsets per channel (channel_timing holds them relative to the file's scalar offset)
+            file_scalar = self._scalar_offset - self.reset_offset
+            file_offsets = [o + file_scalar for o in channel_timing[1]] if channel_timing else [file_scalar] * len(blocks)
+            if self.anchor_timing_to_stars:
+                fitted = star_anchored_scales(
+                    result, base, blocks, self.use_zeroframe, self.anchor_max_signal, self.anchor_min_bright,
+                    fallback=list(t1_scales),
+                )
+                log.info(
+                    "First-read scales anchored to this exposure's bright pixels, per channel: "
+                    + ", ".join(f"{k:.4f}" for k in fitted)
+                    + " (calibration file, carried to this pattern: " + ", ".join(f"{k:.4f}" for k in t1_scales) + ")"
+                )
+                t1_scales = [float(k) for k in fitted]
+            anchored = sky_anchored_offsets(
+                result, base, t1_scales, blocks, self.use_zeroframe, self.anchor_max_signal, self.anchor_min_pixels,
+                fallback=file_offsets,
+            )
+            log.info(
+                "Reset offsets anchored to this exposure's sky pixels, per channel: "
+                + ", ".join(f"{b:+.2f}" for b in anchored)
+                + " DN (calibration file: " + ", ".join(f"{b:+.2f}" for b in file_offsets) + ")"
+            )
+            channel_timing = (t1_scales, [float(b) for b in anchored])
+            reset_level = base
         if channel_timing:
             t1_scales, offsets = channel_timing
-            blocks = readout.channel_blocks(result.data.shape[-2:], result.meta.subarray.fastaxis, result.meta.subarray.slowaxis)
             levels = [np.asarray(reset_level, dtype=np.float32) + np.float32(offset) for offset in offsets]
             image_info, integ_info, _ = likely_ramp_fit_reset_blocks(
                 ramp_data, readnoise_2d, gain_2d, sigma_b, blocks, t1_scales, levels, use_zeroframe=self.use_zeroframe
@@ -236,6 +270,7 @@ class ResetRampFitStep(Step):
             raise ValueError(f"sigma_b must be positive and finite, got {sigma_b}")
         if t1_scale is None:
             t1_scale = 1.0
+        self._scalar_offset = float(reset_level) if np.ndim(reset_level) == 0 else float(self.reset_offset + file_offset)
         return sigma_b, float(t1_scale), reset_level, channel_timing
 
 
@@ -291,6 +326,107 @@ def reset_prior_map(
     else:
         level += np.float32(file_offset)
     return level
+
+
+def _first_resultant(model, use_zeroframe):
+    """The first resultant the fit uses, its time since reset, a usable mask, the later-group slope (DN/s) and t1."""
+    from .stream_clean import slope_per_group
+
+    exposure = model.meta.exposure
+    t1 = first_group_time(model)
+    data = np.asarray(model.data[0], dtype=np.float64)
+    groupdq = np.asarray(model.groupdq[0])
+    zeroframe = getattr(model, "zeroframe", None)
+    if use_zeroframe and zeroframe is not None and np.any(zeroframe[0] != 0):
+        first = np.asarray(zeroframe[0], dtype=np.float64)
+        t_first = float(exposure.frame_time)
+        usable = first != 0
+    else:
+        first = data[0]
+        t_first = t1
+        usable = np.ones(first.shape, dtype=bool)
+    rest = slope_per_group(data[1:], groupdq[1:]) / float(exposure.group_time)
+    clean = np.all(groupdq == 0, axis=0) & ((model.pixeldq & dqflags.pixel["DO_NOT_USE"]) == 0) & usable
+    clean &= np.isfinite(rest) & np.isfinite(first)
+    return first, t_first, clean, rest, t1
+
+
+def star_anchored_scales(model, base_level, blocks, use_zeroframe, max_signal=50.0, min_bright=500, fallback=None,
+                         bright_range=(50.0, 2000.0), nbins=6, min_per_bin=20):
+    """The first-read scale per channel from the exposure's own bright, unsaturated pixels.
+
+    With ``y = first - prior - a * t_first`` (the first resultant's residual
+    against nominal timing) and ``x = a`` the slope of the later groups,
+    ``y = b - (1 - k) * t1 * x``: the slope of ``y`` against ``x`` over
+    pixels whose nominal first-resultant signal lies in ``bright_range`` DN
+    gives ``k``, from the medians of ``y`` in logarithmic bins of ``x``.  The
+    scale measured on one readout pattern has not carried to others (0.90
+    on BRIGHT1, 0.92 on SHALLOW4, 1.01 on MEDIUM8), and a scale wrong by
+    0.04 biases the rate of every pixel the reset point weighs on by about
+    a percent.  Channels with fewer than ``min_bright`` such pixels, or whose
+    fit leaves fewer than 3 bins, keep their ``fallback`` scale.
+    """
+    first, t_first, clean, rest, t1 = _first_resultant(model, use_zeroframe)
+    base = np.broadcast_to(np.asarray(base_level, dtype=np.float64), first.shape)
+    nominal = rest * t_first
+    scales = []
+    fallback = [1.0] * len(blocks) if fallback is None else list(fallback)
+    lo, hi = bright_range
+    for (rows, cols), kept in zip(blocks, fallback):
+        x = rest[rows, cols]
+        y = first[rows, cols] - base[rows, cols] - nominal[rows, cols]
+        bright = clean[rows, cols] & (nominal[rows, cols] > lo) & (nominal[rows, cols] < hi)
+        if bright.sum() < min_bright:
+            log.warning(f"Only {int(bright.sum())} bright pixels in a channel; its first-read scale stays at {kept:.4f}")
+            scales.append(float(kept))
+            continue
+        edges = np.geomspace(lo, hi, nbins + 1) / t_first
+        xs, ys, ws = [], [], []
+        for a, b in zip(edges[:-1], edges[1:]):
+            sel = bright & (x >= a) & (x < b)
+            if sel.sum() >= min_per_bin:
+                xs.append(np.median(x[sel]))
+                ys.append(np.median(y[sel]))
+                ws.append(sel.sum())
+        if len(xs) < 3:
+            log.warning("Too few bright bins in a channel; its first-read scale stays at the file's")
+            scales.append(float(kept))
+            continue
+        slope, _intercept = np.polyfit(np.array(xs), np.array(ys), 1, w=np.sqrt(np.array(ws, dtype=float)))
+        k = 1.0 + slope / t1
+        scales.append(float(np.clip(k, 0.7, 1.1)))
+    return scales
+
+
+def sky_anchored_offsets(
+    model, base_level, t1_scales, blocks, use_zeroframe, max_signal=50.0, min_pixels=1000, fallback=None
+):
+    """The reset offset per channel from the exposure's own sky pixels, in DN.
+
+    For each channel, the median over faint, unflagged pixels of the first
+    resultant (the zeroframe when it is used, else group 0) minus the prior
+    map minus the signal expected there from the slope of the later groups:
+    ``a * (t_first - (1 - k) * t1)``, with ``k`` the channel's first-read
+    scale.  The reset level drifts by 10 DN and more between epochs with the
+    same superbias, so a calibration constant cannot serve; a few DN is a
+    few percent of the first read on a faint sky.  Channels with fewer than
+    ``min_pixels`` sky pixels keep their ``fallback`` offset (the
+    calibration file's) with a warning.
+    """
+    first, t_first, clean, rest, t1 = _first_resultant(model, use_zeroframe)
+    base = np.broadcast_to(np.asarray(base_level, dtype=np.float64), first.shape)
+    offsets = []
+    fallback = [0.0] * len(blocks) if fallback is None else list(fallback)
+    for (rows, cols), k, kept in zip(blocks, t1_scales, fallback):
+        signal = rest[rows, cols] * (t_first - (1.0 - float(k)) * t1)
+        faint = clean[rows, cols] & (signal < max_signal) & (signal > -0.4 * max_signal)
+        if faint.sum() < min_pixels:
+            log.warning(f"Only {int(faint.sum())} sky pixels in a channel; its reset offset stays at the file's {kept:+.2f} DN")
+            offsets.append(float(kept))
+            continue
+        residual = first[rows, cols] - base[rows, cols] - signal
+        offsets.append(float(np.median(residual[faint])))
+    return offsets
 
 
 def first_group_time(model):

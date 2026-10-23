@@ -34,7 +34,7 @@ from .noise_spectrum import (
     taper_high_frequencies,
     wiener_gain,
 )
-from .scene_mask import chisel_mask
+from .scene_mask import chisel_mask, spike_mask
 from .stream_filters import FILTERS
 
 __all__ = [
@@ -92,6 +92,7 @@ class StreamCleanStep(Step):
         apply_flat_field = boolean(default=False)  # divide by the flat before fitting
         user_mask = string(default=None)  # path to a user-supplied background mask
         mask_dilation = integer(default=0)  # pixels by which to grow the masked (source) regions, for source wings
+        mask_spikes = boolean(default=True)  # mask the column-aligned spikes of saturated stars along their extent (chisel mask only)
         clean_first_group = boolean(default=True)  # also clean group 1, against zero or against the reset prior; needed for reset_rampfit, harmless for OLS
         reset_calib = string(default=None)  # snowblind-reset-calib ASDF; with it the first read is cleaned against its reset-level prior, as reset_rampfit will use it
         scene_model = string(default=None)  # FITS image of the scene in DN/s, detector frame, before flat-fielding (e.g. the blotted mosaic); replaces the background model
@@ -291,6 +292,9 @@ class StreamCleanStep(Step):
             if self._scene is not None:
                 background_mask &= np.isfinite(self._scene)
             log.info(f"Scene mask (chisel): {100 * (~background_mask).mean():.2f} percent of pixels masked")
+            if self.mask_spikes:
+                background_mask, nstars = spike_mask(rate, background_mask)
+                log.info(f"Spike mask: {nstars} bright stars, {100 * (~background_mask).mean():.2f} percent of pixels masked")
             mask_model = make_intermediate_model(image_model, background_mask) if self.save_mask else None
         else:
             background_mask, mask_model = make_scene_mask(

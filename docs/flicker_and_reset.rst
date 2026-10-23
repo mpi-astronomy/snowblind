@@ -651,11 +651,19 @@ hand back the slow 1/f for no gain.
    :width: 100%
 
    CEERS on NRCALONG, flat-fielded, central 512 by 512 pixels, stretch
-   +- 2.5 sigma of the sky pixels about the sky. Over the full frame the
+   +- 2.5 sigma of the sky pixels about the sky; the fourth panel is the
+   CEERS team's remstriping (Bagley et al. 2023, the iterated-threshold
+   version) run on the same SIRS rate image. Over the full frame the
    row-mean scatter of the sky pixels goes from 0.0013 DN/s (SIRS) to
-   0.0006 with the jwst step and 0.0003 with the stream clean, the
-   column-mean scatter from 0.0015 to 0.0015 and 0.0002: the row median
-   cannot see the per-column offsets, the stream clean removes them.
+   0.0006 with the jwst step, 0.0009 with remstriping and 0.0003 with
+   the stream clean, the column-mean scatter from 0.0015 to 0.0015,
+   0.0008 and 0.0002: the pipeline's row median cannot see the
+   per-column offsets, remstriping's column pass halves them, the stream
+   clean removes them. Remstriping's per-amplifier row medians come from
+   about 300 sky pixels each in one rate image, so their estimation
+   error, 0.0015 DN/s, is the size of the striping they measure; the
+   pattern it subtracts is half noise, which is why it leaves the
+   central cutout unchanged and doubles the per-pixel change tails.
    The sky changes by -0.06 percent, its large-scale structure by 0.2
    percent, and the per-pixel change lies within -0.005 and +0.003 DN/s.
    On a 9-group ramp of 107 s groups the 1/f left by SIRS is small to
@@ -703,6 +711,90 @@ now cleans the zeroframe as it cleans the first read, as a difference
 against the reset prior with the background scaled to one frame time,
 and the reset fit matches OLS_C on all six exposures (0.0003 and 0.0002
 DN/s) while fitting 900 to 2100 more pixels each.
+
+Short ramps and a bright star: NEXUS
+------------------------------------
+
+Three exposures from the NEXUS programs (5105 and 9263), reduced by the
+same hands as the CEERS data with the team's remstriping recipe, so
+that the comparison is against a baseline with a known pedigree:
+NRCB2 F200W MEDIUM8 with six groups and a bright star (peak 378 times
+the sky), NRCA1 F090W SHALLOW4 with six groups of 54 s on a 0.045 DN/s
+sky, and NRCBLONG F277W MEDIUM8 with seven groups. The baseline
+``_cal`` files were converted back to raw DN/s through their
+photometric conversion and the flat; remstriping was also run by us on
+our own SIRS rate, and reproduces the baseline's structure statistics
+to the last digit. All chains are measured on the same flat-fielded
+sky pixels.
+
+.. figure:: figures/field_rate_images_nexus_nrca1.png
+   :width: 100%
+
+   NEXUS on NRCA1, SHALLOW4, flat-fielded, central 512 by 512 pixels.
+   Over the full frame the row-mean scatter of the sky pixels goes from
+   0.0031 DN/s (SIRS) to 0.0012 with the jwst median, 0.0006 with
+   remstriping and 0.0003 with the stream clean; the column-mean
+   scatter from 0.0014 to 0.0014, 0.0006 and 0.0002. On the MEDIUM8
+   frames the same ordering holds with the stream clean at 0.0001 to
+   0.0002 against 0.0004 to 0.0009 for remstriping. Aperture photometry
+   of the sources found on the SIRS rate agrees between every chain to
+   0.3 percent in every flux quartile, except the stream clean's
+   faintest quartile at -0.7 percent, the faint-source bias of the
+   injection test.
+
+.. figure:: figures/field_rate_images_nexus_nrcb2_full.jpg
+   :width: 100%
+
+   NEXUS on NRCB2 with the bright star, full frame binned 2 by 2. The
+   star's halo and diffraction spikes reach 400 pixels from the core
+   above the sky. Where the scene mask does not cover them, a linear
+   estimator reads them as slow 1/f: azimuthally averaged over the
+   unmasked pixels, the halo excess is 20 percent of the sky within 100
+   pixels of the star, 8 percent at 100 to 200 and 3 percent at 200 to
+   400, and the stream clean removes three quarters of the first and
+   all of the rest, remstriping a quarter, 70 and 90 percent, the
+   pipeline median little. The scene mask's tiled sky, with its
+   32-pixel boxes, absorbs the halo and masks only a quarter of the
+   pixels within 100 pixels of the star. A second, coarse tier of the
+   mask (a 12-pixel kernel on a 256-pixel tiled sky, with a higher
+   detection quantile; a plain large-kernel tier at the fine tier's
+   quantile masked 35 to 40 percent of the sky and was discarded) now
+   masks the inner 100 pixels entirely and halves the removal there,
+   at a cost of 3 percent of the pixels and no change in any sky
+   statistic. Beyond 100 pixels it changes nothing: an excess of a few
+   percent of the sky, smooth over hundreds of pixels, is what slow 1/f
+   looks like to any method that has one exposure to work with, and
+   remstriping removes it too (70 percent of the halo at 100 to 200
+   pixels, against 85 for the stream clean). Keeping the extended halo
+   of a bright star needs the box background model, which protects
+   structure above its box at the cost of the slow 1/f, or a scene
+   model from more than one exposure.
+   The vertical diffraction spike is a separate matter: it runs on past
+   the mask at a few columns wide and a tenth of the sky for hundreds
+   of rows, and a per-column offset estimated over the whole column
+   then darkens the columns through the star, by 2 percent of the sky
+   relative to their neighbours here. The scene mask now follows the
+   column-aligned spike of each saturated star (a star being a large
+   masked region around saturated pixels whose mask has spike arms, so
+   it fills a small fraction of its bounding box, unlike a galaxy's)
+   outward in blocks of rows against the local background on either
+   side, until it fades; that adds 0.3 percent of the pixels and
+   leaves the spike columns 1.6 percent of the sky above their
+   neighbours, as remstriping does (1.1 percent), with no change in
+   any sky statistic.
+
+The short ramps also settled the reset offset. On SHALLOW4 the reset
+fit raised the sky by 1.9 percent with the calibration's offsets, and
+the offset measured on the exposure itself was 11 DN against the
+calibration's -3, with the same superbias: the reset level drifts by
+10 DN and more over months, so the offset cannot be a calibration
+constant. The step now anchors it to each exposure's own sky pixels,
+per channel, and with that the first-difference residual is centred
+and the reset fit agrees with the likelihood fit without the reset
+point to 0.1 percent at every brightness. What remains between the
+reset fit and OLS_C on the sky of that exposure, half a percent, is
+the likelihood fit's own difference from OLS_C on a faint 6-group ramp,
+present without the reset point as well (see the observations below).
 
 What this builds on
 -------------------
@@ -769,6 +861,12 @@ Observations on stcal and jwst
   NIRCam, whose dark reference files carry no dark-current array, and
   that would mis-scale the dark contribution to the Poisson variance by
   the gain for an instrument whose files do carry one.
+* On a faint sky (0.045 DN/s, 6 groups of 54 s) the LIKELY algorithm
+  gives rates 0.5 percent below OLS_C on the sky pixels and 0.2 percent
+  below on faint sources, with no reset point involved (0.1 percent on
+  the 0.68 DN/s CEERS sky). Which of the two is right at low signal
+  needs a known-rate test; the Poisson weighting of the likelihood fit
+  depends on the count-rate estimate it starts from.
 * The jwst ``clean_flicker_noise`` step inherits the random walk of
   section 3: on this dark it raises the rate noise from 0.0205 to
   0.0213 DN/s and the row-mean scatter from 0.0053 to 0.0079. This is not

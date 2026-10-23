@@ -11,10 +11,11 @@ its GitHub release.
 
 - `StreamCleanStep`: removes 1/f (flicker) noise from NIR group data by
   filtering each output channel's readout stream with a Wiener gain
-  derived from the exposure's own noise spectrum, with a NoiseChisel-style
-  scene mask, a choice of background model, per-read even-odd and
-  per-column offset corrections, and the first read cleaned against the
-  reset-level prior.
+  derived from the exposure's own noise spectrum, with a two-tier
+  NoiseChisel-style scene mask that also follows the column-aligned
+  diffraction spikes of saturated stars, a choice of background model,
+  per-read even-odd and per-column offset corrections, and the first read
+  cleaned against the reset-level prior.
 - `ResetRampFitStep`: likelihood ramp fitting with the superbias-subtracted
   reset level as an extra resultant, so that pixels with a single
   unsaturated group still get a rate. Uses a per-detector calibration file
