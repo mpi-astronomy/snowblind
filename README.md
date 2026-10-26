@@ -134,13 +134,34 @@ Parameters of the reset fit go through the slot
 (`--steps.ramp_fit.reset_calib=my_calib.asdf`); parameters of the stream
 clean go through the hook
 (`--steps.jump.post_hooks="snowblind.StreamCleanStep(background_method='median')",`,
-the trailing comma making `post_hooks` a list of one).  To keep the
-pipeline's own ramp fit and only clean, hook the step into the stock
-pipeline instead:
+the trailing comma making `post_hooks` a list of one).  Either
+substitution can be switched off, `--stream_clean=False` or
+`--reset_fit=False`, which gives the jwst step back.
+
+The stock pipeline can also be made to do the same with hooks alone.  The
+stream clean is a post-hook of the jump step, and the reset fit is a
+post-hook of a skipped `ramp_fit` (stpipe runs a step's post-hooks even
+when the step is skipped, and takes the hook's return value as the data
+that goes on), in its `as_hook` form, which returns the rate image alone
+because a hook must return one model, and writes the `_rateints` product
+itself:
+
+    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs \
+        --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.clean_flicker_noise.skip=True \
+        --steps.ramp_fit.skip=True --steps.ramp_fit.post_hooks="snowblind.ResetRampFitStep(as_hook=True)",
+
+On the command line a hook string can carry one keyword argument only,
+since the hook list is split on commas; in Python a hook can be a step
+instance with any arguments, `ResetRampFitStep(as_hook=True, reset_calib=...)`.
+
+A pre-hook of `ramp_fit` would also run before the skip, but the skipped
+step then marks its output as skipped and the pipeline names it `_ramp`;
+the post-hook form sets the ramp-fit record itself, so the product is
+`_rate`.  For the stream clean alone, leave `ramp_fit` as it is:
 
     strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.clean_flicker_noise.skip=True
 
-The same in Python, where the hook can be the step class itself:
+The same in Python, where a hook can be the step class itself:
 
 ```python
 from snowblind import Detector1Pipeline, StreamCleanStep
@@ -153,9 +174,7 @@ Detector1Pipeline.call(
 ```
 
 Both steps also run on their own on a `_jump` product (`strun stream_clean
-jw..._jump.fits`, `strun reset_rampfit jw..._jump.fits`), and
-`ResetRampFitStep` cannot be a hook of `calwebb_detector1` itself, since it
-returns two models where the pipeline expects one ramp.
+jw..._jump.fits`, `strun reset_rampfit jw..._jump.fits`).
 
 The packaged calibration holds, per detector, the reset-level scatter
 measured from dark ramps and the first-read timing measured on a field (see

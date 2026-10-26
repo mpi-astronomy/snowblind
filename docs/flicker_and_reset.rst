@@ -70,11 +70,15 @@ fit::
 
     strun snowblind_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs
 
-The stream clean alone also hooks into the stock pipeline
+Either substitution switches off (``--stream_clean=False``,
+``--reset_fit=False``). The stock pipeline does the same with hooks
+alone: the stream clean as a post-hook of the jump step
 (``--steps.jump.post_hooks="snowblind.StreamCleanStep",`` with
-``--steps.clean_flicker_noise.skip=True``), and in Python the hook can be
-the step class itself. ``ResetRampFitStep`` cannot be a hook of the stock
-pipeline, since it returns two models where the pipeline expects a ramp.
+``--steps.clean_flicker_noise.skip=True``) and the reset fit as a
+post-hook of a skipped ``ramp_fit`` in its ``as_hook`` form, which
+returns the rate image alone, since stpipe runs a step's post-hooks even
+when the step is skipped and takes a hook's return value as the data
+that goes on; in Python a hook can be the step class itself.
 
 A snowblind step run as a hook inside a jwst pipeline sends its log
 messages to the pipeline's handlers, so they appear in the pipeline log

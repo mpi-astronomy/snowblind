@@ -2962,6 +2962,27 @@ stock-pipeline route (hook plus jwst ramp_fit) cannot, except on a
 saved `_jump`. README, changelog and write-up use the pipeline as the
 recipe; the hook-only form and the standalone steps stay documented.
 
+James then asked whether the stock pipeline could do it with hooks
+alone (a pre-hook of ramp_fit with ramp_fit skipped, or both steps as
+post-hooks of jump), and for more flexibility than the subclass. From
+stpipe's `Step.run`: pre-hooks run BEFORE the skip test and their return
+value replaces the step's input; a skipped step stamps `cal_step.<alias>
+= SKIPPED` on that input and returns it; post-hooks run AFTER, skipped
+or not, and their return value becomes the result. jwst's `RampFitStep`
+returns ``(rate, rateints)``, which is why `ResetRampFitStep` does the
+same and fits the slot; Detector1 unpacks the pair and runs gain_scale
+on each. Hence: two post-hooks of jump with ramp_fit skipped hands the
+pair down the pipeline and gain_scale fails on it; a pre-hook of a
+skipped ramp_fit runs, but the skipped step stamps SKIPPED on the rate
+image and `setup_output` names it `_ramp`; a POST-hook of the skipped
+ramp_fit that returns the rate image alone, with the ramp_fit record set
+COMPLETE on it (which the step does), gives a proper `_rate` through
+gain_scale and `setup_output`, and the hook's own `save_results` writes
+the `_rateints`. That is the new `as_hook` option of `ResetRampFitStep`
+and the all-hooks recipe in the README. The pipeline class gets two
+switches, ``--stream_clean`` and ``--reset_fit``, so either jwst step
+can be kept.
+
 Citation: README gets a "Citing snowblind" section at the top with the
 concept DOI and a BibTeX entry; CITATION.cff's author becomes a
 family-names/given-names person entry (GitHub's own examples use that

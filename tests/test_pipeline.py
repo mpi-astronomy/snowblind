@@ -28,3 +28,20 @@ def test_pipeline_keeps_a_stream_clean_hook_the_caller_gave():
 def test_pipeline_uses_the_jwst_pipeline_parameter_reference():
     """Detector1Pipeline.get_config_reftype returns pars-detector1pipeline."""
     assert Detector1Pipeline.get_config_reftype() == "pars-detector1pipeline"
+
+
+def test_pipeline_without_reset_fit_keeps_the_jwst_ramp_fit():
+    """Detector1Pipeline(reset_fit=False) has the jwst RampFitStep in its ramp_fit slot."""
+    from jwst.ramp_fitting import RampFitStep
+
+    pipeline = Detector1Pipeline(reset_fit=False)
+
+    assert type(pipeline.ramp_fit) is RampFitStep
+
+
+def test_pipeline_without_stream_clean_adds_no_hook():
+    """Detector1Pipeline(stream_clean=False) with the flicker step switched on leaves jump without hooks and the step on."""
+    pipeline = Detector1Pipeline(stream_clean=False, steps={"clean_flicker_noise": {"skip": False}})
+
+    assert pipeline.jump.post_hooks == []
+    assert pipeline.clean_flicker_noise.skip is False

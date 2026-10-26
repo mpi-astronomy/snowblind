@@ -78,6 +78,7 @@ class ResetRampFitStep(Step):
         use_zeroframe = boolean(default=True)  # use the zeroframe when present
         rejection_threshold = float(default=None)  # sigma threshold of the likelihood jump search; None for stcal default
         save_opt = boolean(default=False)  # save used_reset and d0_resid as a _resetfit ASDF product
+        as_hook = boolean(default=False)  # return the rate image alone, as a post-hook of a skipped ramp_fit must, and write the rateints product
         skip = boolean(default=False)
     """  # noqa: E501
 
@@ -97,7 +98,8 @@ class ResetRampFitStep(Step):
         out_model : `~stdatamodels.jwst.datamodels.ImageModel` or None
             The rate product in DN/s, averaged over integrations.  With
             ``save_results`` the two products are written with the
-            ``_rate`` and ``_rateints`` suffixes.
+            ``_rate`` and ``_rateints`` suffixes.  With ``as_hook`` only
+            this model is returned and the ``_rateints`` product is written.
         int_model : `~stdatamodels.jwst.datamodels.CubeModel` or None
             The per-integration rate product in DN/s.  Both are None when
             the ramp has fewer than ``MIN_NGROUPS`` groups.
@@ -220,14 +222,23 @@ class ResetRampFitStep(Step):
                 if key not in product.meta.cal_step.instance:
                     setattr(product.meta.cal_step, key, value)
 
-        if self.save_results:
-            # the pipeline's product names; left to stpipe, a two-model result gets indexed names
-            self.save_model(out_model, suffix="rate", force=True)
-            self.save_model(int_model, suffix="rateints", force=True)
+        # the pipeline's product names, from the exposure's file name (inside a hook stpipe has no other name
+        # to go by); left to stpipe, a two-model result would get indexed names
+        basename = result.meta.filename
+        if self.as_hook:
+            # a hook's return value becomes the pipeline's data, which must be one model; the pipeline writes
+            # the rate, so the rateints product is written here or not at all
+            self.save_model(int_model, suffix="rateints", output_file=basename, force=True)
+            self.save_results = False
+        elif self.save_results:
+            self.save_model(out_model, suffix="rate", output_file=basename, force=True)
+            self.save_model(int_model, suffix="rateints", output_file=basename, force=True)
             self.save_results = False
 
         if result is not step_input:
             del result
+        if self.as_hook:
+            return out_model
         return out_model, int_model
 
     def _reset_prior(self, model):

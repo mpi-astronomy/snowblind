@@ -12,7 +12,10 @@ its GitHub release.
 - `snowblind_detector1`, a `calwebb_detector1` with `StreamCleanStep`
   hooked after the jump step (the jwst flicker step skipped) and
   `ResetRampFitStep` in the `ramp_fit` slot, keeping the jwst pipeline's
-  steps, parameters and CRDS parameter references.
+  steps, parameters and CRDS parameter references; either substitution
+  can be switched off. `ResetRampFitStep` also has an `as_hook` form that
+  returns the rate image alone, for use as a post-hook of the stock
+  pipeline's skipped `ramp_fit`.
 - `StreamCleanStep`: removes 1/f (flicker) noise from NIR group data by
   filtering each output channel's readout stream with a Wiener gain
   derived from the exposure's own noise spectrum, with a two-tier

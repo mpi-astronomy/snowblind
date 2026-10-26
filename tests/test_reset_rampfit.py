@@ -506,3 +506,17 @@ def test_call_carries_the_stream_clean_record_into_the_rate_products(tmp_path):
 
     assert out.meta.cal_step.stream_clean == "COMPLETE"
     assert ints.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def test_call_as_hook_returns_the_rate_image_alone(tmp_path):
+    """ResetRampFitStep.call with as_hook=True returns one ImageModel marked ramp_fit COMPLETE and writes the rateints."""
+    rn, gain = reference_files(tmp_path)
+    model = make_ramp()
+
+    out = ResetRampFitStep.call(
+        model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, as_hook=True, output_dir=str(tmp_path)
+    )
+
+    assert isinstance(out, datamodels.ImageModel)
+    assert out.meta.cal_step.ramp_fit == "COMPLETE"
+    assert len(list(tmp_path.glob("*_rateints.fits"))) == 1

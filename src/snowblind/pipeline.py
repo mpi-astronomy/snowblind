@@ -31,9 +31,16 @@ class Detector1Pipeline(JwstDetector1Pipeline):
     ``--steps.jump.post_hooks="snowblind.StreamCleanStep(background_method='median')",``),
     ``clean_flicker_noise`` is skipped, and ``ramp_fit`` is `ResetRampFitStep`,
     whose parameters are set as ``--steps.ramp_fit.reset_calib=...``.
+    Either substitution is switched off with ``--stream_clean=False`` or
+    ``--reset_fit=False``, which gives the jwst step back.
     """
 
     class_alias = "snowblind_detector1"
+
+    spec = JwstDetector1Pipeline.spec + """
+    stream_clean = boolean(default=True)  # hook StreamCleanStep after the jump step and skip the jwst flicker step
+    reset_fit = boolean(default=True)  # fit ramps with ResetRampFitStep instead of the jwst ramp fit
+    """
 
     step_defs = {**JwstDetector1Pipeline.step_defs, "ramp_fit": ResetRampFitStep}
 
@@ -45,22 +52,28 @@ class Detector1Pipeline(JwstDetector1Pipeline):
         *args
             Passed to the jwst pipeline.
         **kwargs
-            Passed to the jwst pipeline.  A ``steps`` mapping is honoured;
-            its ``jump`` entry gets `StreamCleanStep` appended to
-            ``post_hooks`` unless one is there already, and its
-            ``clean_flicker_noise`` entry gets ``skip`` set, whatever CRDS
-            or the caller asked for, since the stream clean replaces it.
+            Passed to the jwst pipeline.  With ``stream_clean`` (the
+            default) the ``jump`` entry of the ``steps`` mapping gets
+            `StreamCleanStep` appended to ``post_hooks`` unless one is there
+            already, and the ``clean_flicker_noise`` entry gets ``skip``
+            set, whatever CRDS or the caller asked for, since the stream
+            clean replaces it.  With ``reset_fit`` (the default) the
+            ``ramp_fit`` slot holds `ResetRampFitStep`; otherwise the jwst
+            ramp fit.
         """
-        # edited in place: from strun this is a ConfigObj section whose sub-sections stpipe reads as such
-        steps = kwargs.get("steps")
-        if steps is None:
-            steps = kwargs["steps"] = {}
-        jump = steps.setdefault("jump", {})
-        hooks = list(jump.get("post_hooks") or [])
-        if not any(_is_stream_clean(hook) for hook in hooks):
-            hooks.append(StreamCleanStep)
-        jump["post_hooks"] = hooks
-        steps.setdefault("clean_flicker_noise", {})["skip"] = True
+        if not kwargs.get("reset_fit", True):
+            self.step_defs = {**self.step_defs, "ramp_fit": JwstDetector1Pipeline.step_defs["ramp_fit"]}
+        if kwargs.get("stream_clean", True):
+            # edited in place: from strun this is a ConfigObj section whose sub-sections stpipe reads as such
+            steps = kwargs.get("steps")
+            if steps is None:
+                steps = kwargs["steps"] = {}
+            jump = steps.setdefault("jump", {})
+            hooks = list(jump.get("post_hooks") or [])
+            if not any(_is_stream_clean(hook) for hook in hooks):
+                hooks.append(StreamCleanStep)
+            jump["post_hooks"] = hooks
+            steps.setdefault("clean_flicker_noise", {})["skip"] = True
         super().__init__(*args, **kwargs)
 
     @classmethod
