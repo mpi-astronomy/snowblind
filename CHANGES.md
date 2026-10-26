@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-26
+
+### Fixed
+
+- The FutureWarnings from scikit-image about `binary_opening` and
+  `remove_small_holes(area_threshold=...)` are gone; the masks are unchanged.
+  The minimum scikit-image version is now 0.26.
+
+- Each step's COMPLETE or SKIPPED status is now also written to the FITS
+  primary header (`S_SNOWBL`, `S_JUMPPL`, `S_STRCLN`, `S_RSTRMP`, `S_PERSIS`,
+  `S_OPNPIX`); before, it was kept only in the ASDF extension because the
+  jwst schema has no keywords for these steps. `PersistenceFlagStep` and
+  `OpenPixelStep` now record COMPLETE at all, and `ResetRampFitStep` carries
+  the header cards of earlier steps into its rate products.
+- Each step also adds a HISTORY entry such as `snowblind 1.0.0 SnowblindStep:
+  COMPLETE`, which records the snowblind version in both the FITS header and
+  the ASDF extension.
+
+### Added
+
+- `SnowblindStep` on a ramp now fills `meta.exposure.extended_emission_events`
+  (FITS keyword `EXTNCRS`) with the number of large events it found per
+  million pixels per second, replacing the value written by the jump step.
+
 ## [1.0.0] - 2026-10-26
 
 ### Added
@@ -110,7 +134,8 @@ First release.
 - Steps register as stpipe plugins and run with `strun` or as pipeline
   hooks.
 
-[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.0.0...HEAD
+[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.0.1...HEAD
+[1.0.1]: https://github.com/mpi-astronomy/snowblind/compare/1.0.0...1.0.1
 [1.0.0]: https://github.com/mpi-astronomy/snowblind/compare/0.2.0...1.0.0
 [0.2.1]: https://github.com/mpi-astronomy/snowblind/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/mpi-astronomy/snowblind/compare/0.1.2...0.2.0

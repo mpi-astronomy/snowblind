@@ -38,6 +38,10 @@ class SnowblindStep(Step):
     """
 
     class_alias = "snowblind"
+    fits_keyword = "S_SNOWBL"
+    fits_comment = "Snowball flagging: snowblind.SnowblindStep"
+
+    _n_events = 0  # large events found by dilate_jump_slice since process() started
 
     def process(self, input_data):
         """Flag the dilated large jump regions and saturated-core rings in a copy of the input.
@@ -56,8 +60,11 @@ class SnowblindStep(Step):
         RampModel or ImageModel or CubeModel
             Copy of the input with ``new_jump_flag`` set in ``groupdq`` (ramps) or ``dq``
             (rate products) on the grown pixels, and ``meta.cal_step.snowblind`` set to
-            ``"COMPLETE"``.
+            ``"COMPLETE"``.  For a ramp, ``meta.exposure.extended_emission_events`` (FITS
+            keyword EXTNCRS) is set to the number of large events found per million
+            pixels per second, replacing the value written by the jump step.
         """
+        self._n_events = 0
         with datamodels.open(input_data) as jump:
             result = jump.copy()
             if hasattr(jump, 'groupdq'):
@@ -80,13 +87,45 @@ class SnowblindStep(Step):
 
             result.groupdq |= (dilated_jumps * self.new_jump_flag).astype(np.uint32)
             result.groupdq |= (dilated_sats * self.new_jump_flag).astype(np.uint32)
+            self.set_event_rate(result, self._n_events)
         else:
             result.dq |= (dilated_jumps * self.new_jump_flag).astype(np.uint32)
 
         # Update the metadata with the step completion status
-        setattr(result.meta.cal_step, self.class_alias, "COMPLETE")
+        self.set_cal_step(result, "COMPLETE")
 
         return result
+
+    @staticmethod
+    def set_event_rate(result, n_events):
+        """
+        Record the rate of large events in ``result.meta.exposure.extended_emission_events``
+
+        Uses the same normalization as the jump step: events per million pixels per
+        second of integration time, where the time is the group time times the number
+        of groups, less the groups that are entirely DO_NOT_USE and the first group of
+        each integration.  Leaves the keyword alone if the group time is unknown or no
+        groups remain.
+
+        Parameters
+        ----------
+        result : RampModel
+            Model to update.
+        n_events : int
+            Number of large events found, summed over all groups and integrations.
+        """
+        nints, ngroups, nrows, ncols = result.groupdq.shape
+        group_time = result.meta.exposure.group_time
+        if group_time is None:
+            return
+        dnu = datamodels.dqflags.pixel["DO_NOT_USE"]
+        all_dnu = np.all((result.groupdq & dnu) != 0, axis=(2, 3))
+        total_groups = nints * ngroups - int(all_dnu.sum()) - nints
+        if total_groups < 1:
+            return
+        result.meta.exposure.extended_emission_events = (
+            1e6 * n_events / (group_time * total_groups * nrows * ncols)
+        )
 
     def dilate_jump_slice(self, jump_slice, ig=None):
         """
@@ -112,13 +151,14 @@ class SnowblindStep(Step):
         disk = skimage.morphology.disk(radius=self.min_radius)
 
         # Fill holes in the flagged areas (i.e. the saturated cores)
-        cores_filled = skimage.morphology.remove_small_holes(jump_slice, area_threshold=200)
+        cores_filled = skimage.morphology.remove_small_holes(jump_slice, max_size=200)
 
         # Get rid of the small-area jumps, leaving only large area CR events
-        big_events = skimage.morphology.binary_opening(cores_filled, footprint=disk)
+        big_events = skimage.morphology.opening(cores_filled, footprint=disk)
 
         # Label and get properites of each large area event
         event_labels, nlabels = skimage.measure.label(big_events, return_num=True)
+        self._n_events += nlabels
         region_properties = skimage.measure.regionprops(event_labels)
 
         # Break up the segmentation map <event_labels> into a slice for each labeled event

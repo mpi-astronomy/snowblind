@@ -17,7 +17,7 @@ dependencies = [
     "astropy",
     "jwst>=2.0.0",
     "numpy",
-    "scikit-image>=0.20.0",
+    "scikit-image>=0.26.0",
     "scipy",
     "stcal",
     "stdatamodels",

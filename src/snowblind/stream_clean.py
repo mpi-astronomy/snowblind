@@ -88,6 +88,8 @@ class StreamCleanStep(Step):
     """
 
     class_alias = "stream_clean"
+    fits_keyword = "S_STRCLN"
+    fits_comment = "1/f cleaning: snowblind.StreamCleanStep"
 
     spec = """
         fit_method = option('wiener', 'row_median', default='wiener')  # noise estimator per channel
@@ -148,7 +150,7 @@ class StreamCleanStep(Step):
         reason = _unsupported_reason(result)
         if reason is not None:
             log.warning(f"{reason}; skipping stream_clean")
-            setattr(result.meta.cal_step, self.class_alias, "SKIPPED")
+            self.set_cal_step(result, "SKIPPED")
             return result
 
         flat = None
@@ -190,7 +192,7 @@ class StreamCleanStep(Step):
                 f"Mask shape {background_mask.shape} does not match data shape "
                 f"{result.data.shape}; skipping stream_clean"
             )
-            setattr(result.meta.cal_step, self.class_alias, "SKIPPED")
+            self.set_cal_step(result, "SKIPPED")
             return result
         background_mask = exclude_reference_border(background_mask)
         if flat_unusable is not None:
@@ -219,7 +221,7 @@ class StreamCleanStep(Step):
         result.data = cleaned
         if self._cleaned_zeroframe is not None:
             result.zeroframe = self._cleaned_zeroframe
-        setattr(result.meta.cal_step, self.class_alias, "COMPLETE")
+        self.set_cal_step(result, "COMPLETE")
         return result
 
     def _clean_with_mask(self, result, background_mask, flat):

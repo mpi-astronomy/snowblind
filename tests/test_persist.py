@@ -1,5 +1,6 @@
 import numpy as np
 from jwst import datamodels
+from astropy.io import fits
 from astropy.time import Time
 
 from snowblind import PersistenceFlagStep
@@ -61,3 +62,23 @@ def test_input_dir(tmp_path):
 
     assert results[8].dq[2, 2] == GOOD
     assert results[1].dq[0, 0] == GOOD
+
+
+def test_cal_step_complete_in_fits_header(tmp_path):
+    """PersistenceFlagStep.call on two images of one detector: each result saves with S_PERSIS = COMPLETE."""
+    images = datamodels.ModelContainer()
+    for i in range(2):
+        image = datamodels.ImageModel((10, 10))
+        image.dq = np.zeros((10, 10), dtype=np.uint32)
+        image.meta.instrument.detector = "NRCALONG"
+        image.meta.filename = f"jw01125002001_03101_0000{i}_nrcalong_cal.fits"
+        image.meta.exposure.start_time = 60122.0 + i * 0.0132
+        images.append(image)
+        jump = datamodels.RampModel((1, 5, 10, 10))
+        jump.save(tmp_path / image.meta.filename.replace("_cal", "_jump"))
+
+    results = PersistenceFlagStep.call(images, input_dir=str(tmp_path))
+    results[0].save(tmp_path / "result.fits")
+
+    assert results[0].meta.cal_step.persist == "COMPLETE"
+    assert fits.getheader(tmp_path / "result.fits")["S_PERSIS"] == "COMPLETE"
