@@ -76,7 +76,7 @@ message = "If you use this software, please cite as below."
 license = "BSD-3-Clause"
 doi = "10.5281/zenodo.15791614"  # Zenodo concept DOI, resolves to the latest archived release
 authors = [
-    {"name" = "James Davies", "email" = "jdavies@mpia.de", "orcid" = "https://orcid.org/0000-0002-5079-9098", "affiliation" = "Max Planck Institute for Astronomy"},
+    {"family-names" = "Davies", "given-names" = "James E.", "email" = "jdavies@mpia.de", "orcid" = "https://orcid.org/0000-0002-5079-9098", "affiliation" = "Max Planck Institute for Astronomy"},
 ]
 
 [tool.setuptools.dynamic]

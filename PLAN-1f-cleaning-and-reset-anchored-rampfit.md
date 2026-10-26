@@ -2923,3 +2923,63 @@ of per-difference medians along the ramp. `noise_vs_groups_linear.png`
 noise per integration in DN (rate scatter times integration time,
 10.74 s per group on both) on linear axes, the form of the jdocs
 detector pages, one panel per detector.
+
+### 2026-10-26: one pipeline run, hooks as classes, citation, and the WFSS plan
+
+James asked whether both steps can be hooks of one Detector1 run, noted
+that step classes can be passed as hooks, that the GitHub "cite this
+repository" link from CITATION.cff is not working, and that the NIRISS
+WFSS modes have a ``wfssbkg`` background reference the WFSS
+``BackgroundStep`` scales and subtracts, which the stream clean will
+need for dispersed data.
+
+Hooks: stpipe runs post-hooks on a step's result and takes a hook's
+return value as the new result, so `StreamCleanStep` (ramp in, ramp
+out) hooks after jump; `ResetRampFitStep` returns (rate, rateints) and
+cannot be a hook of `calwebb_detector1`, whose later steps and
+`setup_output` expect a ramp, and a pre-hook of ramp_fit has the same
+problem. `_hooks.hook_from_string` accepts a dotted name, a Step
+subclass, a Step instance or a function, so classes work in Python.
+What does give one run: `snowblind.pipeline.Detector1Pipeline`
+(``strun snowblind_detector1``), a subclass of the jwst pipeline with
+`step_defs["ramp_fit"] = ResetRampFitStep`, `StreamCleanStep` appended
+to the jump step's ``post_hooks`` and ``clean_flicker_noise.skip``
+forced in ``__init__`` (so CRDS cannot turn the jwst step back on), and
+`get_config_reftype` returning ``pars-detector1pipeline`` so that the
+jwst pipeline's CRDS parameters apply to it (a subclass would otherwise
+get none, as pars are looked up by class name). Registered as a
+pipeline in `_get_steps`. Verified with strun on jw03383060001 NIRISS
+(results/2026-10-26_niriss_strun_v3): one command, `_rate` and
+`_rateints` with reset_rampfit COMPLETE. The rate products lacked the
+`stream_clean` record, though the ramp had it: jwst's
+`create_image_model` builds the rate with `update(input_model)`, which
+keeps only the step records in the core schema, and `stream_clean`
+(like `snowblind` and `jump_plus`) is not in it; non-schema records
+also get no `S_` FITS keyword and live in the ASDF metadata only. The
+reset step now carries every cal_step record of the ramp that the
+products lack, so the one-command route records the cleaning; the
+stock-pipeline route (hook plus jwst ramp_fit) cannot, except on a
+saved `_jump`. README, changelog and write-up use the pipeline as the
+recipe; the hook-only form and the standalone steps stay documented.
+
+Citation: README gets a "Citing snowblind" section at the top with the
+concept DOI and a BibTeX entry; CITATION.cff's author becomes a
+family-names/given-names person entry (GitHub's own examples use that
+form) and the cff-from-621 static block in pyproject matches.
+
+WFSS, for later: a dispersed NIRISS exposure has a smooth background
+(dispersed zodiacal light and stray light) that the scalar median cannot
+model and the box model would only partly keep out of the noise
+estimate. The pipeline's WFSS `BackgroundStep` scales the ``wfssbkg``
+reference image to the exposure and subtracts it. For the stream clean
+the same image is the right background model: add a
+``background_method='reference'`` that fetches ``wfssbkg`` through
+CRDS (``reference_file_types``), fits one scale per group difference to
+the masked, flat-fielded difference (the sky grows linearly along the
+ramp, so one scale per difference is the whole model) and subtracts
+scale x reference x flat from the raw difference before the noise fit,
+exactly as the median background is handled now; the scene mask then
+sees sources (the dispersed traces, extended along the dispersion
+axis) against a flat residual. Needs a dispersed exposure to test; the
+six files on disk are the direct images. The same mechanism serves
+NIRCam WFSS (``wfssbkg`` exists for it too).

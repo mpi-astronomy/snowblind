@@ -8,6 +8,22 @@
  - `ResetRampFitStep`: likelihood ramp fitting as in the standard JWST pipeline, but with the superbias-subtracted reset level as an extra resultant at the beginning, so that pixels with a single unsaturated group or only a ZEROFRAME still get a rate; needs a per-detector calibration from dark ramps, made once with `snowblind-reset-calib`
 
 
+# Citing snowblind
+
+Please cite `snowblind` through its Zenodo record DOI,
+[10.5281/zenodo.15791614](https://doi.org/10.5281/zenodo.15791614), that
+always points to the latest release.
+
+    @software{snowblind,
+      author    = {Davies, James E.},
+      title     = {snowblind: algorithms for cleaning JWST data},
+      publisher = {Zenodo},
+      doi       = {10.5281/zenodo.15791614},
+      url       = {https://github.com/mpi-astronomy/snowblind}
+    }
+
+The same information is in `CITATION.cff`.
+
 # Installation
 
 snowblind needs jwst 2.0.0 or later.  Earlier releases of snowblind work
@@ -105,36 +121,41 @@ and the reset fit uses the reset calibration packaged for every NIRCam
 detector and NIRISS, with the reset offset anchored to the exposure's own
 sky.
 
-`StreamCleanStep` slots into `calwebb_detector1` as a post-hook of the jump
-step.  The pipeline's own `clean_flicker_noise` step is skipped, as some
-parameter references turn it on, and the pipeline then fits the cleaned
-ramp with its usual ramp fit:
+The simplest way to run both is the `snowblind_detector1` pipeline: it is
+`calwebb_detector1` with the same steps, parameters and CRDS parameter
+references, except that `StreamCleanStep` runs as a post-hook of the jump
+step, the pipeline's own `clean_flicker_noise` step is skipped, and
+`ResetRampFitStep` sits in the `ramp_fit` slot, so one run gives `_rate`
+and `_rateints` products from the cleaned ramp and the reset-anchored fit:
+
+    strun snowblind_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs
+
+Parameters of the reset fit go through the slot
+(`--steps.ramp_fit.reset_calib=my_calib.asdf`); parameters of the stream
+clean go through the hook
+(`--steps.jump.post_hooks="snowblind.StreamCleanStep(background_method='median')",`,
+the trailing comma making `post_hooks` a list of one).  To keep the
+pipeline's own ramp fit and only clean, hook the step into the stock
+pipeline instead:
 
     strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.clean_flicker_noise.skip=True
 
-(the trailing comma makes `post_hooks` a list of one).  To use the
-reset-anchored fit in place of the pipeline's, save the cleaned ramp as well
-and fit it with `reset_rampfit`, which writes `_rate` and `_rateints`
-products in the pipeline's format; an output directory keeps them apart from
-the pipeline's own:
-
-    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.jump.save_results=True --steps.clean_flicker_noise.skip=True
-    strun reset_rampfit jw..._jump.fits --output_dir=reset
-
-The same in Python:
+The same in Python, where the hook can be the step class itself:
 
 ```python
-from jwst.pipeline import Detector1Pipeline
-from snowblind import ResetRampFitStep
+from snowblind import Detector1Pipeline, StreamCleanStep
 
-steps = {
-    "refpix": {"refpix_algorithm": "sirs"},
-    "jump": {"post_hooks": ["snowblind.StreamCleanStep"], "save_results": True},
-    "clean_flicker_noise": {"skip": True},
-}
-Detector1Pipeline.call("jw..._uncal.fits", steps=steps, save_results=True)
-rate, rateints = ResetRampFitStep.call("jw..._jump.fits", save_results=True, output_dir="reset")
+Detector1Pipeline.call(
+    "jw..._uncal.fits",
+    steps={"refpix": {"refpix_algorithm": "sirs"}, "jump": {"post_hooks": [StreamCleanStep]}},
+    save_results=True,
+)
 ```
+
+Both steps also run on their own on a `_jump` product (`strun stream_clean
+jw..._jump.fits`, `strun reset_rampfit jw..._jump.fits`), and
+`ResetRampFitStep` cannot be a hook of `calwebb_detector1` itself, since it
+returns two models where the pipeline expects one ramp.
 
 The packaged calibration holds, per detector, the reset-level scatter
 measured from dark ramps and the first-read timing measured on a field (see

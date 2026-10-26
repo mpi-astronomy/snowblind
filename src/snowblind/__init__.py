@@ -6,6 +6,7 @@ from .selfcal import OpenPixelStep
 from .persist import PersistenceFlagStep
 from .stream_clean import StreamCleanStep
 from .reset_rampfit import ResetRampFitStep
+from .pipeline import Detector1Pipeline
 
 
 try:
@@ -22,6 +23,7 @@ __all__ = [
     'PersistenceFlagStep',
     'StreamCleanStep',
     'ResetRampFitStep',
+    'Detector1Pipeline',
 ]
 
 
@@ -31,8 +33,9 @@ def _get_steps():
     Returns
     -------
     list of tuple
-        One ``(class_name, class_alias, is_pipeline)`` entry per step: the fully
-        qualified class name, the ``strun`` alias and False, as none is a pipeline.
+        One ``(class_name, class_alias, is_pipeline)`` entry per step and
+        pipeline: the fully qualified class name, the ``strun`` alias and
+        whether it is a pipeline.
     """
     return [
         ("snowblind.SnowblindStep", 'snowblind', False),
@@ -41,4 +44,5 @@ def _get_steps():
         ("snowblind.PersistenceFlagStep", 'persist', False),
         ("snowblind.StreamCleanStep", 'stream_clean', False),
         ("snowblind.ResetRampFitStep", 'reset_rampfit', False),
+        ("snowblind.Detector1Pipeline", 'snowblind_detector1', True),
     ]

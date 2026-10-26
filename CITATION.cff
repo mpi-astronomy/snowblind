@@ -4,11 +4,11 @@ message: If you use this software, please cite as below.
 title: snowblind
 abstract: Algorithms for cleaning JWST data
 authors:
-- name: James E. Davies
+- family-names: Davies
+  given-names: James E.
   email: jdavies@mpia.de
   orcid: https://orcid.org/0000-0002-5079-9098
 doi: 10.5281/zenodo.15791614
 type: software
 license: BSD-3-Clause
 url: https://github.com/mpi-astronomy/snowblind
-...

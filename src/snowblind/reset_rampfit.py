@@ -213,6 +213,12 @@ class ResetRampFitStep(Step):
         int_model.meta.bunit_err = "DN/s"
         int_model.meta.cal_step.ramp_fit = "COMPLETE"
         setattr(int_model.meta.cal_step, self.class_alias, "COMPLETE")
+        # the jwst model copy keeps only the step records its schema knows; carry the others (stream_clean,
+        # snowblind, jump_plus) from the ramp into the rate products
+        for key, value in result.meta.cal_step.instance.items():
+            for product in (out_model, int_model):
+                if key not in product.meta.cal_step.instance:
+                    setattr(product.meta.cal_step, key, value)
 
         if self.save_results:
             # the pipeline's product names; left to stpipe, a two-model result gets indexed names

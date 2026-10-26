@@ -59,16 +59,22 @@ the two-tier scene mask with the column spikes of saturated stars
 followed, and the reset fit takes the detector's reset scatter and
 first-read timing from a file packaged with snowblind, one per detector (ten NIRCam
 detectors and NIRISS, measured as described in the reset section) with
-the reset offset anchored to each exposure's own sky. ``StreamCleanStep``
-runs inside ``calwebb_detector1`` as a post-hook of the jump step, and
-the pipeline's own ``clean_flicker_noise`` step is skipped, since some
-parameter references turn it on; ``reset_rampfit`` then fits the saved
-cleaned ramp in place of the pipeline's ramp fit::
+the reset offset anchored to each exposure's own sky. The
+``snowblind_detector1`` pipeline is ``calwebb_detector1`` with its steps,
+parameters and CRDS parameter references, except that ``StreamCleanStep``
+runs as a post-hook of the jump step (the pipeline's own
+``clean_flicker_noise`` step is skipped, since some parameter references
+turn it on) and ``ResetRampFitStep`` takes the ``ramp_fit`` slot, so one
+run gives the rate products of the cleaned ramp and the reset-anchored
+fit::
 
-    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs \
-        --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.jump.save_results=True \
-        --steps.clean_flicker_noise.skip=True
-    strun reset_rampfit jw..._jump.fits --output_dir=reset
+    strun snowblind_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs
+
+The stream clean alone also hooks into the stock pipeline
+(``--steps.jump.post_hooks="snowblind.StreamCleanStep",`` with
+``--steps.clean_flicker_noise.skip=True``), and in Python the hook can be
+the step class itself. ``ResetRampFitStep`` cannot be a hook of the stock
+pipeline, since it returns two models where the pipeline expects a ramp.
 
 A snowblind step run as a hook inside a jwst pipeline sends its log
 messages to the pipeline's handlers, so they appear in the pipeline log

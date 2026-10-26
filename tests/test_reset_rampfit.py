@@ -494,3 +494,15 @@ def test_call_with_save_results_writes_rate_and_rateints(tmp_path):
 
     assert len(list(tmp_path.glob("*_rate.fits"))) == 1
     assert len(list(tmp_path.glob("*_rateints.fits"))) == 1
+
+
+def test_call_carries_the_stream_clean_record_into_the_rate_products(tmp_path):
+    """ResetRampFitStep.call on a ramp whose cal_step says stream_clean COMPLETE returns rate and rateints saying so too."""
+    rn, gain = reference_files(tmp_path)
+    model = make_ramp()
+    model.meta.cal_step.stream_clean = "COMPLETE"
+
+    out, ints = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain)
+
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+    assert ints.meta.cal_step.stream_clean == "COMPLETE"
