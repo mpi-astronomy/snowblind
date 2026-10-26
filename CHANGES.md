@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- `SnowblindStep` on a ramp now fills `meta.exposure.extended_emission_events`
+  (FITS keyword `EXTNCRS`) with the number of large events it found per
+  million pixels per second, replacing the value written by the jump step.
+
 ## [1.0.0] - 2026-10-26
 
 ### Added

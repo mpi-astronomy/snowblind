@@ -109,3 +109,51 @@ def test_step_complete(im, tmp_path):
 
     with datamodels.open(filename) as result_reopened:
         assert result_reopened.meta.cal_step.snowblind == "COMPLETE"
+
+
+def test_ramp_event_rate():
+    """SnowblindStep.call on a ramp with one large event in one group sets EXTNCRS.
+
+    The rate is 1e6 * 1 event / (group_time * (6 groups - 1 first group) * 40 * 40 pixels).
+    """
+    im = datamodels.RampModel((1, 6, 40, 40))
+    im.meta.exposure.group_time = 10.0
+    im.groupdq[0, 1, 15:26, 15:26] = JUMP_DET
+    im.groupdq[0, 1, 5, 5] = JUMP_DET
+
+    result = SnowblindStep.call(im)
+
+    assert result.meta.exposure.extended_emission_events == pytest.approx(1e6 / (10.0 * 5 * 1600))
+
+
+def test_ramp_event_rate_no_events():
+    """SnowblindStep.call on a ramp with only a single-pixel jump sets EXTNCRS to 0."""
+    im = datamodels.RampModel((1, 6, 40, 40))
+    im.meta.exposure.group_time = 10.0
+    im.groupdq[0, 1, 5, 5] = JUMP_DET
+
+    result = SnowblindStep.call(im)
+
+    assert result.meta.exposure.extended_emission_events == 0
+
+
+def test_ramp_event_rate_without_group_time():
+    """SnowblindStep.call on a ramp with no group_time leaves EXTNCRS unset."""
+    im = datamodels.RampModel((1, 6, 40, 40))
+    im.groupdq[0, 1, 15:26, 15:26] = JUMP_DET
+
+    result = SnowblindStep.call(im)
+
+    assert result.meta.exposure.extended_emission_events is None
+
+
+def test_rate_event_rate_untouched():
+    """SnowblindStep.call on a rate image keeps the EXTNCRS value it came with."""
+    im = datamodels.ImageModel((40, 40))
+    im.dq = np.zeros((40, 40), dtype=np.uint32)
+    im.dq[15:26, 15:26] = JUMP_DET
+    im.meta.exposure.extended_emission_events = 3.5
+
+    result = SnowblindStep.call(im)
+
+    assert result.meta.exposure.extended_emission_events == 3.5
