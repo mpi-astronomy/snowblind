@@ -1,5 +1,8 @@
 import logging
 
+import pytest
+from astropy.io import fits
+
 from snowblind import JumpPlusStep, OpenPixelStep, PersistenceFlagStep, ResetRampFitStep, SnowblindStep, StreamCleanStep
 from snowblind.step import Step
 
@@ -79,3 +82,21 @@ def test_run_returns_the_borrowed_handlers_afterwards():
         stpipe_logger.setLevel(previous_level)
 
     assert handler not in logging.getLogger("snowblind").handlers
+
+
+STEPS = [SnowblindStep, JumpPlusStep, OpenPixelStep, PersistenceFlagStep, StreamCleanStep, ResetRampFitStep]
+
+
+@pytest.mark.parametrize("cls", STEPS)
+def test_fits_card_is_a_plain_card_with_whole_comment(cls):
+    """The card from each step's fits_keyword and fits_comment with value COMPLETE is not HIERARCH and keeps its full comment."""
+    card = fits.Card(cls.fits_keyword, "COMPLETE", cls.fits_comment)
+
+    assert not str(card).startswith("HIERARCH")
+    assert card.comment == cls.fits_comment
+    assert str(card).rstrip().endswith(cls.fits_comment)
+
+
+def test_fits_keywords_are_distinct():
+    """The six steps have six different fits_keyword values."""
+    assert len({cls.fits_keyword for cls in STEPS}) == 6

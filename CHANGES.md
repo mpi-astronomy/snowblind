@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Each step's COMPLETE or SKIPPED status is now also written to the FITS
+  primary header (`S_SNOWBL`, `S_JUMPPL`, `S_STRCLN`, `S_RSTRMP`, `S_PERSIS`,
+  `S_OPNPIX`); before, it was kept only in the ASDF extension because the
+  jwst schema has no keywords for these steps. `PersistenceFlagStep` and
+  `OpenPixelStep` now record COMPLETE at all, and `ResetRampFitStep` carries
+  the header cards of earlier steps into its rate products.
+
 ### Added
 
 - `SnowblindStep` on a ramp now fills `meta.exposure.extended_emission_events`

@@ -1,4 +1,5 @@
 import numpy as np
+from astropy.io import fits
 from jwst import datamodels
 
 from snowblind import OpenPixelStep
@@ -50,3 +51,20 @@ def test_call():
         assert result.dq[8, 8] == ADJ_OPEN | DO_NOT_USE
 
         assert result.dq[5, 5] == GOOD
+
+
+def test_cal_step_complete_in_fits_header(tmp_path):
+    """OpenPixelStep.call on three images of one detector: each result saves with S_OPNPIX = COMPLETE."""
+    images = datamodels.ModelContainer()
+    for i in range(3):
+        image = datamodels.ImageModel(np.zeros((10, 10)))
+        image.dq = np.zeros((10, 10), dtype=np.uint32)
+        image.meta.instrument.detector = "NRCALONG"
+        image.meta.filename = f"jw001234_{i}_nrcalong.fits"
+        images.append(image)
+
+    results = OpenPixelStep.call(images)
+    results[0].save(tmp_path / "result.fits")
+
+    assert results[0].meta.cal_step.open_pixel == "COMPLETE"
+    assert fits.getheader(tmp_path / "result.fits")["S_OPNPIX"] == "COMPLETE"

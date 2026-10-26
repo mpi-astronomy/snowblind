@@ -30,6 +30,8 @@ class PersistenceFlagStep(Step):
     """
 
     class_alias = "persist"
+    fits_keyword = "S_PERSIS"
+    fits_comment = "Persistence: snowblind.PersistenceFlagStep"
 
     def process(self, input_data):
         """Flag persistence from earlier saturated exposures in each image of an association.
@@ -75,6 +77,7 @@ class PersistenceFlagStep(Step):
             for model, mask in zip(models_sorted, persist_bool):
                 log.info(f"Pixels flagged: {model.meta.filename} {mask.sum()}")
                 model.dq |= (mask * (DO_NOT_USE | PERSISTENCE)).astype(np.uint32)
+                self.set_cal_step(model, "COMPLETE")
 
         return results
 

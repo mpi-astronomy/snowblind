@@ -39,6 +39,8 @@ class OpenPixelStep(Step):
     """
 
     class_alias = "open_pixel"
+    fits_keyword = "S_OPNPIX"
+    fits_comment = "Open pixels: snowblind.OpenPixelStep"
 
     def process(self, input_data):
         """Flag hot (and optionally low-signal) pixels found in the per-detector median image.
@@ -89,6 +91,7 @@ class OpenPixelStep(Step):
             for result in results:
                 if result.meta.instrument.detector == detector:
                     result.dq |= (mask * (DO_NOT_USE | ADJ_OPEN)).astype(np.uint32)
+                    self.set_cal_step(result, "COMPLETE")
 
         return results
 

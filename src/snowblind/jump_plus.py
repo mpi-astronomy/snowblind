@@ -25,6 +25,8 @@ class JumpPlusStep(Step):
     """
 
     class_alias = "jump_plus"
+    fits_keyword = "S_JUMPPL"
+    fits_comment = "Jump flagging: snowblind.JumpPlusStep"
 
     def process(self, input_data):
         """Propagate JUMP_DET flags to the next group and SATURATED flags to the previous one.
@@ -59,7 +61,7 @@ class JumpPlusStep(Step):
             # Update step meta
             log.info("No frame averaging in this readout mode")
             self.skip = True
-            setattr(result.meta.cal_step, self.class_alias, "SKIPPED")
+            self.set_cal_step(result, "SKIPPED")
 
             return result
 
@@ -81,6 +83,6 @@ class JumpPlusStep(Step):
             # Add the new SATURADED flags for the integration
             integration_dq |= before_sat_dq
 
-        setattr(result.meta.cal_step, self.class_alias, "COMPLETE")
+        self.set_cal_step(result, "COMPLETE")
 
         return result

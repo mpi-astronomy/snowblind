@@ -18,7 +18,7 @@ from jwst.ramp_fitting.ramp_fit_step import (
     create_integration_model,
     get_reference_file_subarrays,
 )
-from .step import Step
+from .step import Step, carry_cal_step
 from stcal.ramp_fitting.ramp_fit import create_ramp_fit_class
 from stdatamodels.jwst.datamodels import dqflags
 
@@ -59,6 +59,8 @@ class ResetRampFitStep(Step):
     """
 
     class_alias = "reset_rampfit"
+    fits_keyword = "S_RSTRMP"
+    fits_comment = "Reset ramp fit: snowblind.ResetRampFitStep"
 
     spec = """
         reset_calib = string(default=None)  # ASDF from snowblind-reset-calib; without it and without sigma_b, the calibration packaged for the detector is used
@@ -218,7 +220,7 @@ class ResetRampFitStep(Step):
         out_model.meta.bunit_data = "DN/s"
         out_model.meta.bunit_err = "DN/s"
         out_model.meta.cal_step.ramp_fit = "COMPLETE"
-        setattr(out_model.meta.cal_step, self.class_alias, "COMPLETE")
+        self.set_cal_step(out_model, "COMPLETE")
 
         int_times_stripe = getattr(result, "int_times_stripe", None)
         if int_times_stripe is not None and len(int_times_stripe) == 0:
@@ -227,13 +229,11 @@ class ResetRampFitStep(Step):
         int_model.meta.bunit_data = "DN/s"
         int_model.meta.bunit_err = "DN/s"
         int_model.meta.cal_step.ramp_fit = "COMPLETE"
-        setattr(int_model.meta.cal_step, self.class_alias, "COMPLETE")
+        self.set_cal_step(int_model, "COMPLETE")
         # the jwst model copy keeps only the step records its schema knows; carry the others (stream_clean,
         # snowblind, jump_plus) from the ramp into the rate products
-        for key, value in result.meta.cal_step.instance.items():
-            for product in (out_model, int_model):
-                if key not in product.meta.cal_step.instance:
-                    setattr(product.meta.cal_step, key, value)
+        for product in (out_model, int_model):
+            carry_cal_step(result, product)
 
         # the pipeline's product names, from the exposure's file name (inside a hook stpipe has no other name
         # to go by); left to stpipe, a two-model result would get indexed names

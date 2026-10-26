@@ -38,6 +38,8 @@ class SnowblindStep(Step):
     """
 
     class_alias = "snowblind"
+    fits_keyword = "S_SNOWBL"
+    fits_comment = "Snowball flagging: snowblind.SnowblindStep"
 
     _n_events = 0  # large events found by dilate_jump_slice since process() started
 
@@ -90,7 +92,7 @@ class SnowblindStep(Step):
             result.dq |= (dilated_jumps * self.new_jump_flag).astype(np.uint32)
 
         # Update the metadata with the step completion status
-        setattr(result.meta.cal_step, self.class_alias, "COMPLETE")
+        self.set_cal_step(result, "COMPLETE")
 
         return result
 

@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from astropy.io import fits
 from stdatamodels.jwst import datamodels
 
 from snowblind import SnowblindStep
@@ -157,3 +158,25 @@ def test_rate_event_rate_untouched():
     result = SnowblindStep.call(im)
 
     assert result.meta.exposure.extended_emission_events == 3.5
+
+
+@pytest.mark.parametrize("im", snowball_data())
+def test_step_complete_in_fits_header(im, tmp_path):
+    """SnowblindStep.call on a ramp, rate image or cube, then save: the primary header has S_SNOWBL = COMPLETE."""
+    result = SnowblindStep.call(im)
+    filename = tmp_path / "jw001234_blah_blah_00001_snowblind.fits"
+    result.save(filename)
+
+    assert fits.getheader(filename)["S_SNOWBL"] == "COMPLETE"
+
+
+def test_step_complete_in_fits_header_after_resave(tmp_path):
+    """Saving a reopened SnowblindStep product keeps S_SNOWBL = COMPLETE once, without a duplicate card."""
+    result = SnowblindStep.call(snowball_data()[1])
+    first = tmp_path / "first.fits"
+    second = tmp_path / "second.fits"
+    result.save(first)
+    with datamodels.open(first) as reopened:
+        SnowblindStep.call(reopened).save(second)
+
+    assert list(fits.getheader(second)).count("S_SNOWBL") == 1
