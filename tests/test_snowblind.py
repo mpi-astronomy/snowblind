@@ -180,3 +180,27 @@ def test_step_complete_in_fits_header_after_resave(tmp_path):
         SnowblindStep.call(reopened).save(second)
 
     assert list(fits.getheader(second)).count("S_SNOWBL") == 1
+
+
+def hole_slice(hole_area):
+    """A 80x80 jump slice with a 60x60 block of JUMP_DET and a hole of ``hole_area`` pixels in it."""
+    jump = np.zeros((80, 80), dtype=bool)
+    jump[10:70, 10:70] = True
+    rows, extra = divmod(hole_area, 10)
+    jump[20:20 + rows, 20:30] = False
+    jump[20 + rows, 20:20 + extra] = False
+    return jump
+
+
+def test_dilate_jump_slice_fills_a_hole_of_200_pixels():
+    """SnowblindStep.dilate_jump_slice with growth_factor=0 on a block with a 200 pixel hole fills the hole."""
+    result = SnowblindStep(growth_factor=0).dilate_jump_slice(hole_slice(200))
+
+    assert result[25, 25]
+
+
+def test_dilate_jump_slice_keeps_a_hole_of_201_pixels():
+    """SnowblindStep.dilate_jump_slice with growth_factor=0 on a block with a 201 pixel hole leaves the hole open."""
+    result = SnowblindStep(growth_factor=0).dilate_jump_slice(hole_slice(201))
+
+    assert not result[25, 25]

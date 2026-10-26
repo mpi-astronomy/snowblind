@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- The FutureWarnings from scikit-image about `binary_opening` and
+  `remove_small_holes(area_threshold=...)` are gone; the masks are unchanged.
+  The minimum scikit-image version is now 0.26.
+
 - Each step's COMPLETE or SKIPPED status is now also written to the FITS
   primary header (`S_SNOWBL`, `S_JUMPPL`, `S_STRCLN`, `S_RSTRMP`, `S_PERSIS`,
   `S_OPNPIX`); before, it was kept only in the ASDF extension because the

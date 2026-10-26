@@ -151,10 +151,10 @@ class SnowblindStep(Step):
         disk = skimage.morphology.disk(radius=self.min_radius)
 
         # Fill holes in the flagged areas (i.e. the saturated cores)
-        cores_filled = skimage.morphology.remove_small_holes(jump_slice, area_threshold=200)
+        cores_filled = skimage.morphology.remove_small_holes(jump_slice, max_size=200)
 
         # Get rid of the small-area jumps, leaving only large area CR events
-        big_events = skimage.morphology.binary_opening(cores_filled, footprint=disk)
+        big_events = skimage.morphology.opening(cores_filled, footprint=disk)
 
         # Label and get properites of each large area event
         event_labels, nlabels = skimage.measure.label(big_events, return_num=True)
