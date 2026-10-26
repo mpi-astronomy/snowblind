@@ -24,6 +24,7 @@ def test_input_dir(tmp_path):
     start_times = []
     for i in range(9):
         image = datamodels.ImageModel((10, 10))
+        image.dq = np.zeros((10, 10), dtype=np.uint32)
         images.append(image)
 
         # Populate start times

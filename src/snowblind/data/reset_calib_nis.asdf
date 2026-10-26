@@ -1,0 +1,48 @@
+#ASDF 1.0.0
+#ASDF_STANDARD 1.6.0
+%YAML 1.1
+%TAG ! tag:stsci.edu:asdf/
+--- !core/asdf-1.1.0
+asdf_library: !core/software-1.0.0 {author: The ASDF Developers, homepage: 'http://github.com/asdf-format/asdf',
+  name: asdf, version: 5.3.1}
+history:
+  entries:
+  - !core/history_entry-1.0.0
+    description: Scalar reset calibration of NIS packaged from nis_reset_calib.asdf
+    software: !core/software-1.0.0 {author: James E. Davies, homepage: 'https://github.com/mpi-astronomy/snowblind',
+      name: snowblind, version: 0.2.2.dev20+gca9293deb.d20261020}
+    time: 2026-10-26 10:24:42+00:00
+  extensions:
+  - !core/extension_metadata-1.0.0
+    extension_class: asdf.extension._manifest.ManifestExtension
+    extension_uri: asdf://asdf-format.org/core/extensions/core-1.6.0
+    manifest_software: !core/software-1.0.0 {name: asdf_standard, version: 1.5.0}
+    software: !core/software-1.0.0 {name: asdf, version: 5.3.1}
+description: Scalar reset calibration, used by ResetRampFitStep when no reset_calib
+  file is given
+detector: NIS
+generated: '2026-10-26T10:24:42+00:00'
+n_integrations_max: 10
+provenance:
+  date: '2026-10-21T02:05:18+00:00'
+  input_files: [jw09279001001_05201_00001_nis_uncal.fits, jw09279002001_02201_00001_nis_uncal.fits]
+  jwst_version: 3.1.0.dev4+gc06c74de4
+  refpix_algorithm: sirs
+  snowblind_version: 0.2.2.dev20+gca9293deb.d20261020
+  stcal_version: 1.20.1.dev43+g83fb1ca2a
+  superbias: jwst_niriss_superbias_0257.fits
+  superbias_inputs: [jwst_niriss_superbias_0252.fits, jwst_niriss_superbias_0257.fits]
+read_noise_single_median: 7.434197425842285
+reset_offset: 5.37
+reset_offset_channels: [5.37, 5.37, 5.37, 5.37]
+sigma_b: 24.294864654541016
+source: nis_reset_calib.asdf
+t1_scale: 0.9503
+t1_scale_channels: [0.9503, 0.9503, 0.9503, 0.9503]
+t1_seconds: 10.73677
+timing_provenance: {b: median of R1 - k a t1 over sky pixels with first differences
+    below 50 DN, date: '2026-10-26', file: jw03807002001_07101_00001_nis_uncal.fits,
+  k: 'two-parameter fit R1 = b + k a t1 over first differences of 50 to 800 DN (4
+    bins, 4373 pixels); the detector-wide value is stored for every channel, the per-channel
+    fits having only 2 to 3 bins each'}
+...

@@ -13,9 +13,14 @@ classifiers = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "jwst",
+    "asdf",
+    "astropy",
+    "jwst>=2.0.0",
     "numpy",
     "scikit-image>=0.20.0",
+    "scipy",
+    "stcal",
+    "stdatamodels",
     "stpipe",
 ]
 dynamic = ['version']
@@ -30,12 +35,14 @@ test = [
     "pytest",
     "flake8",
     "flake8-pyproject",
-    "codecov",
     "pytest-cov",
 ]
 cff = [
     "cff-from-621",
 ]
+
+[project.scripts]
+snowblind-reset-calib = "snowblind.reset_calib:main"
 
 [project.entry-points]
 "stpipe.steps" ={snowblind = "snowblind:_get_steps"}
@@ -54,17 +61,22 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+snowblind = ["data/*.asdf"]
+
 [tool.setuptools_scm]
 write_to = "src/snowblind/_version.py"
 
 [tool.cff-from-621]
-order = ["cff-version", "message", "title", "abstract", "authors", "urls", "version", "date-released", "type", "keywords"]
+# no version or date-released: the tag, PyPI and Zenodo carry the version, and the DOI below is the concept DOI
+order = ["cff-version", "message", "title", "abstract", "authors", "urls", "doi", "type", "keywords"]
 
 [tool.cff-from-621.static]
 message = "If you use this software, please cite as below."
 license = "BSD-3-Clause"
+doi = "10.5281/zenodo.15791614"  # Zenodo concept DOI, resolves to the latest archived release
 authors = [
-    {"name" = "James Davies", "email" = "jdavies@mpia.de", "orcid" = "https://orcid.org/0000-0002-5079-9098", "affiliation" = "Max Planck Institute for Astronomy"},
+    {"family-names" = "Davies", "given-names" = "James E.", "email" = "jdavies@mpia.de", "orcid" = "https://orcid.org/0000-0002-5079-9098", "affiliation" = "Max Planck Institute for Astronomy"},
 ]
 
 [tool.setuptools.dynamic]

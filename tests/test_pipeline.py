@@ -1,0 +1,57 @@
+from jwst.ramp_fitting import RampFitStep
+
+from snowblind import Detector1Pipeline, ResetRampFitStep, StreamCleanStep
+
+
+def test_pipeline_fits_ramps_with_the_reset_step():
+    """Detector1Pipeline() has a ResetRampFitStep in its ramp_fit slot."""
+    pipeline = Detector1Pipeline()
+
+    assert isinstance(pipeline.ramp_fit, ResetRampFitStep)
+
+
+def test_pipeline_hooks_the_stream_clean_after_jump_and_skips_the_jwst_flicker_step():
+    """Detector1Pipeline() lists StreamCleanStep among the jump step's post hooks and has clean_flicker_noise skipped."""
+    pipeline = Detector1Pipeline()
+
+    assert StreamCleanStep in pipeline.jump.post_hooks
+    assert pipeline.clean_flicker_noise.skip is True
+
+
+def test_pipeline_keeps_a_stream_clean_hook_the_caller_gave():
+    """Detector1Pipeline(steps=...) with a configured stream clean hook string keeps it and adds no second one."""
+    hook = "snowblind.StreamCleanStep(background_method='median')"
+
+    pipeline = Detector1Pipeline(steps={"jump": {"post_hooks": [hook]}})
+
+    assert pipeline.jump.post_hooks == [hook]
+
+
+def test_pipeline_uses_the_jwst_pipeline_parameter_reference():
+    """Detector1Pipeline.get_config_reftype returns pars-detector1pipeline."""
+    assert Detector1Pipeline.get_config_reftype() == "pars-detector1pipeline"
+
+
+def test_pipeline_without_reset_fit_keeps_the_jwst_ramp_fit():
+    """Detector1Pipeline(reset_fit=False) has the jwst RampFitStep in its ramp_fit slot."""
+
+    pipeline = Detector1Pipeline(reset_fit=False)
+
+    assert type(pipeline.ramp_fit) is RampFitStep
+
+
+def test_pipeline_without_stream_clean_adds_no_hook():
+    """Detector1Pipeline(stream_clean=False) with the flicker step switched on leaves jump without hooks and the step on."""
+    pipeline = Detector1Pipeline(stream_clean=False, steps={"clean_flicker_noise": {"skip": False}})
+
+    assert pipeline.jump.post_hooks == []
+    assert pipeline.clean_flicker_noise.skip is False
+
+
+def test_pipeline_accepts_a_single_hook_string():
+    """Detector1Pipeline(steps=...) with post_hooks given as one string keeps it whole and adds no second stream clean."""
+    hook = "snowblind.StreamCleanStep"
+
+    pipeline = Detector1Pipeline(steps={"jump": {"post_hooks": hook}})
+
+    assert pipeline.jump.post_hooks == [hook]

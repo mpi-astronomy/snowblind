@@ -23,8 +23,9 @@ def test_call():
     stddev = 0.08
     shape = (10, 10)
     for _ in range(40):
-        image = rng.normal(loc=mean, scale=stddev, size=shape)
-        images.append(datamodels.ImageModel(image))
+        image = datamodels.ImageModel(rng.normal(loc=mean, scale=stddev, size=shape))
+        image.dq = np.zeros(shape, dtype=np.uint32)
+        images.append(image)
 
     for i, image in enumerate(images):
         # Populate detector meta, half A module, half B
