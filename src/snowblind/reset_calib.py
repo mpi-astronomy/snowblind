@@ -728,19 +728,22 @@ def calibrate(files, output, max_groups=None):
     detector = None
     fastaxis = slowaxis = None
     read_noise = None
-    nframes = 1
+    nframes = None
     for path in files:
         log.info(f"Processing {path}")
         with datamodels.open(path) as opened:
             is_jump = str(opened.meta.cal_step.jump).upper() == "COMPLETE"
             this_detector = opened.meta.instrument.detector
+            this_nframes = opened.meta.exposure.nframes
             fastaxis = opened.meta.subarray.fastaxis
             slowaxis = opened.meta.subarray.slowaxis
-            nframes = opened.meta.exposure.nframes
         if detector is None:
-            detector = this_detector
+            detector, nframes = this_detector, this_nframes
         elif this_detector != detector:
             raise ValueError(f"{path} is {this_detector}; expected {detector}")
+        elif this_nframes != nframes:
+            # the read noise removed from the pedestal scatter scales with the frames per group
+            raise ValueError(f"{path} has {this_nframes} frames per group; the first dark has {nframes}")
 
         model = datamodels.RampModel(path) if is_jump else run_detector1_to_jump(path, max_groups=max_groups)
         name = superbias_basename(model.meta.ref_file.superbias.name)

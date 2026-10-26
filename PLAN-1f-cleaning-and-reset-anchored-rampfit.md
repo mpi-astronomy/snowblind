@@ -2983,6 +2983,65 @@ and the all-hooks recipe in the README. The pipeline class gets two
 switches, ``--stream_clean`` and ``--reset_fit``, so either jwst step
 can be kept.
 
+### 2026-10-26 (night): second review round, the docs build, and a first look at WFSS
+
+`/code-review high` over the day's modules found ten things; all fixed:
+(1) the pipeline failed on NIRCam, since the CRDS `pars-detector1pipeline`
+reference carries `steps.ramp_fit.suppress_one_group` and stpipe validates
+that section against `ResetRampFitStep.spec` (NIRISS had no such entry,
+so the earlier verification passed); the step's spec now accepts the jwst
+ramp_fit parameters (`algorithm`, `int_name`, `opt_name`,
+`suppress_one_group`, `firstgroup`, `lastgroup`, `maximum_cores`), none
+of which it uses, `firstgroup`/`lastgroup` reported when set; this also
+lets `--reset_fit=False` take stock ramp_fit parameters. (2) A
+`scene_model` is in raw DN/s but was handed to `prepare_difference` as a
+fixed background, which the flat path multiplies by the flat, and
+subtracted raw from the flat-fielded draft rate in the chisel mask; the
+step now divides the scene by the flat where a flat is in use and passes
+the raw scene for the raw extra-pass draft. (3) `binary_dilation` with
+`iterations=erode + opening` at zero means "until nothing changes" in
+scipy; guarded. (4) A `t1_scale` override dropped the file's per-channel
+offsets in `_reset_prior` while `reset_prior_map` kept them, so the
+first-read prior of the stream clean and the fit's prior differed;
+offsets now stay, the override applies to every channel and is not
+rescaled (it is for this exposure). (5) `calibrate` took `nframes` from
+the last dark; darks with different frames per group now raise. (6) The
+mask-shape skip ran after the flat AND and would crash first; check
+moved up. (7) `write_resetfit` recorded the scalar scale and the
+offset-free level; it now stores the per-channel scales and offsets and
+folds the mean offset into the level median. (8) A `post_hooks` string
+was split into characters; wrapped. (9) `_first_resultant` ran twice
+when both anchors were on; computed once and passed. (10) A logger test
+depended on test order; fixed. Verified on NIRCam with
+`strun snowblind_detector1` on the workshop NRCA1 BRIGHT1 exposure
+(results/2026-10-26_nrca1_strun_pipeline).
+
+Docs: `docs/conf.py` and `docs/index.rst` were still the project
+template (`my_package`, an automodapi of a module that does not exist),
+so the build failed; both rewritten, and three simple tables in the
+write-up had labels running over their first column; the build is clean
+with 20 figures.
+
+WFSS first look (`~/data/jwst_niriss_test/wfss/`: GR150C 1x8 and 5x8
+groups NIS, GR150R 6x8 and 1x19; the GR150C single-integration exposure
+jw03383014 through `make_field_panels` with median and box256, flat
+applied: `results/2026-10-26_wfss/`): sky 0.75 DN/s, 11.2 percent masked
+(0 stars). SIRS column-mean scatter 0.0188 DN/s (the dispersion runs
+along columns for GR150C), rows 0.0044; jwst median 0.0206 / 0.0043;
+stream clean median 0.0007 / 0.0021; box256 0.0195 / 0.0029. But the
+large-scale change is 2.86 percent of the sky for the median background
+(jwst 0.31, box256 1.30) with 5th/95th percentiles of the per-pixel
+change at -0.042 / +0.046: the dispersed background, which varies
+smoothly along the dispersion by more than the 1/f does, is read by the
+Wiener filter as slow noise under a scalar background, and the box
+model keeps the structure but gives back the column banding. Exactly the
+case for the ``wfssbkg`` reference as the background model (previous
+entry); the data are now on disk to build it against. The workshop set
+(`~/data/jwst_workshop_1f/`: NRCA1 BRIGHT1 5 groups, NRCA3 MEDIUM8 5
+groups, NIS NISRAPID 5 groups, and NRCB2 BRIGHT1 3 groups on NGC 1566
+with extended emission) is the next test set; the NRCB2 exposure is the
+extended-emission case the plan has wanted.
+
 Citation: README gets a "Citing snowblind" section at the top with the
 concept DOI and a BibTeX entry; CITATION.cff's author becomes a
 family-names/given-names person entry (GitHub's own examples use that

@@ -20,9 +20,10 @@ def test_every_step_uses_the_shared_base_class():
 
 def test_module_loggers_are_children_of_the_snowblind_logger():
     """logging.getLogger('snowblind.jump_plus') propagates to the 'snowblind' logger that stpipe is told to configure."""
+    parent = logging.getLogger("snowblind")
     child = logging.getLogger("snowblind.jump_plus")
 
-    assert child.parent is logging.getLogger("snowblind")
+    assert child.parent is parent
 
 
 class LoggingStep(Step):

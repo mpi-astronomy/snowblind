@@ -69,7 +69,8 @@ class Detector1Pipeline(JwstDetector1Pipeline):
             if steps is None:
                 steps = kwargs["steps"] = {}
             jump = steps.setdefault("jump", {})
-            hooks = list(jump.get("post_hooks") or [])
+            hooks = jump.get("post_hooks") or []
+            hooks = [hooks] if isinstance(hooks, str) else list(hooks)
             if not any(_is_stream_clean(hook) for hook in hooks):
                 hooks.append(StreamCleanStep)
             jump["post_hooks"] = hooks

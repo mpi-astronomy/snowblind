@@ -1,22 +1,26 @@
 import numpy as np
 import pytest
+from astropy.io import fits
 from jwst.clean_flicker_noise.clean_flicker_noise import median_clean
 from stdatamodels.jwst import datamodels
+from stdatamodels.jwst.datamodels import dqflags
 
 from snowblind import StreamCleanStep, readout
 from snowblind.stream_clean import (
     clean_difference,
     clean_ramp,
+    column_offset_pattern,
     dilate_sources,
     estimate_noise,
-    column_offset_pattern,
     even_odd_pattern,
-    masked_mean_background,
     exclude_reference_border,
     first_group_time_ratio,
     integration_backgrounds,
+    masked_mean_background,
     prepare_difference,
+    read_scene_model,
     slope_per_group,
+    unusable_in_flat,
 )
 
 
@@ -707,10 +711,6 @@ def test_clean_ramp_with_scene_background_keeps_the_scene_and_removes_rows():
 
 def test_read_scene_model_reads_sci_extension(tmp_path):
     """read_scene_model on a FITS file with a SCI extension of shape (NY, NX) returns that array."""
-    from astropy.io import fits
-
-    from snowblind.stream_clean import read_scene_model
-
     image = np.arange(NY * NX, dtype=np.float32).reshape(NY, NX)
     path = tmp_path / "scene.fits"
     fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(image, name="SCI")]).writeto(path)
@@ -722,8 +722,6 @@ def test_read_scene_model_reads_sci_extension(tmp_path):
 
 def test_prepare_difference_subtracts_background_times_flat_in_raw_dn():
     """prepare_difference with a flat on sky 10 times flat plus a row pattern returns the row pattern in raw DN."""
-    from snowblind.stream_clean import prepare_difference
-
     rng = np.random.default_rng(15)
     flat = rng.uniform(0.8, 1.2, (NY, NX)).astype(np.float32)
     rows = rng.normal(0.0, 1.0, NY).astype(np.float32)
@@ -739,8 +737,6 @@ def test_prepare_difference_subtracts_background_times_flat_in_raw_dn():
 
 def test_clean_difference_with_flat_returns_image_minus_row_noise():
     """clean_difference with a flat and row_median on sky times flat plus rows halves the error against sky times flat."""
-    from snowblind.stream_clean import clean_difference
-
     rng = np.random.default_rng(16)
     flat = rng.uniform(0.8, 1.2, (NY, NX)).astype(np.float32)
     rows = rng.normal(0.0, 1.0, NY).astype(np.float32)
@@ -785,8 +781,6 @@ def test_clean_ramp_cleans_the_zeroframe_against_the_reference_and_keeps_zero_ma
 
 def test_exclude_reference_border_with_zero_width_returns_the_mask_unchanged():
     """exclude_reference_border with width=0 on an all-True mask returns an all-True mask."""
-    from snowblind.stream_clean import exclude_reference_border
-
     mask = np.ones((16, 16), dtype=bool)
 
     out = exclude_reference_border(mask, width=0)
@@ -796,10 +790,6 @@ def test_exclude_reference_border_with_zero_width_returns_the_mask_unchanged():
 
 def test_unusable_in_flat_marks_do_not_use_and_zero_pixels(tmp_path):
     """unusable_in_flat on a flat with DO_NOT_USE in one block and zeros in another returns True on both blocks only."""
-    from stdatamodels.jwst import datamodels
-    from stdatamodels.jwst.datamodels import dqflags
-    from snowblind.stream_clean import unusable_in_flat
-
     model = make_ramp_model()
     flat = datamodels.FlatModel((NY, NX))
     flat.data[:] = 1.0
@@ -818,9 +808,6 @@ def test_unusable_in_flat_marks_do_not_use_and_zero_pixels(tmp_path):
 
 def test_step_keeps_flat_do_not_use_pixels_out_of_the_saved_mask(tmp_path):
     """StreamCleanStep.call with apply_flat_field and an override flat that flags a block writes a mask False on that block."""
-    from stdatamodels.jwst import datamodels
-    from stdatamodels.jwst.datamodels import dqflags
-
     rng = np.random.default_rng(14)
     data, _ = striped_ramp(rng)
     model = make_ramp_model()

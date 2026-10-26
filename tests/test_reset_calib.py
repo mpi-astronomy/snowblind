@@ -1,13 +1,18 @@
-import numpy as np
+import inspect
 
+import asdf
+import numpy as np
 from stdatamodels.jwst import datamodels
 
 from snowblind import readout
 from snowblind.reset_calib import (
     pedestal_cube,
     read_calibration,
+    reference_superbias,
     remove_channel_offsets,
+    run_detector1_to_jump,
     sigma_b_from_pedestals,
+    update_timing,
     write_calibration,
 )
 
@@ -146,8 +151,6 @@ def test_calibration_round_trip(tmp_path):
 
 def test_read_calibration_tolerates_older_file(tmp_path):
     """read_calibration on an ASDF without pedestal_scatter still returns sigma_b and the median."""
-    import asdf
-
     sigma_b = np.full((NY, NX), 2.0, dtype=np.float32)
     path = tmp_path / "old_calib.asdf"
     with asdf.AsdfFile({"detector": "NRCA1", "sigma_b": sigma_b, "sigma_b_median": 2.0, "t1_scale": 1.0}) as handle:
@@ -191,8 +194,6 @@ def test_pedestal_cube_returns_reset_level_and_unscaled_read_noise():
 
 def test_update_timing_keeps_sigma_b(tmp_path):
     """update_timing rewrites t1_scale, reset_offset and the per-channel lists and leaves sigma_b untouched."""
-    from snowblind.reset_calib import update_timing
-
     sigma_b = np.full((NY, NX), 2.5, dtype=np.float32)
     path = tmp_path / "calib.asdf"
     write_calibration(path, sigma_b, np.zeros_like(sigma_b), np.full((NY, NX), 6, dtype=np.int32), "NRCA1", [])
@@ -208,8 +209,6 @@ def test_update_timing_keeps_sigma_b(tmp_path):
 
 def test_write_calibration_adds_history_entry_naming_snowblind(tmp_path):
     """write_calibration writes one ASDF history entry whose software name is snowblind and whose text names the detector."""
-    import asdf
-
     calib = tmp_path / "nrca1_reset_calib.asdf"
     write_calibration(
         calib, np.full((8, 8), 12.0, dtype=np.float32), np.zeros((8, 8), dtype=np.float32),
@@ -225,10 +224,6 @@ def test_write_calibration_adds_history_entry_naming_snowblind(tmp_path):
 
 def test_update_timing_keeps_history_and_adds_entry(tmp_path):
     """update_timing on a calibration with one history entry leaves two, the second naming the timing source file."""
-    import asdf
-
-    from snowblind.reset_calib import update_timing
-
     calib = tmp_path / "nrca1_reset_calib.asdf"
     write_calibration(
         calib, np.full((8, 8), 12.0, dtype=np.float32), np.zeros((8, 8), dtype=np.float32),
@@ -245,8 +240,6 @@ def test_update_timing_keeps_history_and_adds_entry(tmp_path):
 
 def test_reference_superbias_picks_the_latest_delivery():
     """reference_superbias on names ending 0252 and 0257 returns the 0257 file; on an empty list returns None."""
-    from snowblind.reset_calib import reference_superbias
-
     chosen = reference_superbias(["jwst_niriss_superbias_0252.fits", "jwst_niriss_superbias_0257.fits", None])
 
     assert chosen == "jwst_niriss_superbias_0257.fits"
@@ -255,10 +248,6 @@ def test_reference_superbias_picks_the_latest_delivery():
 
 def test_run_detector1_to_jump_accepts_the_snowblind_flag():
     """run_detector1_to_jump has a snowblind keyword, default False, so the panel scripts can request SnowblindStep."""
-    import inspect
-
-    from snowblind.reset_calib import run_detector1_to_jump
-
     parameter = inspect.signature(run_detector1_to_jump).parameters["snowblind"]
 
     assert parameter.default is False
@@ -266,10 +255,6 @@ def test_run_detector1_to_jump_accepts_the_snowblind_flag():
 
 def test_run_detector1_to_jump_accepts_jump_params():
     """run_detector1_to_jump has a jump_params keyword, default None, for overriding the jump step's reference parameters."""
-    import inspect
-
-    from snowblind.reset_calib import run_detector1_to_jump
-
     parameter = inspect.signature(run_detector1_to_jump).parameters["jump_params"]
 
     assert parameter.default is None

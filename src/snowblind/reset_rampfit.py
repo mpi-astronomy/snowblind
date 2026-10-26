@@ -64,7 +64,7 @@ class ResetRampFitStep(Step):
     spec = """
         reset_calib = string(default=None)  # ASDF from snowblind-reset-calib; without it and without sigma_b, the calibration packaged for the detector is used
         sigma_b = float(default=None)  # DN; scalar reset scatter, overrides the calibration file
-        t1_scale = float(default=None)  # fraction of the nominal first interval the first read integrates; overrides the file
+        t1_scale = float(default=None)  # fraction of the nominal first interval the first read integrates, for this exposure; overrides the file and its rescaling
         per_channel_timing = boolean(default=True)  # use the file's per-channel t1_scale and reset_offset when present
         per_pixel_sigma_b = boolean(default=False)  # use the per-pixel sigma_b image from the calibration file
         use_pedestal_mean = boolean(default=False)  # prior mean of the reset level from the calibration file's pedestal_mean map
@@ -78,6 +78,14 @@ class ResetRampFitStep(Step):
         use_zeroframe = boolean(default=True)  # use the zeroframe when present
         rejection_threshold = float(default=None)  # sigma threshold of the likelihood jump search; None for stcal default
         save_opt = boolean(default=False)  # save used_reset and d0_resid as a _resetfit ASDF product
+        # accepted so that the step fits the ramp_fit slot of calwebb_detector1, whose CRDS parameters set them; not used
+        algorithm = string(default='LIKELY')  # the fit is always the reset-anchored likelihood fit
+        int_name = string(default='')
+        opt_name = string(default='')
+        suppress_one_group = boolean(default=False)  # one-group pixels are what the reset point is for; never suppressed
+        firstgroup = integer(default=None)  # not implemented; a value given is reported and ignored
+        lastgroup = integer(default=None)  # not implemented; a value given is reported and ignored
+        maximum_cores = string(default='1')  # the fit runs in one process
         as_hook = boolean(default=False)  # return the rate image alone, as a post-hook of a skipped ramp_fit must, and write the rateints product
         skip = boolean(default=False)
     """  # noqa: E501
@@ -142,6 +150,8 @@ class ResetRampFitStep(Step):
         if not self.use_zeroframe:
             ramp_data.zeroframe = None
 
+        if self.firstgroup is not None or self.lastgroup is not None:
+            log.warning("firstgroup and lastgroup are accepted for the ramp_fit slot but not implemented; all groups are fitted")
         log.info(
             f"Reset-anchored likelihood fit: sigma_b "
             f"{'per pixel, median ' if np.ndim(sigma_b) == 2 else ''}"
@@ -157,10 +167,11 @@ class ResetRampFitStep(Step):
             # the file's absolute offsets per channel (channel_timing holds them relative to the file's scalar offset)
             file_scalar = self._scalar_offset - self.reset_offset
             file_offsets = [o + file_scalar for o in channel_timing[1]] if channel_timing else [file_scalar] * len(blocks)
+            resultant = _first_resultant(result, self.use_zeroframe)
             if self.anchor_timing_to_stars:
                 fitted = star_anchored_scales(
                     result, base, blocks, self.use_zeroframe, self.anchor_min_bright,
-                    fallback=list(t1_scales),
+                    fallback=list(t1_scales), resultant=resultant,
                 )
                 log.info(
                     "First-read scales anchored to this exposure's bright pixels, per channel: "
@@ -170,7 +181,7 @@ class ResetRampFitStep(Step):
                 t1_scales = [float(k) for k in fitted]
             anchored = sky_anchored_offsets(
                 result, base, t1_scales, blocks, self.use_zeroframe, self.anchor_max_signal, self.anchor_min_pixels,
-                fallback=file_offsets,
+                fallback=file_offsets, resultant=resultant,
             )
             log.info(
                 "Reset offsets anchored to this exposure's sky pixels, per channel: "
@@ -198,7 +209,11 @@ class ResetRampFitStep(Step):
 
         if self.save_opt:
             path = self.make_output_path(basepath=result.meta.filename, suffix="resetfit", ext="asdf")
-            write_resetfit(path, integ_info, sigma_b, t1_scale, result.meta.instrument.detector, reset_level)
+            write_resetfit(
+                path, integ_info, sigma_b, t1_scale, result.meta.instrument.detector, reset_level,
+                t1_scales=channel_timing[0] if channel_timing else None,
+                reset_offsets=channel_timing[1] if channel_timing else None,
+            )
             log.info(f"Saved reset diagnostics to {path}")
 
         out_model = create_image_model(result, image_info)
@@ -291,10 +306,17 @@ class ResetRampFitStep(Step):
             reset_level = np.float32(self.reset_offset + file_offset)
             scales = tree.get("t1_scale_channels")
             offsets = tree.get("reset_offset_channels")
-            if self.per_channel_timing and self.t1_scale is None and scales is not None:
-                offsets = offsets if offsets is not None else [file_offset] * len(scales)
+            if self.per_channel_timing and (scales is not None or offsets is not None):
+                nchannels = len(scales) if scales is not None else len(offsets)
+                offsets = offsets if offsets is not None else [file_offset] * nchannels
+                if self.t1_scale is None and scales is not None:
+                    channel_scales = [float(v) for v in scales]
+                else:
+                    # a t1_scale override (or a file without per-channel scales) applies to every channel
+                    one_scale = self.t1_scale if self.t1_scale is not None else tree.get("t1_scale", 1.0)
+                    channel_scales = [float(one_scale)] * nchannels
                 # the per-channel offsets replace the file's scalar offset; the step's offset stays on top
-                channel_timing = ([float(v) for v in scales], [float(v) - file_offset for v in offsets])
+                channel_timing = (channel_scales, [float(v) - file_offset for v in offsets])
             if self.use_pedestal_mean:
                 mean = calibrated_pedestal_map(
                     tree,
@@ -310,11 +332,13 @@ class ResetRampFitStep(Step):
                 raise ValueError(
                     f"Calibration file is for {detector}, data are {model.meta.instrument.detector}"
                 )
+            scale_from_file = t1_scale is None
             if t1_scale is None:
                 t1_scale = float(tree.get("t1_scale", 1.0))
             t1_data = first_group_time(model)
             t1_cal = tree.get("t1_seconds")
-            if t1_cal is not None and t1_data > 0:
+            if t1_cal is not None and t1_data > 0 and scale_from_file:
+                # a t1_scale given to the step is for this exposure's first-group time and is used as it is
                 # the shortfall is a delay in seconds; carry it to this exposure's first-group time
                 t1_scale = rescale_t1(t1_scale, float(t1_cal), t1_data)
                 if channel_timing is not None:
@@ -505,7 +529,7 @@ def _first_resultant(model, use_zeroframe):
 
 
 def star_anchored_scales(model, base_level, blocks, use_zeroframe, min_bright=500, fallback=None,
-                         bright_range=(50.0, 2000.0), nbins=6, min_per_bin=20):
+                         bright_range=(50.0, 2000.0), nbins=6, min_per_bin=20, resultant=None):
     """The first-read scale per channel from the exposure's own bright, unsaturated pixels.
 
     With ``y = first - prior - a * t_first`` (the first resultant's residual
@@ -530,8 +554,10 @@ def star_anchored_scales(model, base_level, blocks, use_zeroframe, min_bright=50
         Science-frame ``(rows, cols)`` of each output channel.
     use_zeroframe : bool
         Passed to `_first_resultant`.
-    min_bright : int
-        Fewer bright pixels than this in a channel keeps its fallback scale.
+    resultant : tuple or None
+        The output of `_first_resultant` for ``model``, when the caller has it
+        already; None computes it here.
+\1        Fewer bright pixels than this in a channel keeps its fallback scale.
     fallback : sequence of float or None
         Scale per channel to keep when the fit is not possible; None means
         1.0 everywhere.
@@ -550,7 +576,7 @@ def star_anchored_scales(model, base_level, blocks, use_zeroframe, min_bright=50
         First-read scale per channel, each fitted value clipped to
         ``[0.7, 1.1]``.
     """
-    first, t_first, clean, rest, t1 = _first_resultant(model, use_zeroframe)
+    first, t_first, clean, rest, t1 = resultant if resultant is not None else _first_resultant(model, use_zeroframe)
     base = np.broadcast_to(np.asarray(base_level, dtype=np.float64), first.shape)
     nominal = rest * t_first
     scales = []
@@ -583,7 +609,7 @@ def star_anchored_scales(model, base_level, blocks, use_zeroframe, min_bright=50
 
 
 def sky_anchored_offsets(
-    model, base_level, t1_scales, blocks, use_zeroframe, max_signal=50.0, min_pixels=1000, fallback=None
+    model, base_level, t1_scales, blocks, use_zeroframe, max_signal=50.0, min_pixels=1000, fallback=None, resultant=None
 ):
     """The reset offset per channel from the exposure's own sky pixels, in DN.
 
@@ -612,8 +638,10 @@ def sky_anchored_offsets(
     max_signal : float
         Pixels whose expected first-resultant signal is below this (and
         above ``-0.4 * max_signal``), in DN, count as sky.
-    min_pixels : int
-        Fewer sky pixels than this in a channel keeps its fallback offset.
+    resultant : tuple or None
+        The output of `_first_resultant` for ``model``, when the caller has it
+        already; None computes it here.
+\1        Fewer sky pixels than this in a channel keeps its fallback offset.
     fallback : sequence of float or None
         Offset per channel in DN to keep when there are too few sky pixels;
         None means 0.0 everywhere.
@@ -623,7 +651,7 @@ def sky_anchored_offsets(
     list of float
         Reset offset per channel in DN.
     """
-    first, t_first, clean, rest, t1 = _first_resultant(model, use_zeroframe)
+    first, t_first, clean, rest, t1 = resultant if resultant is not None else _first_resultant(model, use_zeroframe)
     base = np.broadcast_to(np.asarray(base_level, dtype=np.float64), first.shape)
     offsets = []
     fallback = [0.0] * len(blocks) if fallback is None else list(fallback)
@@ -719,7 +747,7 @@ def highpass_prior(pedestal_mean, fastaxis, slowaxis):
     return np.where(finite, image - slow, np.nan).astype(np.float32)
 
 
-def write_resetfit(path, integ_info, sigma_b, t1_scale, detector, reset_level=0.0):
+def write_resetfit(path, integ_info, sigma_b, t1_scale, detector, reset_level=0.0, t1_scales=None, reset_offsets=None):
     """Write the reset diagnostics of a fit to an ASDF file.
 
     Parameters
@@ -738,8 +766,14 @@ def write_resetfit(path, integ_info, sigma_b, t1_scale, detector, reset_level=0.
     detector : str
         Detector name.
     reset_level : float or ndarray, shape (nrows, ncols)
-        Prior mean of the reset level used by the fit, DN; its median is
-        stored as well.
+        Prior mean of the reset level used by the fit, DN, before any
+        per-channel offset; its median plus the mean channel offset is
+        stored as ``reset_level_median``.
+    t1_scales : sequence of float or None
+        First-read scale per output channel when the fit used them.
+    reset_offsets : sequence of float or None
+        Reset offset per output channel in DN when the fit used them,
+        added to ``reset_level``.
     """
     used = np.asarray(integ_info["used_reset"])
     resid = np.asarray(integ_info["d0_resid"], dtype=np.float32)
@@ -749,7 +783,9 @@ def write_resetfit(path, integ_info, sigma_b, t1_scale, detector, reset_level=0.
         "sigma_b": np.asarray(sigma_b, dtype=np.float32),
         "t1_scale": float(t1_scale),
         "reset_level": np.asarray(reset_level, dtype=np.float32),
-        "reset_level_median": float(np.nanmedian(reset_level)),
+        "reset_level_median": float(np.nanmedian(reset_level)) + (float(np.mean(reset_offsets)) if reset_offsets else 0.0),
+        "t1_scale_channels": None if t1_scales is None else [float(v) for v in t1_scales],
+        "reset_offset_channels": None if reset_offsets is None else [float(v) for v in reset_offsets],
         "used_reset": used,
         "d0_resid": resid,
         "used_reset_fraction": float(used.mean()),

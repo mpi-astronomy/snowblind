@@ -1,6 +1,6 @@
 import numpy as np
 
-from snowblind.scene_mask import chisel_mask, clip_mask, remove_stripes
+from snowblind.scene_mask import chisel_mask, clip_mask, remove_stripes, saturated_stars, spike_mask
 
 
 def gaussian_sources(shape, x, y, flux, sigma=1.5):
@@ -151,8 +151,6 @@ def star_shaped_mask(shape, cy, cx):
 
 def test_saturated_stars_takes_spike_shaped_regions_with_saturated_pixels():
     """saturated_stars on a mask with a star-shaped hole around NaNs and a filled square around NaNs lists the star only."""
-    from snowblind.scene_mask import saturated_stars
-
     finite = np.ones((512, 512), dtype=bool)
     finite[250:263, 250:263] = False  # the star's saturated core
     finite[100:105, 100:105] = False  # saturated pixels in a galaxy-like region
@@ -167,8 +165,6 @@ def test_saturated_stars_takes_spike_shaped_regions_with_saturated_pixels():
 
 def test_spike_mask_follows_a_spike_beyond_the_core_mask():
     """spike_mask on a saturated star with a vertical spike of 0.1 sky masks the spike where the star mask stopped."""
-    from snowblind.scene_mask import spike_mask
-
     rng = np.random.default_rng(41)
     rate = rng.normal(1.0, 0.05, (512, 512))
     rate[20:406, 254:259] += 0.1  # a vertical spike through the star
@@ -184,8 +180,6 @@ def test_spike_mask_follows_a_spike_beyond_the_core_mask():
 
 def test_spike_mask_needs_a_saturated_core():
     """spike_mask on a bright but unsaturated source with a spike treats no star and returns the mask unchanged."""
-    from snowblind.scene_mask import spike_mask
-
     rng = np.random.default_rng(42)
     rate = rng.normal(1.0, 0.05, (512, 512))
     rate[256, 256] += 50.0
@@ -200,8 +194,6 @@ def test_spike_mask_needs_a_saturated_core():
 
 def test_saturated_stars_with_zero_border_still_finds_the_star():
     """saturated_stars with border=0 on a star-shaped mask around NaNs lists the star, instead of clearing the frame."""
-    from snowblind.scene_mask import saturated_stars
-
     finite = np.ones((512, 512), dtype=bool)
     finite[250:263, 250:263] = False
     mask = star_shaped_mask((512, 512), 256, 256)
@@ -213,8 +205,6 @@ def test_saturated_stars_with_zero_border_still_finds_the_star():
 
 def test_spike_mask_follows_a_row_spike_too():
     """spike_mask on a saturated star with a horizontal spike of 0.1 sky masks the spike where the star mask stopped."""
-    from snowblind.scene_mask import spike_mask
-
     rng = np.random.default_rng(43)
     rate = rng.normal(1.0, 0.05, (512, 512))
     rate[254:259, 20:406] += 0.1  # a horizontal spike through the star
@@ -226,3 +216,15 @@ def test_spike_mask_follows_a_row_spike_too():
     assert nstars == 1
     assert (~masked[256, 64:106]).mean() > 0.9
     assert masked[300, 64:106].mean() > 0.95
+
+
+def test_chisel_mask_without_erosion_or_opening_masks_only_the_source():
+    """chisel_mask with erode=0, opening=0 and a 0.99 quantile on sky with one bright square masks under 5 percent."""
+    rng = np.random.default_rng(6)
+    rate = rng.normal(1.0, 0.05, (256, 256))
+    rate[100:120, 100:120] += 5.0
+
+    mask = chisel_mask(rate, qthresh=0.99, erode=0, opening=0, coarse_fwhm=None)
+
+    assert (~mask).mean() < 0.05
+    assert not mask[105:115, 105:115].any()

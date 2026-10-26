@@ -169,7 +169,7 @@ Variant                                rate sigma  row-mean sigma  slow band S  
 =====================================  ==========  ==============  ===========  ===========  ======  ======  ======
 white prediction                       0.0188      0.0008          0            0            0.0023  0.0006  0.0002
 SIRS, no cleaning                      0.0205      0.0053          1204         121          0.0052  0.0037  0.0027
-SIRS + jwst clean_flicker_noise median 0.0213      0.0079          403          122          0.0058  0.0046  0.0034
+SIRS + jwst clean_flicker median       0.0213      0.0079          403          122          0.0058  0.0046  0.0034
 SIRS + row median, clipped             0.0217      0.0090          397          123          0.0061  0.0048  0.0038
 SIRS + Wiener, clipped                 0.0209      0.0060          213          114          0.0059  0.0049  0.0042
 SIRS + row median, linear, box 32      0.0210      0.0073          222          123          0.0045  0.0027  0.0022
@@ -281,7 +281,7 @@ Variant                                 median bias  2 to 6    6 to 20    20 to 
 ======================================  ===========  ========  =========  ==========  =============
 jwst clean_flicker_noise median         -0.0001                                       -0.126
 row median, linear, box 32, clip mask   -0.0001      -0.0078   -0.0006    -0.0003     -0.088
-row median, linear, box 32, chisel mask -0.0000      -0.0027   +0.0002    -0.0001     -0.076
+row median, linear, box 32, chisel      -0.0000      -0.0027   +0.0002    -0.0001     -0.076
 Wiener, box 32, no cutoff, clip mask    -0.0021      -0.124    -0.0245    -0.0070     -0.090
 Wiener, box 32, 3 ms cutoff, clip mask  -0.0001      -0.0107   -0.0016    -0.0005     -0.092
 Wiener, box 32, 3 ms cutoff, chisel     -0.0000      -0.0026   +0.0006    +0.0002     -0.077
@@ -344,7 +344,7 @@ The pedestal of the OLS_C fit on dark integrations gives the reset scatter,
 after removing the first group's own read noise:
 
 =========  ==================================  ================  ================  ========
-Detector   data                                pedestal scatter  single-read noise sigma_b
+Detector   data                                pedestal scatter  read noise        sigma_b
 =========  ==================================  ================  ================  ========
 NRCA1      9022 BRIGHT1, 10 integrations       17.6 DN           5.2 DN            16.8 DN
 NRCALONG   9022 BRIGHT1, 10 integrations       18.3 DN           4.8 DN            17.6 DN

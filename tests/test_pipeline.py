@@ -1,3 +1,5 @@
+from jwst.ramp_fitting import RampFitStep
+
 from snowblind import Detector1Pipeline, ResetRampFitStep, StreamCleanStep
 
 
@@ -32,7 +34,6 @@ def test_pipeline_uses_the_jwst_pipeline_parameter_reference():
 
 def test_pipeline_without_reset_fit_keeps_the_jwst_ramp_fit():
     """Detector1Pipeline(reset_fit=False) has the jwst RampFitStep in its ramp_fit slot."""
-    from jwst.ramp_fitting import RampFitStep
 
     pipeline = Detector1Pipeline(reset_fit=False)
 
@@ -45,3 +46,12 @@ def test_pipeline_without_stream_clean_adds_no_hook():
 
     assert pipeline.jump.post_hooks == []
     assert pipeline.clean_flicker_noise.skip is False
+
+
+def test_pipeline_accepts_a_single_hook_string():
+    """Detector1Pipeline(steps=...) with post_hooks given as one string keeps it whole and adds no second stream clean."""
+    hook = "snowblind.StreamCleanStep"
+
+    pipeline = Detector1Pipeline(steps={"jump": {"post_hooks": hook}})
+
+    assert pipeline.jump.post_hooks == [hook]

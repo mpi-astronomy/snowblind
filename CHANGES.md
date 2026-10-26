@@ -50,6 +50,13 @@ its GitHub release.
   parameter files using the old names must be updated.
 - Python 3.11 or later and jwst 2.0.0 or later are required; tested on
   Python 3.11 to 3.14.
+- `ResetRampFitStep` accepts the jwst `ramp_fit` parameters that CRDS sets
+  for the pipeline slot, keeps a calibration's per-channel offsets when
+  `t1_scale` is overridden, and records the per-channel timing in its
+  `_resetfit` diagnostics.
+- A `scene_model` given to `StreamCleanStep` is handled in the flat's
+  units when a flat is in use.
+- `snowblind-reset-calib` refuses darks with different frames per group.
 - `StreamCleanStep` keeps the pixels the flat reference marks DO_NOT_USE
   (or leaves at zero) out of the background: the jwst flat reader smooths
   over them, but the data under them, such as the NIRISS occulting spots,

@@ -1,9 +1,23 @@
+import logging
+
+import asdf
 import numpy as np
 import pytest
+from astropy.io import fits
 from stdatamodels.jwst import datamodels
 
-from snowblind import ResetRampFitStep
-from snowblind.reset_calib import write_calibration
+from snowblind import ResetRampFitStep, readout
+from snowblind.reset_calib import default_calibration, update_timing, write_calibration
+from snowblind.reset_rampfit import (
+    calibrated_pedestal_map,
+    highpass_prior,
+    rescale_t1,
+    reset_prior_map,
+    star_anchored_scales,
+    superbias_difference,
+    write_resetfit,
+)
+
 
 SAT = datamodels.dqflags.group["SATURATED"]
 NY, NX = 8, 8
@@ -148,8 +162,6 @@ def test_call_rejects_zero_sigma_b(tmp_path):
 
 def test_save_opt_writes_resetfit(tmp_path, tmp_cwd):
     """ResetRampFitStep.call with save_opt writes a _resetfit.asdf holding used_reset and d0_resid planes."""
-    import asdf
-
     rn, gain = reference_files(tmp_path)
     model = make_ramp()
 
@@ -193,9 +205,6 @@ def test_call_use_pedestal_mean_requires_calibration(tmp_path):
 
 def test_call_uses_per_channel_timing_from_file(tmp_path):
     """ResetRampFitStep.call with per-channel t1_scale in the file gives a one-group pixel its own channel's scale."""
-    from snowblind import readout
-    from snowblind.reset_calib import update_timing
-
     rn, gain = reference_files(tmp_path)
     model = make_ramp()
     blocks = readout.channel_blocks((NY, NX), -1, 2)
@@ -213,8 +222,6 @@ def test_call_uses_per_channel_timing_from_file(tmp_path):
 
 def test_call_t1_scale_override_disables_per_channel_timing(tmp_path):
     """ResetRampFitStep.call with an explicit t1_scale ignores the file's per-channel scales."""
-    from snowblind.reset_calib import update_timing
-
     rn, gain = reference_files(tmp_path)
     model = make_ramp()
     model.groupdq[0, 1:, 2, 2] = SAT
@@ -230,8 +237,6 @@ def test_call_t1_scale_override_disables_per_channel_timing(tmp_path):
 
 def test_highpass_prior_removes_row_pattern_and_keeps_channel_mean():
     """highpass_prior on a map of 5 DN plus a zero-mean 2 DN row pattern returns 5 DN in every row to 1e-4."""
-    from snowblind.reset_rampfit import highpass_prior
-
     rng = np.random.default_rng(11)
     rows = rng.normal(0.0, 2.0, 64)
     rows -= rows.mean()
@@ -244,8 +249,6 @@ def test_highpass_prior_removes_row_pattern_and_keeps_channel_mean():
 
 def test_highpass_prior_keeps_isolated_pixel_features():
     """highpass_prior on a flat map with four isolated +100 DN pixels keeps them within 3 DN of 100."""
-    from snowblind.reset_rampfit import highpass_prior
-
     pedestal = np.zeros((64, 64), dtype=np.float32)
     for y, x in ((5, 7), (20, 40), (33, 12), (50, 60)):
         pedestal[y, x] = 100.0
@@ -259,11 +262,6 @@ def test_highpass_prior_keeps_isolated_pixel_features():
 
 def test_reset_prior_map_adds_channel_offsets_to_highpassed_map(tmp_path):
     """reset_prior_map on a flat 3 DN map with per-channel offsets 1..4 returns 3 plus the offset in each channel block."""
-    import asdf
-
-    from snowblind import readout
-    from snowblind.reset_rampfit import reset_prior_map
-
     mean = np.full((64, 64), 3.0, dtype=np.float32)
     calib = tmp_path / "nrca1_reset_calib.asdf"
     write_calibration(calib, np.full((64, 64), 12.0, dtype=np.float32), mean, np.full((64, 64), 10, dtype=np.int32), "NRCA1", [])
@@ -280,10 +278,6 @@ def test_reset_prior_map_adds_channel_offsets_to_highpassed_map(tmp_path):
 
 def test_superbias_difference_is_calibration_minus_science(tmp_path):
     """superbias_difference with two 8 x 8 superbias files of 10 and 3 DN returns +7 everywhere."""
-    from astropy.io import fits
-
-    from snowblind.reset_rampfit import superbias_difference
-
     paths = {}
     for name, value in (("jwst_nircam_superbias_0001.fits", 10.0), ("jwst_nircam_superbias_0002.fits", 3.0)):
         path = tmp_path / name
@@ -299,8 +293,6 @@ def test_superbias_difference_is_calibration_minus_science(tmp_path):
 
 def test_superbias_difference_is_none_for_the_same_file():
     """superbias_difference with the same superbias name on both sides returns None without touching any file."""
-    from snowblind.reset_rampfit import superbias_difference
-
     delta = superbias_difference("crds://jwst_nircam_superbias_0454.fits", "jwst_nircam_superbias_0454.fits", (8, 8), locate=None)
 
     assert delta is None
@@ -308,8 +300,6 @@ def test_superbias_difference_is_none_for_the_same_file():
 
 def test_write_calibration_records_superbias(tmp_path):
     """write_calibration with superbias='jwst_nircam_superbias_0454.fits' stores that name in the provenance."""
-    import asdf
-
     calib = tmp_path / "nrca1_reset_calib.asdf"
     write_calibration(
         calib, np.full((8, 8), 12.0, dtype=np.float32), np.zeros((8, 8), dtype=np.float32),
@@ -322,8 +312,6 @@ def test_write_calibration_records_superbias(tmp_path):
 
 def superbias_warnings(caplog):
     """The messages of the captured WARNING (or higher) records that mention the superbias."""
-    import logging
-
     messages = []
     for record in caplog.records:
         if record.levelno >= logging.WARNING and "superbias" in record.getMessage():
@@ -333,8 +321,6 @@ def superbias_warnings(caplog):
 
 def test_call_warns_when_data_superbias_differs_from_best_reference(tmp_path, caplog):
     """ResetRampFitStep.call on data recorded with superbias 0001 and override_superbias naming 0002 warns naming both."""
-    import logging
-
     rn, gain = reference_files(tmp_path)
     model = make_ramp()
     model.meta.ref_file.superbias.name = "crds://jwst_nircam_superbias_0001.fits"
@@ -353,8 +339,6 @@ def test_call_warns_when_data_superbias_differs_from_best_reference(tmp_path, ca
 
 def test_call_no_warning_when_data_superbias_matches_best_reference(tmp_path, caplog):
     """ResetRampFitStep.call on data recorded with superbias 0002 and override_superbias naming 0002 logs no warning."""
-    import logging
-
     rn, gain = reference_files(tmp_path)
     model = make_ramp()
     model.meta.ref_file.superbias.name = "crds://jwst_nircam_superbias_0002.fits"
@@ -369,10 +353,6 @@ def test_call_no_warning_when_data_superbias_matches_best_reference(tmp_path, ca
 
 def test_calibrated_pedestal_map_is_unchanged_for_another_superbias(caplog):
     """calibrated_pedestal_map with a data superbias other than the calibration's returns the map unchanged and warns."""
-    import logging
-
-    from snowblind.reset_rampfit import calibrated_pedestal_map
-
     mean = np.full((8, 8), 3.0, dtype=np.float32)
     tree = {"pedestal_mean": mean, "provenance": {"superbias": "jwst_nircam_superbias_0443.fits"}}
 
@@ -387,8 +367,6 @@ def test_calibrated_pedestal_map_is_unchanged_for_another_superbias(caplog):
 
 def test_rescale_t1_keeps_the_delay_in_seconds():
     """rescale_t1 with 0.943 measured at 10.74 s gives a 0.612 s delay, which at 48.3 s is a scale of 0.9873."""
-    from snowblind.reset_rampfit import rescale_t1
-
     scale = rescale_t1(0.943, 10.74, 48.3)
 
     assert scale == pytest.approx(1.0 - (1.0 - 0.943) * 10.74 / 48.3, rel=1e-9)
@@ -437,9 +415,6 @@ def test_call_without_anchoring_is_biased_by_a_wrong_offset(tmp_path):
 
 def test_star_anchored_scales_recovers_a_short_first_read():
     """star_anchored_scales on ramps whose first read holds 80 percent of its nominal signal returns 0.8 per channel."""
-    from snowblind import readout
-    from snowblind.reset_rampfit import star_anchored_scales
-
     model = make_ramp()
     rng = np.random.default_rng(21)
     rates = rng.uniform(5.0, 150.0, (NY, NX))  # nominal first-read signal 54 to 1600 DN
@@ -455,8 +430,6 @@ def test_star_anchored_scales_recovers_a_short_first_read():
 
 def test_default_calibration_has_nrca1_timing_per_channel():
     """default_calibration('nrca1') returns a positive sigma_b and four per-channel first-read scales."""
-    from snowblind.reset_calib import default_calibration
-
     tree = default_calibration("nrca1")
 
     assert tree["detector"] == "NRCA1"
@@ -466,8 +439,6 @@ def test_default_calibration_has_nrca1_timing_per_channel():
 
 def test_default_calibration_unknown_detector_raises():
     """default_calibration('MIRIMAGE') raises a ValueError naming the detector."""
-    from snowblind.reset_calib import default_calibration
-
     with pytest.raises(ValueError, match="MIRIMAGE"):
         default_calibration("MIRIMAGE")
 
@@ -520,3 +491,47 @@ def test_call_as_hook_returns_the_rate_image_alone(tmp_path):
     assert isinstance(out, datamodels.ImageModel)
     assert out.meta.cal_step.ramp_fit == "COMPLETE"
     assert len(list(tmp_path.glob("*_rateints.fits"))) == 1
+
+
+def test_call_accepts_the_jwst_ramp_fit_slot_parameters(tmp_path):
+    """ResetRampFitStep.call with suppress_one_group=False and maximum_cores='all', as CRDS sets for the slot, completes."""
+    rn, gain = reference_files(tmp_path)
+    model = make_ramp()
+
+    out, _ints = ResetRampFitStep.call(
+        model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, suppress_one_group=False, maximum_cores="all"
+    )
+
+    assert out.meta.cal_step.reset_rampfit == "COMPLETE"
+
+
+def test_reset_prior_keeps_channel_offsets_with_a_t1_scale_override(tmp_path):
+    """_reset_prior with per-channel offsets in the calibration and t1_scale=0.95 returns the offsets with 0.95 per channel."""
+    model = make_ramp()
+    sigma = np.full((NY, NX), 15.0, dtype=np.float32)
+    path = tmp_path / "calib.asdf"
+    write_calibration(
+        str(path), sigma, np.zeros((NY, NX), dtype=np.float32), np.ones((NY, NX), dtype=np.int32), "NRCA1", [],
+        t1_scale=0.9, refpix_algorithm="sirs", reset_offset=1.0, t1_scale_channels=[0.9, 0.91, 0.92, 0.93],
+        reset_offset_channels=[1.0, 2.0, 3.0, 4.0],
+    )
+    step = ResetRampFitStep(reset_calib=str(path), t1_scale=0.95)
+
+    _sigma_b, t1_scale, _level, channel_timing = step._reset_prior(model)
+
+    assert t1_scale == 0.95
+    assert channel_timing[0] == [0.95, 0.95, 0.95, 0.95]
+    assert channel_timing[1] == [0.0, 1.0, 2.0, 3.0]
+
+
+def test_write_resetfit_records_the_channel_timing(tmp_path):
+    """write_resetfit with per-channel scales and offsets stores them and folds the mean offset into the level median."""
+    integ_info = {"used_reset": np.ones((1, 4, 4), dtype=bool), "d0_resid": np.zeros((1, 4, 4), dtype=np.float32)}
+    path = tmp_path / "x_resetfit.asdf"
+
+    write_resetfit(str(path), integ_info, 15.0, 0.9, "NRCA1", reset_level=2.0, t1_scales=[0.9, 0.91], reset_offsets=[1.0, 3.0])
+
+    with asdf.open(str(path)) as handle:
+        assert handle.tree["t1_scale_channels"] == [0.9, 0.91]
+        assert handle.tree["reset_offset_channels"] == [1.0, 3.0]
+        assert handle.tree["reset_level_median"] == 4.0

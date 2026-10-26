@@ -184,19 +184,20 @@ class StreamCleanStep(Step):
                 )
 
         self._scene = None
+        self._scene_flat = None
         if self.scene_model is not None:
             self._scene = read_scene_model(self.scene_model, result.data.shape[-2:])
             log.info(
                 f"Scene model {self.scene_model}: median {np.nanmedian(self._scene):.4g} DN/s, "
                 f"{100 * np.mean(~np.isfinite(self._scene)):.2f} percent without coverage"
             )
+            # the scene is in raw DN/s; where a flat is in use the backgrounds are in flat-fielded units
+            self._scene_flat = self._scene
+            if flat is not None:
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    self._scene_flat = np.where(np.isfinite(flat) & (flat > 0), self._scene / flat, np.nan)
 
         background_mask, mask_model = self._scene_mask(result, flat)
-        background_mask = exclude_reference_border(background_mask)
-        if flat_unusable is not None:
-            background_mask = background_mask & ~flat_unusable
-        if self.mask_dilation > 0:
-            background_mask = dilate_sources(background_mask, self.mask_dilation)
         if background_mask.shape[-2:] != result.data.shape[-2:]:
             log.warning(
                 f"Mask shape {background_mask.shape} does not match data shape "
@@ -204,6 +205,11 @@ class StreamCleanStep(Step):
             )
             setattr(result.meta.cal_step, self.class_alias, "SKIPPED")
             return result
+        background_mask = exclude_reference_border(background_mask)
+        if flat_unusable is not None:
+            background_mask = background_mask & ~flat_unusable
+        if self.mask_dilation > 0:
+            background_mask = dilate_sources(background_mask, self.mask_dilation)
 
         log.info(f"Cleaning {result.meta.filename} with fit_method={self.fit_method}")
         prior_alphas = read_psd_prior(self.psd_prior) if self.psd_prior else None
@@ -215,7 +221,7 @@ class StreamCleanStep(Step):
             draft = np.nanmean([slope_per_group(cleaned[i], result.groupdq[i]) for i in range(cleaned.shape[0])], axis=0)
             draft = draft / (result.meta.exposure.group_time or 1.0)
             draft[(result.pixeldq & dqflags.pixel["DO_NOT_USE"]) > 0] = np.nan
-            background_mask = exclude_reference_border(self._chisel_scene_mask(draft))
+            background_mask = exclude_reference_border(self._chisel_scene_mask(draft, self._scene))
             if flat_unusable is not None:
                 background_mask = background_mask & ~flat_unusable
             if self.mask_dilation > 0:
@@ -287,11 +293,12 @@ class StreamCleanStep(Step):
             )
             log.info(f"First read cleaned against the reset prior of {self.reset_calib}")
         scene_background = None
-        if self._scene is not None:
-            # the scene in DN per group; pixels without coverage get zero and are outside the mask
-            scene_background = (np.where(np.isfinite(self._scene), self._scene, 0.0) * result.meta.exposure.group_time).astype(
-                np.float32
-            )
+        if self._scene_flat is not None:
+            # the scene in DN per group, in the units the backgrounds are in (flat-fielded when a flat is in use);
+            # pixels without coverage get zero and are outside the mask
+            scene_background = (
+                np.where(np.isfinite(self._scene_flat), self._scene_flat, 0.0) * result.meta.exposure.group_time
+            ).astype(np.float32)
         self._cleaned_zeroframe = None
         zeroframe = None
         if self.clean_first_group and getattr(result, "zeroframe", None) is not None and np.any(result.zeroframe != 0):
@@ -332,7 +339,7 @@ class StreamCleanStep(Step):
             anchor_mean=self.anchor_mean,
         )
 
-    def _chisel_scene_mask(self, rate):
+    def _chisel_scene_mask(self, rate, scene=None):
         """The chisel scene mask of a rate image, with the scene model and the spike mask applied.
 
         Parameters
@@ -342,6 +349,9 @@ class StreamCleanStep(Step):
             model the mask is built on the residual against it, since the
             mask then only has to cover where the model is wrong, and
             pixels the model does not cover are masked.
+        scene : ndarray or None, shape (nrows, ncols)
+            The scene model in the units of ``rate`` (flat-fielded when
+            ``rate`` is), or None for no scene model.
 
         Returns
         -------
@@ -349,11 +359,11 @@ class StreamCleanStep(Step):
             True for background pixels.
         """
         rate = np.array(rate, dtype=np.float64)
-        if self._scene is not None:
-            rate = rate - self._scene
+        if scene is not None:
+            rate = rate - scene
         background_mask = chisel_mask(rate)
-        if self._scene is not None:
-            background_mask &= np.isfinite(self._scene)
+        if scene is not None:
+            background_mask &= np.isfinite(scene)
         log.info(f"Scene mask (chisel): {100 * (~background_mask).mean():.2f} percent of pixels masked")
         if self.mask_spikes:
             background_mask, nstars = spike_mask(rate, background_mask)
@@ -400,7 +410,7 @@ class StreamCleanStep(Step):
             rate = np.array(image_model.data, dtype=np.float64)
             if hasattr(image_model, "dq") and image_model.dq is not None:
                 rate[(image_model.dq & dqflags.pixel["DO_NOT_USE"]) > 0] = np.nan
-            background_mask = self._chisel_scene_mask(rate)
+            background_mask = self._chisel_scene_mask(rate, self._scene_flat)
             mask_model = make_intermediate_model(image_model, background_mask) if self.save_mask else None
         else:
             background_mask, mask_model = make_scene_mask(

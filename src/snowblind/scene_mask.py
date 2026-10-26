@@ -345,7 +345,11 @@ def _chisel_pass(rate, finite, background, kernel_fwhm, qthresh, erode, opening,
     # grow back over the eroded border and into the faint wings
     grow_into = (convolved > np.quantile(convolved[finite], detgrowquant)) & finite
     structure = ndimage.generate_binary_structure(2, 2)
-    grown = ndimage.binary_dilation(true_detections, structure, iterations=erode + opening) & (grow_into | true_detections)
+    if erode + opening > 0:
+        grown = ndimage.binary_dilation(true_detections, structure, iterations=erode + opening)
+        grown &= grow_into | true_detections
+    else:
+        grown = true_detections.copy()  # scipy reads zero iterations as "until nothing changes"
     for iteration in range(max_grow):
         step = ndimage.binary_dilation(grown, structure) & grow_into
         if not np.any(step & ~grown):

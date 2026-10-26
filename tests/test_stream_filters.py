@@ -2,7 +2,8 @@ import numpy as np
 import pytest
 
 from snowblind import readout
-from snowblind.stream_filters import boxcar_noise, row_median_noise
+from snowblind.stream_filters import boxcar_noise, row_median_noise, wiener_noise
+
 
 NROWS, WIDTH = 256, 512
 
@@ -92,8 +93,6 @@ def test_boxcar_window_longer_than_stream_is_clamped():
 
 def test_wiener_noise_caps_protect_period_at_the_stream_length():
     """wiener_noise with a protect_period longer than the stream warns and returns a finite estimate."""
-    from snowblind.stream_filters import wiener_noise
-
     rng = np.random.default_rng(3)
     image = rng.normal(0.0, 1.0, (32, 64)).astype(np.float32)
     mask = np.ones(image.shape, dtype=bool)
