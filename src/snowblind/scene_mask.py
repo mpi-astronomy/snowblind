@@ -14,30 +14,7 @@ import numpy as np
 from astropy.stats import mad_std
 from scipy import ndimage
 
-__all__ = ["chisel_mask", "clip_mask", "tiled_sky", "remove_stripes", "saturated_stars", "spike_mask"]
-
-
-def clip_mask(rate, n_sigma=2.0):
-    """Background mask by sigma clipping, as the jwst step does: True where background.
-
-    Parameters
-    ----------
-    rate : ndarray, shape (nrows, ncols)
-        Draft rate image in DN/s.  Non-finite pixels are masked.
-    n_sigma : float
-        A pixel is background where its rate is less than ``n_sigma`` times
-        the robust standard deviation (``mad_std``) above the median of the
-        finite pixels.
-
-    Returns
-    -------
-    ndarray of bool, shape (nrows, ncols)
-        True for background pixels.
-    """
-    good = np.isfinite(rate)
-    level = np.median(rate[good])
-    sigma = mad_std(rate[good], ignore_nan=True)
-    return good & (rate - level < n_sigma * sigma)
+__all__ = ["chisel_mask", "tiled_sky", "remove_stripes", "saturated_stars", "spike_mask"]
 
 
 def _candidates(convolved, threshold, erode, opening):

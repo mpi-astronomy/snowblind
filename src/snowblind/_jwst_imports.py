@@ -21,7 +21,6 @@ try:
     )
     from jwst.clean_flicker_noise.background_level import (  # noqa: F401
         background_level,
-        clip_to_background,
     )
 except ImportError as err:
     raise ImportError(

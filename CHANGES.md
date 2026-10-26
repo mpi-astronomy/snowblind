@@ -9,38 +9,38 @@ its GitHub release.
 
 ### Added
 
-- `snowblind_detector1`, a `calwebb_detector1` with `StreamCleanStep`
-  hooked after the jump step (the jwst flicker step skipped) and
-  `ResetRampFitStep` in the `ramp_fit` slot, keeping the jwst pipeline's
-  steps, parameters and CRDS parameter references; either substitution
-  can be switched off. `ResetRampFitStep` also has an `as_hook` form that
-  returns the rate image alone, for use as a post-hook of the stock
-  pipeline's skipped `ramp_fit`.
-- `StreamCleanStep`: removes 1/f (flicker) noise from NIR group data by
-  filtering each output channel's readout stream with a Wiener gain
-  derived from the exposure's own noise spectrum, with a two-tier
-  NoiseChisel-style scene mask that also follows the column-aligned
-  diffraction spikes of saturated stars, a choice of background model,
-  per-read even-odd and per-column offset corrections, and the first read
-  cleaned against the reset-level prior.
+- `StreamCleanStep`: removes 1/f (flicker) noise from NIRCam and NIRISS
+  group data by filtering each output channel's readout stream with a
+  Wiener gain derived from the exposure's own noise spectrum. The same
+  linear filter is applied to every group difference, so nothing
+  random-walks along the ramp. A two-tier NoiseChisel-style scene mask
+  that also follows the diffraction spikes of saturated stars and leaves
+  out the pixels the flat reference marks unusable, a scalar median
+  background measured on the flat-fielded difference (default) or a
+  box-spline background per integration for extended emission, per-read
+  even-odd and per-column offset corrections, and the first read cleaned
+  against the reset-level prior.
 - `ResetRampFitStep`: likelihood ramp fitting with the superbias-subtracted
   reset level as an extra resultant, so that pixels with a single
-  unsaturated group still get a rate. Uses a per-detector calibration file
-  and corrects its prior when the data had a different superbias
-  subtracted.
+  unsaturated group still get a rate. The reset offset is anchored to each
+  exposure's own sky per output channel. It fits the `ramp_fit` slot of
+  `calwebb_detector1` and has an `as_hook` form for use as a post-hook of
+  the stock pipeline's skipped `ramp_fit`.
+- `snowblind_detector1`: `calwebb_detector1` with `StreamCleanStep` hooked
+  after the jump step and `ResetRampFitStep` in the `ramp_fit` slot,
+  keeping the jwst pipeline's steps, parameters and CRDS parameter
+  references; either substitution can be switched off.
 - `snowblind-reset-calib`: command line tool that measures the reset-level
   scatter and mean pedestal map of a detector from dark ramps and writes
   the calibration file, with ASDF history entries recording the software
   and inputs.
-- A packaged scalar reset calibration (reset scatter, first-read timing
-  and offsets per output channel), one ASDF file per detector for the ten
-  NIRCam detectors and NIRISS, which `ResetRampFitStep` uses when no
-  calibration file is given, so the step runs with its defaults. The
-  pedestal maps stay in the calibration files.
+- A packaged scalar reset calibration, one ASDF file per detector for the
+  ten NIRCam detectors and NIRISS, which `ResetRampFitStep` uses when no
+  calibration file is given.
 - `OpenPixelStep` option `flag_low_signal_pix` to also flag pixels below
   the local median.
 - Documentation of the 1/f cleaning and reset-anchored fitting, with the
-  measurements behind the defaults.
+  measurements behind the defaults, and a citation section in the README.
 
 ### Changed
 
@@ -50,33 +50,10 @@ its GitHub release.
   parameter files using the old names must be updated.
 - Python 3.11 or later and jwst 2.0.0 or later are required; tested on
   Python 3.11 to 3.14.
-- `ResetRampFitStep` accepts the jwst `ramp_fit` parameters that CRDS sets
-  for the pipeline slot, keeps a calibration's per-channel offsets when
-  `t1_scale` is overridden, and records the per-channel timing in its
-  `_resetfit` diagnostics.
-- A `scene_model` given to `StreamCleanStep` is handled in the flat's
-  units when a flat is in use.
-- `snowblind-reset-calib` refuses darks with different frames per group.
-- `StreamCleanStep` warns when the unmasked background under a scalar
-  median has large-scale structure (a galaxy across the frame, a dispersed
-  background), which that background would hand to the noise estimate,
-  and names the box model.
-- `StreamCleanStep` keeps the pixels the flat reference marks DO_NOT_USE
-  (or leaves at zero) out of the background: the jwst flat reader smooths
-  over them, but the data under them, such as the NIRISS occulting spots,
-  are not sky and would enter the noise estimate as slow structure.
-- The spike mask follows a saturated star's spike along both image axes,
-  since NIRISS reads out along science columns and NIRCam along rows.
-- `StreamCleanStep` defaults are set for sky-limited imaging: the
-  background of each group difference is a scalar median measured on the
-  flat-fielded difference (`background_method='median'`,
-  `apply_flat_field=True`); an exposure without a flat reference is
-  cleaned in raw DN.
-- `ResetRampFitStep` writes its products with the `_rate` and `_rateints`
-  suffixes when `save_results` is set.
 - All steps log through module loggers under the `snowblind` namespace,
   which a shared base class names to stpipe so the messages reach the
-  step log; `Step.log`, deprecated by stpipe 0.9, is no longer used.
+  step log, also when a step runs as a hook inside a jwst pipeline;
+  `Step.log`, deprecated by stpipe 0.9, is no longer used.
 
 ### Fixed
 

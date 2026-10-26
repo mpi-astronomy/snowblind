@@ -3106,6 +3106,28 @@ model. The figure set gets the NGC 1566 panels with the box-32 clean,
 and the field figures now label the stream clean's background from
 `panels.json` rather than assuming the median.
 
+### 2026-10-26 (late): pruning the API
+
+James asked which options were dead ends. Removed from `StreamCleanStep`:
+`background_method='model'` (the per-difference box-spline, the random
+walk of the first finding), `clip_sigma` and `iterations` (per-difference
+clipping and re-estimation, the same), `fit_method='boxcar'` with
+`window_length` (a sanity-check estimator, never in the write-up),
+`scene_mask='clip'` with `n_sigma` (the jwst mask, kept only for the
+injection table's clip rows; the jwst step itself is the living
+comparison), `psd_prior` and `protect_period` (implemented, never
+measured), `mask_science_regions` (a NIRSpec/MIRI helper option), and
+`mask_passes` after one measurement: on CEERS NRCALONG a second pass
+changes row and column means by 0.1 percent and the sky by 0.006 percent,
+with slightly wider tails (`results/2026-10-26_mask_passes/`). From
+`ResetRampFitStep`: `per_pixel_sigma_b` (never measured; every result
+uses the scalar median). The experiment scripts lose the matching
+variants (`*_clipped`, `sirs_boxcar_box32`, `*_nsig1`, `*_clipmask`,
+`--per-pixel`); the write-up tables keep their rows with a note. Kept
+with a measurement behind them: `exposure_model`, `scene_model`,
+`use_pedestal_mean` and `prior_highpass`, `anchor_timing_to_stars`,
+`reset_offset`, `rejection_threshold`, and the defaults.
+
 Citation: README gets a "Citing snowblind" section at the top with the
 concept DOI and a BibTeX entry; CITATION.cff's author becomes a
 family-names/given-names person entry (GitHub's own examples use that

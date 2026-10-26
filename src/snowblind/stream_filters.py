@@ -13,7 +13,7 @@ import numpy as np
 from . import readout
 from .noise_spectrum import interpolate_gain
 
-__all__ = ["row_median_noise", "boxcar_noise", "wiener_noise", "normalized_stream_filter", "boxcar_response", "FILTERS"]
+__all__ = ["row_median_noise", "wiener_noise", "normalized_stream_filter", "FILTERS"]
 
 
 def row_median_noise(channel_image, channel_mask, direction=1):
@@ -96,80 +96,7 @@ def normalized_stream_filter(channel_image, channel_mask, direction, response, m
     return (blend * estimate + (1.0 - blend) * fallback).astype(np.float32)
 
 
-def boxcar_noise(channel_image, channel_mask, direction=1, window_length=4096, min_density=0.2):
-    """Estimate the noise as a normalized running mean of ``window_length`` clocks along the readout stream.
-
-    A sanity-check estimator: it is the normalized masked convolution of
-    `normalized_stream_filter` with a boxcar response.  The density is the
-    fraction of the window holding background samples, so ``min_density``
-    is compared against that fraction.
-
-    Parameters
-    ----------
-    channel_image : ndarray, shape (nrows, width)
-        Channel image in the detector frame; the estimate is in its units.
-    channel_mask : ndarray of bool, shape (nrows, width)
-        Background mask, True for pixels that may be used.
-    direction : int
-        Readout direction of the channel, +1 or -1.
-    window_length : int
-        Length of the running mean in clocks.  A value longer than the
-        stream is reduced to the stream length, with a warning.
-    min_density : float
-        Fraction of the window that must hold background samples; below it
-        the estimate blends toward the row median, see
-        `normalized_stream_filter`.
-
-    Returns
-    -------
-    ndarray of float32, shape (nrows, width)
-        Noise estimate for every pixel of the channel.
-    """
-    window = int(min(window_length, readout.stream_length(*channel_image.shape)))
-    if window != window_length:
-        warnings.warn(f"boxcar window_length {window_length} exceeds the stream length; using {window}", stacklevel=2)
-    return normalized_stream_filter(channel_image, channel_mask, direction, boxcar_response(window), min_density)
-
-
-def boxcar_response(window_length):
-    """Return a ``response(nfft)`` callable for a centered boxcar of ``window_length`` clocks.
-
-    Parameters
-    ----------
-    window_length : int
-        Width of the boxcar in clocks.
-
-    Returns
-    -------
-    callable
-        ``response(nfft)`` returning the frequency response, on
-        ``np.fft.rfftfreq(nfft)``, of a boxcar of ``window_length`` clocks
-        with unit sum, centered on clock zero (its first half wraps around
-        the end of the ``nfft``-point kernel).
-    """
-    def response(nfft):
-        """Frequency response of the centered boxcar on the rfft grid of an ``nfft``-point transform.
-
-        Parameters
-        ----------
-        nfft : int
-            Transform length; the boxcar is laid out on ``nfft`` clocks.
-
-        Returns
-        -------
-        ndarray, shape (nfft // 2 + 1,)
-            Real part of the rfft of the boxcar kernel.
-        """
-        kernel = np.zeros(nfft)
-        half = window_length // 2
-        kernel[: window_length - half] = 1.0 / window_length
-        kernel[nfft - half:] = 1.0 / window_length
-        return np.fft.rfft(kernel).real
-
-    return response
-
-
-def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain=None, protect_period=None):
+def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain=None):
     """Estimate the noise with a Wiener gain derived from the channel's own spectrum.
 
     Parameters
@@ -187,14 +114,6 @@ def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain
         `snowblind.stream_clean.channel_gain`.  The gain is a low-pass
         response with unit value at zero frequency, so the normalized
         convolution is well defined.
-    protect_period : float or None
-        If given, the component of the estimate slower than this many
-        clocks is removed again (as a normalized boxcar mean of that
-        length), leaving anything that slow to the background model.  This
-        is the well-posed form of tapering the gain to zero at the lowest
-        frequencies, which cannot be done inside a normalized convolution.
-        A value longer than the stream is reduced to the stream length,
-        with a warning.
 
     Returns
     -------
@@ -226,17 +145,10 @@ def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain
         return interpolate_gain(freq, values, nfft)
 
     estimate = normalized_stream_filter(channel_image, channel_mask, direction, response, min_density)
-    if protect_period is not None:
-        period = int(min(protect_period, readout.stream_length(*channel_image.shape)))
-        if period != int(protect_period):
-            warnings.warn(f"protect_period {protect_period} exceeds the stream length; using {period}", stacklevel=2)
-        slow = normalized_stream_filter(estimate, np.ones_like(channel_mask), direction, boxcar_response(period), 0.0)
-        estimate = estimate - slow
     return estimate.astype(np.float32)
 
 
 FILTERS = {
     "row_median": row_median_noise,
-    "boxcar": boxcar_noise,
     "wiener": wiener_noise,
 }

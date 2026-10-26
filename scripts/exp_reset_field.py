@@ -48,7 +48,6 @@ def main():
     parser.add_argument("file")
     parser.add_argument("--calib", required=True, help="reset calibration ASDF for this detector")
     parser.add_argument("--out", default=None)
-    parser.add_argument("--per-pixel", action="store_true")
     parser.add_argument("--t1-scale", type=float, default=None)
     parser.add_argument("--use-pedestal-mean", action="store_true")
     parser.add_argument("--reset-offset", type=float, default=0.0)
@@ -70,7 +69,7 @@ def main():
     ols, _ = RampFitStep.call(jump, algorithm="OLS_C")
     likely, _ = RampFitStep.call(jump, algorithm="LIKELY")
     reset, reset_ints = ResetRampFitStep.call(
-        jump, reset_calib=args.calib, per_pixel_sigma_b=args.per_pixel, t1_scale=args.t1_scale,
+        jump, reset_calib=args.calib, t1_scale=args.t1_scale,
         use_pedestal_mean=args.use_pedestal_mean, reset_offset=args.reset_offset,
         save_opt=True, output_dir=out_dir,
     )
@@ -215,7 +214,6 @@ def main():
         "readpatt": jump.meta.exposure.readpatt,
         "ngroups": int(jump.data.shape[1]),
         "sigma_b_median_dn": float(calib["sigma_b_median"]),
-        "per_pixel_sigma_b": bool(args.per_pixel),
         "use_pedestal_mean": bool(args.use_pedestal_mean),
         "reset_offset_dn": float(args.reset_offset),
         "t1_scale_used": t1_scale_used,

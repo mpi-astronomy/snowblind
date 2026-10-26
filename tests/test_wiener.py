@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from stdatamodels.jwst import datamodels
 
 from snowblind import StreamCleanStep, readout
@@ -8,9 +7,6 @@ from snowblind.stream_clean import (
     channel_gain,
     clean_ramp,
     estimate_channel_gains,
-    read_psd_prior,
-    write_spectra,
-    zero_gain,
 )
 
 NY, NX = 256, 256
@@ -67,8 +63,8 @@ def residual_rms(cleaned, data, flicker, mask):
 def clean_with(method, data, mask, **kwargs):
     groupdq = np.zeros(data.shape, dtype=np.uint8)
     return clean_ramp(
-        data, groupdq, mask, -1, 2, fit_method=method, background_method="median", clip_sigma=0,
-        max_lag=MAX_LAG, window_length=1024, **kwargs
+        data, groupdq, mask, -1, 2, fit_method=method, background_method="median",
+        max_lag=MAX_LAG, **kwargs
     )
 
 
@@ -79,7 +75,7 @@ def test_channel_gain_recovers_white_floor_and_slope():
     groupdq = np.zeros(data.shape, dtype=np.uint8)
     mask = np.ones((NY, NX), dtype=bool)
 
-    spectra = estimate_channel_gains(data, groupdq, mask, -1, 2, background_method="median", clip_sigma=0, max_lag=MAX_LAG)
+    spectra = estimate_channel_gains(data, groupdq, mask, -1, 2, background_method="median", max_lag=MAX_LAG)
 
     for channel in spectra[0]:
         assert abs(channel["white"] - 1.0) < 0.15
@@ -87,18 +83,16 @@ def test_channel_gain_recovers_white_floor_and_slope():
         assert channel["gain"][0] == 1.0
 
 
-def test_wiener_beats_row_median_and_boxcar():
-    """clean_ramp with wiener leaves a smaller residual than row_median and boxcar on flicker plus white noise."""
+def test_wiener_beats_row_median():
+    """clean_ramp with wiener leaves a smaller residual than row_median on flicker plus white noise."""
     rng = np.random.default_rng(2)
     data, flicker, _white, _sources = noisy_ramp(rng)
     mask = np.ones((NY, NX), dtype=bool)
 
     wiener = residual_rms(clean_with("wiener", data, mask), data, flicker, mask)
     row_median = residual_rms(clean_with("row_median", data, mask), data, flicker, mask)
-    boxcar = residual_rms(clean_with("boxcar", data, mask), data, flicker, mask)
 
     assert wiener < row_median
-    assert wiener < boxcar
 
 
 def test_wiener_residual_below_flicker_rms():
@@ -165,18 +159,6 @@ def test_clean_ramp_returns_no_spectra_for_row_median():
     assert spectra is None
 
 
-def test_spectra_round_trip_as_prior(tmp_path):
-    """write_spectra then read_psd_prior returns the per-channel alphas."""
-    freq = np.fft.rfftfreq(64)
-    channels = [channel_gain(freq, 0.01 / np.maximum(freq, freq[1]) + 1.0) for _ in range(4)]
-    path = tmp_path / "spectra.asdf"
-
-    write_spectra(path, [channels], "NRCA1", 1, 32)
-    alphas = read_psd_prior(path)
-
-    assert alphas == pytest.approx([ch["alpha"] for ch in channels])
-
-
 def test_channel_gain_fixed_alpha():
     """channel_gain with fixed_alpha keeps that slope."""
     freq = np.fft.rfftfreq(4096)
@@ -212,7 +194,7 @@ def test_step_wiener_with_user_mask_saves_spectra(tmp_path, tmp_cwd):
 
     result = StreamCleanStep.call(
         model, apply_flat_field=False, fit_method="wiener", user_mask=str(mask_path), background_method="median",
-        clip_sigma=0, max_lag=MAX_LAG, save_spectra=True,
+        max_lag=MAX_LAG, save_spectra=True,
     )
 
     assert result.meta.cal_step.stream_clean == "COMPLETE"
@@ -229,16 +211,3 @@ def test_channel_gain_min_period_zeroes_high_frequencies():
     assert result["gain"][0] == 1.0
     np.testing.assert_array_equal(result["gain"][freq > 0.0101], 0.0)
     assert result["gain"][(freq > 0.001) & (freq < 0.004)].min() > 0.5
-
-
-def test_psd_prior_drops_missing_slopes(tmp_path):
-    """read_psd_prior returns None for a channel saved by zero_gain and the fitted slopes for the others."""
-    freq = np.fft.rfftfreq(64)
-    channels = [channel_gain(freq, 0.01 / np.maximum(freq, freq[1]) + 1.0) for _ in range(3)] + [zero_gain(32)]
-    path = tmp_path / "spectra.asdf"
-
-    write_spectra(path, [channels], "NRCA1", 1, 32)
-    alphas = read_psd_prior(path)
-
-    assert alphas[3] is None
-    assert alphas[:3] == pytest.approx([ch["alpha"] for ch in channels[:3]])

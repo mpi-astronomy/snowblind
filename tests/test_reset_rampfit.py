@@ -100,24 +100,6 @@ def test_call_one_good_group_pixel_gets_rate(tmp_path):
     assert np.isfinite(rate.err[3, 3])
 
 
-def test_call_with_calibration_file_per_pixel(tmp_path):
-    """ResetRampFitStep.call with a calibration file, per_pixel_sigma_b and t1_scale 0.95 scales the one-group rate."""
-    rn, gain = reference_files(tmp_path)
-    model = make_ramp()
-    model.groupdq[0, 1:, 2, 5] = SAT
-    sigma_b = np.full((NY, NX), 12.0, dtype=np.float32)
-    sigma_b[0, 0] = np.nan
-    calib = tmp_path / "nrca1_reset_calib.asdf"
-    write_calibration(calib, sigma_b, np.zeros_like(sigma_b), np.full((NY, NX), 10, dtype=np.int32), "NRCA1", [], t1_scale=0.95)
-
-    rate, _ = ResetRampFitStep.call(
-        model, reset_calib=str(calib), per_pixel_sigma_b=True, override_readnoise=rn, override_gain=gain
-    )
-
-    assert rate.data[2, 5] == pytest.approx(model.data[0, 0, 2, 5] / (0.95 * FRAME_TIME), rel=1e-5)
-    assert np.isfinite(rate.data[0, 0])
-
-
 def test_call_rejects_calibration_for_other_detector(tmp_path):
     """ResetRampFitStep.call raises ValueError when the calibration file names a different detector."""
     rn, gain = reference_files(tmp_path)

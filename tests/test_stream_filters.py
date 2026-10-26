@@ -1,11 +1,33 @@
+import warnings
+
 import numpy as np
 import pytest
 
 from snowblind import readout
-from snowblind.stream_filters import boxcar_noise, row_median_noise, wiener_noise
+from snowblind.stream_filters import normalized_stream_filter, row_median_noise
 
 
 NROWS, WIDTH = 256, 512
+
+
+def boxcar_response(window_length):
+    """A centered boxcar of window_length clocks with unit sum, as a response(nfft) callable."""
+    def response(nfft):
+        kernel = np.zeros(nfft)
+        half = window_length // 2
+        kernel[: window_length - half] = 1.0 / window_length
+        kernel[nfft - half:] = 1.0 / window_length
+        return np.fft.rfft(kernel).real
+
+    return response
+
+
+def boxcar_noise(channel_image, channel_mask, direction=1, window_length=4096, min_density=0.2):
+    """normalized_stream_filter with a boxcar response: the simplest filter, which exercises the masking and the stream."""
+    window = int(min(window_length, readout.stream_length(*channel_image.shape)))
+    if window != window_length:
+        warnings.warn(f"boxcar window_length {window_length} exceeds the stream length; using {window}", stacklevel=2)
+    return normalized_stream_filter(channel_image, channel_mask, direction, boxcar_response(window), min_density)
 
 
 def slow_pattern(nrows, width, direction, period=20000.0, amplitude=1.0):
@@ -89,17 +111,3 @@ def test_boxcar_window_longer_than_stream_is_clamped():
         noise = boxcar_noise(image, mask, direction=1, window_length=4096, min_density=0.2)
 
     np.testing.assert_allclose(noise, 3.0, atol=1e-4)
-
-
-def test_wiener_noise_caps_protect_period_at_the_stream_length():
-    """wiener_noise with a protect_period longer than the stream warns and returns a finite estimate."""
-    rng = np.random.default_rng(3)
-    image = rng.normal(0.0, 1.0, (32, 64)).astype(np.float32)
-    mask = np.ones(image.shape, dtype=bool)
-    freq = np.linspace(0.0, 0.5, 65)
-    gain = (freq, np.ones(65))
-
-    with pytest.warns(UserWarning, match="protect_period"):
-        noise = wiener_noise(image, mask, direction=1, gain=gain, protect_period=10**7)
-
-    assert np.isfinite(noise).all()

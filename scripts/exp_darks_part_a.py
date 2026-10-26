@@ -8,15 +8,12 @@ Variants, all run in memory on the first integration and the first
 3. ``sirs_jwst_median``: SIRS, then the jwst clean_flicker_noise step with
    its median method per channel.
 4. ``sirs_row_median``: SIRS, then StreamCleanStep with ``row_median``.
-5. ``sirs_boxcar``: SIRS, then StreamCleanStep with ``boxcar``.
-6. ``sirs_wiener``: SIRS, then StreamCleanStep with ``wiener``.
+5. ``sirs_wiener``: SIRS, then StreamCleanStep with ``wiener``.
 7. ``*_box32``, ``*_box128``, ``*_box256``: StreamCleanStep defaults
    (``background_method='integration_model'``, one background model per
    integration, no per-difference clipping, so the cleaning is the same
    linear operation on every difference and no estimation noise accumulates
-   along the ramp) with the given background box size; ``*_clipped`` is the
-   jwst-like configuration with a per-difference model background and
-   2-sigma clipping; ``sirs_wiener_median_bkg`` uses a scalar median
+   along the ramp) with the given background box size; ``sirs_wiener_median_bkg`` uses a scalar median
    background.
 
 Each variant is ramp-fitted with OLS_C.  Metrics: readout-ordered channel
@@ -142,8 +139,6 @@ def main():
     rate_sirs.close()
     np.save(os.path.join(out_dir, "metric_mask.npy"), mask)
 
-    clipped = {"background_method": "model", "clip_sigma": 2.0, "iterations": 2, "output_dir": out_dir}
-
     def linear(box):
         return {"background_method": "integration_model", "background_box_size": (box, box), "output_dir": out_dir}
 
@@ -155,10 +150,7 @@ def main():
         "sirs_jwst_median": lambda: CleanFlickerNoiseStep.call(
             sirs, skip=False, fit_method="median", fit_by_channel=True, background_method="model"
         ),
-        "sirs_row_median_clipped": lambda: StreamCleanStep.call(sirs, fit_method="row_median", **clipped),
-        "sirs_wiener_clipped": lambda: StreamCleanStep.call(sirs, fit_method="wiener", max_lag=MAX_LAG, **clipped),
         "sirs_row_median_box32": lambda: StreamCleanStep.call(sirs, fit_method="row_median", **linear(32)),
-        "sirs_boxcar_box32": lambda: StreamCleanStep.call(sirs, fit_method="boxcar", **linear(32)),
         "sirs_wiener_box32": lambda: StreamCleanStep.call(
             sirs, fit_method="wiener", max_lag=MAX_LAG, save_spectra=True, **linear(32)
         ),

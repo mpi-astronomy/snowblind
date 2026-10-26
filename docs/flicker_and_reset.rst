@@ -179,6 +179,10 @@ SIRS + Wiener, linear, box 256         0.0195      0.0012          2.4          
 SIRS + Wiener, linear, median bkg      0.0196      0.0016          7.3          112          0.0030  0.0011  0.0006
 =====================================  ==========  ==============  ===========  ===========  ======  ======  ======
 
+The clipped variants, the per-difference model background and the boxcar
+estimator were removed from the step after these measurements; the rows
+stay as the record of why.
+
 "Linear" means one background model per integration, fitted to the
 least-squares slope of the ramp and subtracted from every difference, no
 per-difference clipping and one iteration; all Wiener rows use the 3 ms
@@ -288,6 +292,9 @@ Wiener, box 32, 3 ms cutoff, chisel     -0.0000      -0.0026   +0.0006    +0.000
 Wiener, box 128                         -0.0023                                       -0.733
 Wiener, box 256                         -0.0022                                       -0.693
 ======================================  ===========  ========  =========  ==========  =============
+
+(The sigma-clip mask rows come from a step option since removed; the
+jwst step in the field figures is that mask's living comparison.)
 
 With the chisel mask the Wiener clean and the row median are equivalent in
 photometry down to the faintest injected sources, 0.3 percent at 2 to 6

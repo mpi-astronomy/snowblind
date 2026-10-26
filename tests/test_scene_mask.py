@@ -1,6 +1,15 @@
 import numpy as np
 
-from snowblind.scene_mask import chisel_mask, clip_mask, remove_stripes, saturated_stars, spike_mask
+from astropy.stats import mad_std
+
+from snowblind.scene_mask import chisel_mask, remove_stripes, saturated_stars, spike_mask
+
+
+def sigma_clip_mask(rate, n_sigma):
+    """The jwst step's mask for comparison: background where the rate is below the median plus n_sigma robust sigmas."""
+    finite = np.isfinite(rate)
+    level = np.median(rate[finite])
+    return finite & (rate - level < n_sigma * mad_std(rate[finite]))
 
 
 def gaussian_sources(shape, x, y, flux, sigma=1.5):
@@ -22,13 +31,13 @@ def test_chisel_mask_on_pure_noise_masks_little():
 
 
 def test_chisel_mask_covers_more_of_the_wings_than_clipping():
-    """chisel_mask masks more of a bright source's flux than clip_mask at 2 sigma on the same image."""
+    """chisel_mask masks more of a bright source's flux than a 2-sigma clip on the same image."""
     rng = np.random.default_rng(2)
     sources = gaussian_sources((256, 256), [128.0], [128.0], [3000.0])
     rate = sources + rng.normal(size=(256, 256))
 
     chisel = chisel_mask(rate)
-    clip = clip_mask(rate, 2.0)
+    clip = sigma_clip_mask(rate, 2.0)
 
     assert sources[~chisel].sum() > sources[~clip].sum()
     assert sources[~chisel].sum() / sources.sum() > 0.98
@@ -41,7 +50,7 @@ def test_chisel_mask_masks_more_of_a_faint_source_than_clipping():
     rate = sources + rng.normal(size=(256, 256))
 
     chisel = chisel_mask(rate)
-    clip = clip_mask(rate, 2.0)
+    clip = sigma_clip_mask(rate, 2.0)
 
     box = (slice(56, 73), slice(56, 73))
     assert (~chisel[box]).sum() >= 10
@@ -57,16 +66,6 @@ def test_chisel_mask_masks_non_finite():
     background = chisel_mask(rate)
 
     assert not background[10, 10]
-
-
-def test_clip_mask_two_sigma_fraction():
-    """clip_mask at 2 sigma on unit noise marks about 2.3 percent of pixels as source."""
-    rng = np.random.default_rng(5)
-    rate = rng.normal(size=(512, 512))
-
-    background = clip_mask(rate, 2.0)
-
-    assert 0.015 < (~background).mean() < 0.035
 
 
 def test_chisel_mask_does_not_detect_a_smooth_sky():

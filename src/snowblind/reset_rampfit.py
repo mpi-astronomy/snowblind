@@ -49,9 +49,8 @@ class ResetRampFitStep(Step):
 
     The prior on the reset level comes from a calibration ASDF file written
     by ``snowblind-reset-calib`` (``reset_calib``), or from a scalar
-    ``sigma_b``.  Main options: ``per_pixel_sigma_b`` and
-    ``use_pedestal_mean`` take the per-pixel scatter and the mean reset
-    level from the file; ``t1_scale`` and ``per_channel_timing`` set the
+    ``sigma_b``.  Main options: ``use_pedestal_mean`` takes the mean reset
+    level map from the file; ``t1_scale`` and ``per_channel_timing`` set the
     first-read timing; ``anchor_offset_to_sky`` and
     ``anchor_timing_to_stars`` measure the reset offset and first-read scale
     per output channel from the exposure itself; ``save_opt`` writes the
@@ -66,7 +65,6 @@ class ResetRampFitStep(Step):
         sigma_b = float(default=None)  # DN; scalar reset scatter, overrides the calibration file
         t1_scale = float(default=None)  # fraction of the nominal first interval the first read integrates, for this exposure; overrides the file and its rescaling
         per_channel_timing = boolean(default=True)  # use the file's per-channel t1_scale and reset_offset when present
-        per_pixel_sigma_b = boolean(default=False)  # use the per-pixel sigma_b image from the calibration file
         use_pedestal_mean = boolean(default=False)  # prior mean of the reset level from the calibration file's pedestal_mean map
         prior_highpass = boolean(default=True)  # remove the pedestal map's row, even-odd and column structure, as stream_clean removes it from the first read
         reset_offset = float(default=0.0)  # DN added to the prior mean of the reset level, on top of the file's or the anchored value
@@ -288,8 +286,6 @@ class ResetRampFitStep(Step):
         channel_timing = None
         if self.use_pedestal_mean and self.reset_calib is None:
             raise ValueError("use_pedestal_mean needs reset_calib")
-        if self.per_pixel_sigma_b and self.reset_calib is None:
-            raise ValueError("per_pixel_sigma_b needs reset_calib")
         tree = None
         if self.reset_calib is not None:
             tree = read_calibration(self.reset_calib)
@@ -353,18 +349,7 @@ class ResetRampFitStep(Step):
                     "for exposures with the readout pattern it was measured on"
                 )
             if sigma_b is None:
-                if self.per_pixel_sigma_b:
-                    sigma_b = np.array(tree["sigma_b"], dtype=np.float64)
-                    if sigma_b.shape != model.data.shape[-2:]:
-                        raise ValueError(
-                            f"Per-pixel sigma_b shape {sigma_b.shape} does not match data {model.data.shape[-2:]}"
-                        )
-                    positive = np.isfinite(sigma_b) & (sigma_b > 0)
-                    if not positive.any():
-                        raise ValueError("Per-pixel sigma_b has no positive finite value")
-                    sigma_b = np.where(positive, sigma_b, float(np.median(sigma_b[positive])))
-                else:
-                    sigma_b = float(tree["sigma_b_median"])
+                sigma_b = float(tree["sigma_b_median"])
         if sigma_b is None:
             raise ValueError("reset_rampfit needs either reset_calib or sigma_b")
         if np.ndim(sigma_b) == 0 and not (np.isfinite(sigma_b) and sigma_b > 0):

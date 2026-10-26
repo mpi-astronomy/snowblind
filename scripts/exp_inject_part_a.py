@@ -133,8 +133,6 @@ def main():
     science = np.zeros(shape, dtype=bool)
     science[readout.NREFPIX:-readout.NREFPIX, readout.NREFPIX:-readout.NREFPIX] = True
 
-    clipped = {"background_method": "model", "clip_sigma": 2.0, "iterations": 2, "output_dir": out_dir, "save_mask": True}
-
     def linear(box):
         return {
             "background_method": "integration_model", "background_box_size": (box, box), "output_dir": out_dir,
@@ -145,8 +143,6 @@ def main():
         "sirs_jwst_median": lambda: CleanFlickerNoiseStep.call(
             injected, skip=False, fit_method="median", fit_by_channel=True, background_method="model"
         ),
-        "sirs_row_median_clipped": lambda: StreamCleanStep.call(injected, fit_method="row_median", **clipped),
-        "sirs_wiener_clipped": lambda: StreamCleanStep.call(injected, fit_method="wiener", max_lag=MAX_LAG, **clipped),
         "sirs_row_median_box32": lambda: StreamCleanStep.call(injected, fit_method="row_median", **linear(32)),
         "sirs_wiener_box32": lambda: StreamCleanStep.call(injected, fit_method="wiener", max_lag=MAX_LAG, **linear(32)),
         "sirs_wiener_box128": lambda: StreamCleanStep.call(injected, fit_method="wiener", max_lag=MAX_LAG, **linear(128)),
@@ -160,17 +156,8 @@ def main():
         "sirs_wiener_box32_minp300": lambda: StreamCleanStep.call(
             injected, fit_method="wiener", max_lag=MAX_LAG, min_period=300, **linear(32)
         ),
-        "sirs_wiener_box32_nsig1": lambda: StreamCleanStep.call(
-            injected, fit_method="wiener", max_lag=MAX_LAG, n_sigma=1.0, **linear(32)
-        ),
         "sirs_wiener_box32_dilate3": lambda: StreamCleanStep.call(
             injected, fit_method="wiener", max_lag=MAX_LAG, mask_dilation=3, **linear(32)
-        ),
-        "sirs_wiener_box32_clipmask": lambda: StreamCleanStep.call(
-            injected, fit_method="wiener", max_lag=MAX_LAG, scene_mask="clip", **linear(32)
-        ),
-        "sirs_row_median_box32_clipmask": lambda: StreamCleanStep.call(
-            injected, fit_method="row_median", scene_mask="clip", **linear(32)
         ),
     }
     wanted = None if args.variants == "all" else set(args.variants.split(","))

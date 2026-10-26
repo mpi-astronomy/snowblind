@@ -146,7 +146,7 @@ def test_clean_difference_keeps_nan():
     stripes[3, 7] = np.nan
     mask = np.ones((NY, NX), dtype=bool)
 
-    cleaned, _ = clean_difference(stripes, mask, -1, 2, fit_method="row_median", clip_sigma=0)
+    cleaned, _ = clean_difference(stripes, mask, -1, 2, fit_method="row_median")
 
     assert np.isnan(cleaned[3, 7])
     assert not mask[3, 7]
@@ -180,7 +180,7 @@ def test_clean_ramp_removes_stripes_from_differences():
     groupdq = np.zeros(data.shape, dtype=np.uint8)
     mask = np.ones((NY, NX), dtype=bool)
 
-    cleaned = clean_ramp(data, groupdq, mask, -1, 2, fit_method="row_median", clip_sigma=0)
+    cleaned = clean_ramp(data, groupdq, mask, -1, 2, fit_method="row_median")
 
     diffs = np.diff(cleaned[0], axis=0)
     assert np.all(np.ptp(diffs, axis=(1, 2)) < 1e-3)
@@ -194,7 +194,7 @@ def test_clean_ramp_leaves_group0_when_clean_first_group_false():
     groupdq = np.zeros(data.shape, dtype=np.uint8)
     mask = np.ones((NY, NX), dtype=bool)
 
-    cleaned = clean_ramp(data, groupdq, mask, -1, 2, fit_method="row_median", clip_sigma=0, clean_first_group=False)
+    cleaned = clean_ramp(data, groupdq, mask, -1, 2, fit_method="row_median", clean_first_group=False)
 
     np.testing.assert_array_equal(cleaned[0, 0], data[0, 0])
 
@@ -206,7 +206,7 @@ def test_clean_ramp_cleans_group0_when_clean_first_group_true():
     groupdq = np.zeros(data.shape, dtype=np.uint8)
     mask = np.ones((NY, NX), dtype=bool)
 
-    cleaned = clean_ramp(data, groupdq, mask, -1, 2, fit_method="row_median", clip_sigma=0, clean_first_group=True)
+    cleaned = clean_ramp(data, groupdq, mask, -1, 2, fit_method="row_median", clean_first_group=True)
 
     noise = estimate_noise(data[0, 0] - np.median(data[0, 0]), mask.copy(), -1, 2, "row_median")
     np.testing.assert_allclose(data[0, 0] - cleaned[0, 0], noise, atol=1e-3)
@@ -221,7 +221,7 @@ def test_clean_ramp_excludes_flagged_pixels_from_fit():
     groupdq[0, 2, 5, 5] = JUMP_DET
     mask = np.ones((NY, NX), dtype=bool)
 
-    cleaned = clean_ramp(data, groupdq, mask, -1, 2, fit_method="row_median", clip_sigma=0)
+    cleaned = clean_ramp(data, groupdq, mask, -1, 2, fit_method="row_median")
 
     diff = cleaned[0, 2] - cleaned[0, 1]
     np.testing.assert_allclose(diff[5, :5], diff[6, :5], atol=1e-3)
@@ -236,7 +236,7 @@ def test_clean_ramp_excludes_saturated_pixels_from_fit():
     groupdq[0, 3, 9, 9] = SATURATED
     mask = np.ones((NY, NX), dtype=bool)
 
-    cleaned = clean_ramp(data, groupdq, mask, -1, 2, fit_method="row_median", clip_sigma=0)
+    cleaned = clean_ramp(data, groupdq, mask, -1, 2, fit_method="row_median")
 
     diff = cleaned[0, 3] - cleaned[0, 2]
     np.testing.assert_allclose(diff[9, :9], diff[8, :9], atol=1e-3)
@@ -259,7 +259,7 @@ def test_step_call_with_user_mask_cleans_and_completes(tmp_path):
     mask_path = write_mask(tmp_path, np.ones((NY, NX), dtype=bool))
 
     result = StreamCleanStep.call(
-        model, apply_flat_field=False, fit_method="row_median", user_mask=mask_path, background_method="median", clip_sigma=0
+        model, apply_flat_field=False, fit_method="row_median", user_mask=mask_path, background_method="median"
     )
 
     assert result.meta.cal_step.stream_clean == "COMPLETE"
@@ -327,7 +327,7 @@ def test_integration_model_keeps_gradient_and_removes_stripes():
 
     cleaned = clean_ramp(
         data, groupdq, mask, -1, 2, fit_method="row_median", background_method="integration_model",
-        background_box_size=(8, 8), clip_sigma=0,
+        background_box_size=(8, 8),
     )
 
     diffs = np.diff(cleaned[0], axis=0)
@@ -343,7 +343,7 @@ def test_integration_model_is_the_same_for_every_difference():
 
     cleaned = clean_ramp(
         data, groupdq, mask, -1, 2, fit_method="row_median", background_method="integration_model",
-        background_box_size=(8, 8), clip_sigma=0,
+        background_box_size=(8, 8),
     )
 
     diffs = np.diff(cleaned[0], axis=0)
@@ -370,19 +370,6 @@ def test_first_group_time_ratio_frame_averaged():
     model.meta.exposure.group_time = 100.0
 
     assert first_group_time_ratio(model) == pytest.approx(0.45)
-
-
-def test_clip_sigma_removes_outlier_from_mask():
-    """clean_difference with clip_sigma=3 on stripes with one 1000 DN pixel masks that pixel."""
-    rng = np.random.default_rng(30)
-    stripes, _ = row_stripes(rng)
-    stripes += rng.normal(scale=0.5, size=stripes.shape).astype(np.float32)
-    stripes[7, 7] = 1000.0
-    mask = np.ones((NY, NX), dtype=bool)
-
-    clean_difference(stripes, mask, -1, 2, fit_method="row_median", clip_sigma=3.0)
-
-    assert not mask[7, 7]
 
 
 def test_wiener_channel_without_data_removes_nothing():
@@ -511,21 +498,6 @@ def test_step_masks_reference_border_before_fitting(tmp_path):
 
     diffs = np.diff(result.data[0], axis=0)[:, 4:-4, 4:-4]
     assert np.all(np.ptp(diffs, axis=(1, 2)) < 1e-3)
-
-
-def test_step_second_mask_pass_runs_and_completes(tmp_path):
-    """StreamCleanStep.call with mask_passes=2 and a user mask completes in one pass, since the user mask is fixed."""
-    rng = np.random.default_rng(70)
-    data, _ = striped_ramp(rng)
-    model = make_ramp_model()
-    model.data = data
-    mask_path = write_mask(tmp_path, np.ones((NY, NX), dtype=bool))
-
-    result = StreamCleanStep.call(
-        model, apply_flat_field=False, fit_method="row_median", user_mask=mask_path, background_method="median", mask_passes=2
-    )
-
-    assert result.meta.cal_step.stream_clean == "COMPLETE"
 
 
 def test_even_odd_pattern_recovers_alternating_offset():
