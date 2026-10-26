@@ -10,6 +10,9 @@
   jwst schema has no keywords for these steps. `PersistenceFlagStep` and
   `OpenPixelStep` now record COMPLETE at all, and `ResetRampFitStep` carries
   the header cards of earlier steps into its rate products.
+- Each step also adds a HISTORY entry such as `snowblind 1.0.0 SnowblindStep:
+  COMPLETE`, which records the snowblind version in both the FITS header and
+  the ASDF extension.
 
 ### Added
 

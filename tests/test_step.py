@@ -4,7 +4,7 @@ import pytest
 from astropy.io import fits
 
 from snowblind import JumpPlusStep, OpenPixelStep, PersistenceFlagStep, ResetRampFitStep, SnowblindStep, StreamCleanStep
-from snowblind.step import Step
+from snowblind.step import Step, _history
 
 
 def test_step_names_the_snowblind_logger_after_the_jwst_ones():
@@ -100,3 +100,46 @@ def test_fits_card_is_a_plain_card_with_whole_comment(cls):
 def test_fits_keywords_are_distinct():
     """The six steps have six different fits_keyword values."""
     assert len({cls.fits_keyword for cls in STEPS}) == 6
+
+
+def test_set_cal_step_adds_version_history_entry():
+    """SnowblindStep.set_cal_step with COMPLETE adds one history entry with the snowblind version, even when called twice."""
+    from stdatamodels.jwst import datamodels
+    from snowblind import __version__
+
+    model = datamodels.ImageModel((4, 4))
+    step = SnowblindStep()
+    step.set_cal_step(model, "COMPLETE")
+    step.set_cal_step(model, "COMPLETE")
+
+    assert _history(model) == [f"snowblind {__version__} SnowblindStep: COMPLETE"]
+
+
+def test_history_entry_is_in_fits_header_and_survives_reopen(tmp_path):
+    """Saving a model after SnowblindStep.set_cal_step puts the entry in the FITS HISTORY cards and the reopened history."""
+    from stdatamodels.jwst import datamodels
+    from snowblind import __version__
+
+    model = datamodels.ImageModel((4, 4))
+    SnowblindStep().set_cal_step(model, "COMPLETE")
+    model.save(tmp_path / "out.fits")
+    expected = f"snowblind {__version__} SnowblindStep: COMPLETE"
+
+    assert expected in list(fits.getheader(tmp_path / "out.fits")["HISTORY"])
+    with datamodels.open(tmp_path / "out.fits") as reopened:
+        assert _history(reopened) == [expected]
+
+
+def test_carry_cal_step_copies_snowblind_history_only():
+    """carry_cal_step from a model with a snowblind and an unrelated history entry copies only the snowblind one."""
+    from stdatamodels.jwst import datamodels
+    from snowblind.step import carry_cal_step
+
+    source = datamodels.RampModel((1, 3, 4, 4))
+    SnowblindStep().set_cal_step(source, "COMPLETE")
+    source.add_history_entry("something else")
+    target = datamodels.ImageModel((4, 4))
+    carry_cal_step(source, target)
+
+    assert len(_history(target)) == 1
+    assert _history(target)[0].startswith("snowblind ")

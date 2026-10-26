@@ -14,7 +14,9 @@ the duration of the run.
 The jwst schema has no FITS keyword for the status of these steps, so a value set in
 ``meta.cal_step`` is saved only in the ASDF extension and is missing from the FITS
 header.  `Step.set_cal_step` also writes it as an ``S_`` header card through the
-model's ``extra_fits`` record, which survives copying, saving and reopening.
+model's ``extra_fits`` record, which survives copying, saving and reopening.  It also
+adds a HISTORY entry naming the step and the snowblind version, which is kept in both
+the FITS header and the ASDF extension.
 """
 import logging
 
@@ -46,13 +48,18 @@ def _set_card(model, keyword, value, comment):
     primary["header"] = cards
 
 
+def _history(model):
+    """The descriptions of the history entries of ``model``, as a list of str."""
+    return [entry["description"] for entry in model._asdf.get_history_entries()]
+
+
 def carry_cal_step(source, target):
     """Copy step status records that ``target`` lacks from ``source``.
 
     A model made from scratch (as the rate products of ramp fitting are) keeps only the
     ``meta.cal_step`` entries its schema knows.  This copies the others, with their
-    ``S_`` header cards from ``source.extra_fits``, and leaves entries ``target`` already
-    has alone.
+    ``S_`` header cards from ``source.extra_fits`` and the snowblind history entries,
+    and leaves entries ``target`` already has alone.
 
     Parameters
     ----------
@@ -64,6 +71,9 @@ def carry_cal_step(source, target):
     for key, value in source.meta.cal_step.instance.items():
         if key not in target.meta.cal_step.instance:
             setattr(target.meta.cal_step, key, value)
+    for description in _history(source):
+        if description.startswith("snowblind ") and description not in _history(target):
+            target.add_history_entry(description)
     cards = source._instance.get("extra_fits", {}).get("PRIMARY", {}).get("header", [])
     present = {card[0] for card in target._instance.get("extra_fits", {}).get("PRIMARY", {}).get("header", [])}
     for keyword, value, comment in cards:
@@ -82,7 +92,10 @@ class Step(JwstStep):
     fits_comment = ""
 
     def set_cal_step(self, model, status):
-        """Record the status of this step in ``meta.cal_step`` and in the FITS header.
+        """Record the status of this step in ``meta.cal_step``, the FITS header and the history.
+
+        The history entry reads ``snowblind <version> <ClassName>: <status>``; an
+        identical entry already in the history is not repeated.
 
         Parameters
         ----------
@@ -94,6 +107,11 @@ class Step(JwstStep):
         setattr(model.meta.cal_step, self.class_alias, status)
         if self.fits_keyword is not None:
             _set_card(model, self.fits_keyword, status, self.fits_comment)
+        from . import __version__
+
+        description = f"snowblind {__version__} {type(self).__name__}: {status}"
+        if description not in _history(model):
+            model.add_history_entry(description)
 
     @classmethod
     def get_stpipe_loggers(cls):
