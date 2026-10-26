@@ -1,11 +1,8 @@
 # Changelog
 
-All notable changes to snowblind are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
-uses the tag as its version. Each release's section becomes the notes of
-its GitHub release.
-
 ## [Unreleased]
+
+## [1.0.0] - 2026-10-26
 
 ### Added
 
@@ -113,7 +110,8 @@ First release.
 - Steps register as stpipe plugins and run with `strun` or as pipeline
   hooks.
 
-[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/0.2.1...HEAD
+[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.0.0...HEAD
+[1.0.0]: https://github.com/mpi-astronomy/snowblind/compare/0.2.0...1.0.0
 [0.2.1]: https://github.com/mpi-astronomy/snowblind/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/mpi-astronomy/snowblind/compare/0.1.2...0.2.0
 [0.1.2]: https://github.com/mpi-astronomy/snowblind/compare/0.1.1...0.1.2
