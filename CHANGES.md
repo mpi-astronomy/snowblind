@@ -25,6 +25,11 @@ its GitHub release.
   scatter and mean pedestal map of a detector from dark ramps and writes
   the calibration file, with ASDF history entries recording the software
   and inputs.
+- A packaged scalar reset calibration (reset scatter, first-read timing
+  and offsets per output channel), one ASDF file per detector for the ten
+  NIRCam detectors and NIRISS, which `ResetRampFitStep` uses when no
+  calibration file is given, so the step runs with its defaults. The
+  pedestal maps stay in the calibration files.
 - `OpenPixelStep` option `flag_low_signal_pix` to also flag pixels below
   the local median.
 - Documentation of the 1/f cleaning and reset-anchored fitting, with the
@@ -38,6 +43,19 @@ its GitHub release.
   parameter files using the old names must be updated.
 - Python 3.11 or later and jwst 2.0.0 or later are required; tested on
   Python 3.11 to 3.14.
+- `StreamCleanStep` keeps the pixels the flat reference marks DO_NOT_USE
+  (or leaves at zero) out of the background: the jwst flat reader smooths
+  over them, but the data under them, such as the NIRISS occulting spots,
+  are not sky and would enter the noise estimate as slow structure.
+- The spike mask follows a saturated star's spike along both image axes,
+  since NIRISS reads out along science columns and NIRCam along rows.
+- `StreamCleanStep` defaults are set for sky-limited imaging: the
+  background of each group difference is a scalar median measured on the
+  flat-fielded difference (`background_method='median'`,
+  `apply_flat_field=True`); an exposure without a flat reference is
+  cleaned in raw DN.
+- `ResetRampFitStep` writes its products with the `_rate` and `_rateints`
+  suffixes when `save_results` is set.
 - All steps log through module loggers under the `snowblind` namespace,
   which a shared base class names to stpipe so the messages reach the
   step log; `Step.log`, deprecated by stpipe 0.9, is no longer used.

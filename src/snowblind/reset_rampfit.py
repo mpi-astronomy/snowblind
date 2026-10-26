@@ -24,7 +24,13 @@ from stdatamodels.jwst.datamodels import dqflags
 
 from . import readout
 from .likely_fit_reset import MIN_NGROUPS, likely_ramp_fit_reset, likely_ramp_fit_reset_blocks
-from .reset_calib import add_history, read_calibration, superbias_basename, superbias_difference  # noqa: F401
+from .reset_calib import (  # noqa: F401  superbias_difference is re-exported
+    add_history,
+    default_calibration,
+    read_calibration,
+    superbias_basename,
+    superbias_difference,
+)
 
 __all__ = ["ResetRampFitStep", "write_resetfit"]
 
@@ -56,7 +62,7 @@ class ResetRampFitStep(Step):
     class_alias = "reset_rampfit"
 
     spec = """
-        reset_calib = string(default=None)  # ASDF from snowblind-reset-calib; required unless sigma_b is set
+        reset_calib = string(default=None)  # ASDF from snowblind-reset-calib; without it and without sigma_b, the calibration packaged for the detector is used
         sigma_b = float(default=None)  # DN; scalar reset scatter, overrides the calibration file
         t1_scale = float(default=None)  # fraction of the nominal first interval the first read integrates; overrides the file
         per_channel_timing = boolean(default=True)  # use the file's per-channel t1_scale and reset_offset when present
@@ -89,7 +95,9 @@ class ResetRampFitStep(Step):
         Returns
         -------
         out_model : `~stdatamodels.jwst.datamodels.ImageModel` or None
-            The rate product in DN/s, averaged over integrations.
+            The rate product in DN/s, averaged over integrations.  With
+            ``save_results`` the two products are written with the
+            ``_rate`` and ``_rateints`` suffixes.
         int_model : `~stdatamodels.jwst.datamodels.CubeModel` or None
             The per-integration rate product in DN/s.  Both are None when
             the ramp has fewer than ``MIN_NGROUPS`` groups.
@@ -206,6 +214,12 @@ class ResetRampFitStep(Step):
         int_model.meta.cal_step.ramp_fit = "COMPLETE"
         setattr(int_model.meta.cal_step, self.class_alias, "COMPLETE")
 
+        if self.save_results:
+            # the pipeline's product names; left to stpipe, a two-model result gets indexed names
+            self.save_model(out_model, suffix="rate", force=True)
+            self.save_model(int_model, suffix="rateints", force=True)
+            self.save_results = False
+
         if result is not step_input:
             del result
         return out_model, int_model
@@ -242,8 +256,20 @@ class ResetRampFitStep(Step):
         channel_timing = None
         if self.use_pedestal_mean and self.reset_calib is None:
             raise ValueError("use_pedestal_mean needs reset_calib")
+        if self.per_pixel_sigma_b and self.reset_calib is None:
+            raise ValueError("per_pixel_sigma_b needs reset_calib")
+        tree = None
         if self.reset_calib is not None:
             tree = read_calibration(self.reset_calib)
+        elif sigma_b is None:
+            tree = default_calibration(model.meta.instrument.detector)
+            provenance = tree.get("provenance") or {}
+            log.info(
+                f"Using the reset calibration packaged for {tree['detector']}: sigma_b {tree['sigma_b_median']:.2f} DN, "
+                f"t1_scale {tree['t1_scale']:.4f}, measured {str(provenance.get('date', ''))[:10]} "
+                f"from {', '.join(provenance.get('input_files', []))}"
+            )
+        if tree is not None:
             file_offset = float(tree.get("reset_offset", 0.0) or 0.0)
             reset_level = np.float32(self.reset_offset + file_offset)
             scales = tree.get("t1_scale_channels")

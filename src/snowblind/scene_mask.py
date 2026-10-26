@@ -362,7 +362,7 @@ def _chisel_pass(rate, finite, background, kernel_fwhm, qthresh, erode, opening,
     return finite & ~grown
 
 
-def saturated_stars(background_mask, finite, min_halo=10000, max_fill=0.4, max_stars=4, border=4):
+def saturated_stars(background_mask, finite, min_halo=10000, max_fill=0.4, min_core=16, core_fill=0.3, max_stars=4, border=4):
     """Find the saturated stars in a scene mask by the shape of their masked regions.
 
     A bright star's mask is a large region around saturated (non-finite)
@@ -370,9 +370,13 @@ def saturated_stars(background_mask, finite, min_halo=10000, max_fill=0.4, max_s
     fraction of its bounding box; a galaxy's is compact and fills most
     of its box.  Regions of at least ``min_halo`` pixels that contain
     non-finite pixels and fill at most ``max_fill`` of their bounding box
-    count as stars, the largest ``max_stars`` of them.  The ``border``
-    rows and columns of reference pixels are set aside so that a region
-    touching the frame edge is not joined to it.
+    count as stars, the largest ``max_stars`` of them.  The saturated
+    core, the largest cluster of non-finite pixels in the region, must be
+    compact: at least ``min_core`` pixels filling at least ``core_fill``
+    of its own bounding box, which keeps bad columns and the thin network
+    of bad pixels that the mask joins across a frame from counting as
+    stars.  The ``border`` rows and columns of reference pixels are set
+    aside so that a region touching the frame edge is not joined to it.
 
     Returns a list of (y, x) centres of the largest cluster of saturated
     pixels in each region, the star's core, largest region first.
@@ -387,6 +391,11 @@ def saturated_stars(background_mask, finite, min_halo=10000, max_fill=0.4, max_s
         Smallest masked region, in pixels, that can count as a star.
     max_fill : float
         Largest fraction of its bounding box that a star's region may fill.
+    min_core : int
+        Smallest saturated core, in pixels.
+    core_fill : float
+        Smallest fraction of its own bounding box the saturated core must
+        fill; a bad column fills almost none of its tall box.
     max_stars : int
         Number of stars returned, the largest regions first.
     border : int
@@ -416,7 +425,12 @@ def saturated_stars(background_mask, finite, min_halo=10000, max_fill=0.4, max_s
         if not core.any():
             continue
         clusters, nclusters = ndimage.label(core)
-        largest = np.argmax(ndimage.sum(core, clusters, np.arange(1, nclusters + 1))) + 1
+        sizes = ndimage.sum(core, clusters, np.arange(1, nclusters + 1))
+        largest = int(np.argmax(sizes)) + 1
+        box = ndimage.find_objects(clusters)[largest - 1]
+        box_area = (box[0].stop - box[0].start) * (box[1].stop - box[1].start)
+        if sizes[largest - 1] < min_core or sizes[largest - 1] < core_fill * box_area:
+            continue
         cy, cx = ndimage.center_of_mass(clusters == largest)
         stars.append((area, cy + window[0].start, cx + window[1].start))
     stars.sort(reverse=True)
@@ -424,17 +438,21 @@ def saturated_stars(background_mask, finite, min_halo=10000, max_fill=0.4, max_s
 
 
 def spike_mask(
-    rate, background_mask, min_halo=10000, max_fill=0.4, max_stars=4, half_width=40, block=64, near=12,
-    min_excess=0.02, nsigma=3.0, patience=3, border=4,
+    rate, background_mask, min_halo=10000, max_fill=0.4, min_core=16, core_fill=0.3, max_stars=4, half_width=40, block=64,
+    near=12, min_excess=0.02, nsigma=3.0, patience=3, border=4, axes=("columns", "rows"),
 ):
-    """Mask the column-aligned diffraction spikes of saturated stars along their extent.
+    """Mask the axis-aligned diffraction spikes of saturated stars along their extent.
 
     The scene mask covers a spike's bright part but not its wings, a few
     columns wide at a fraction of the sky, and a spike along a column
     raises that column's masked mean and darkens the whole column when the
-    offset is removed.  Only the vertical spike matters for that, so this
-    follows it alone.  Stars come from :func:`saturated_stars`.  From each
-    star the column is walked up and down in blocks of ``block`` rows.
+    offset is removed, and a spike along the readout stream enters the
+    1/f estimate as slow signal.  Which spike lies along which axis
+    depends on the instrument (NIRCam reads out along science rows,
+    NIRISS along science columns), so both axes are walked by default.
+    Stars come from :func:`saturated_stars`.  From each star the column
+    is walked up and down in blocks of ``block`` rows (and the row left
+    and right, on the transposed arrays).
     In each block the profile across ``half_width`` columns either side
     of the current spike centre is the masked mean of the rows, smoothed
     over three columns, less the median of the columns more than
@@ -462,6 +480,11 @@ def spike_mask(
     max_fill : float
         Passed to :func:`saturated_stars`: largest fraction of its bounding
         box that a star's region may fill.
+    min_core : int
+        Passed to :func:`saturated_stars`: smallest saturated core in pixels.
+    core_fill : float
+        Passed to :func:`saturated_stars`: smallest fraction of its bounding
+        box the saturated core must fill.
     max_stars : int
         Passed to :func:`saturated_stars`: number of stars treated.
     half_width : int
@@ -484,6 +507,9 @@ def spike_mask(
     border : int
         Rows and columns of reference pixels at each frame edge excluded
         from the walk; also passed to :func:`saturated_stars`.
+    axes : tuple of str
+        Which spikes to follow: ``"columns"`` (along science columns),
+        ``"rows"`` (along science rows), or both.
 
     Returns
     -------
@@ -501,47 +527,92 @@ def spike_mask(
         return background, 0
     sky = float(np.median(rate[background]))
     sigma = mad_std(rate[background], ignore_nan=True)
-    stars = saturated_stars(background_mask, finite, min_halo, max_fill, max_stars, border)
+    stars = saturated_stars(
+        background_mask, finite, min_halo=min_halo, max_fill=max_fill, min_core=min_core, core_fill=core_fill,
+        max_stars=max_stars, border=border,
+    )
     if not stars:
         return background, 0
-    ny, nx = rate.shape
     signal = np.where(background, rate - sky, 0.0)
     weight = background.astype(np.float64)
-    smooth = np.ones(3) / 3.0
     out = background.copy()
     for cy, cx in stars:
-        for direction in (-1, 1):
-            centre = int(round(cx))
-            y = int(round(cy))
-            misses = 0
-            while True:
-                r0, r1 = (y - block, y) if direction < 0 else (y, y + block)
-                if r0 < border or r1 > ny - border:
-                    break
-                y += direction * block
-                c0, c1 = max(border, centre - half_width), min(nx - border, centre + half_width + 1)
-                total = np.convolve(signal[r0:r1, c0:c1].sum(axis=0), smooth, mode="same")
-                count = np.convolve(weight[r0:r1, c0:c1].sum(axis=0), smooth, mode="same")
-                dx = np.arange(c0, c1) - centre
-                inner = np.abs(dx) <= near
-                if count[inner].sum() < 0.25 * block * inner.sum():
-                    continue  # inside the star's own mask
-                with np.errstate(invalid="ignore", divide="ignore"):
-                    profile = np.where(count >= 0.25 * block, total / count, np.nan)
-                outer = profile[np.abs(dx) > near + 10]
-                if np.isfinite(outer).sum() < 10:
-                    continue
-                excess = profile - np.nanmedian(outer)
-                noise = nsigma * sigma / np.sqrt(np.maximum(count, 1.0))
-                with np.errstate(invalid="ignore"):
-                    detected = inner & (excess > min_excess * abs(sky)) & (excess > noise)
-                if not detected.any():
-                    misses += 1
-                    if misses >= patience:
-                        break
-                    continue
-                misses = 0
-                centre = int(round(np.average(np.arange(c0, c1)[detected], weights=excess[detected])))
-                columns = ndimage.binary_dilation(detected, structure=np.ones(3, dtype=bool))
-                out[r0:r1, c0:c1][:, columns] = False
+        if "columns" in axes:
+            _walk_spike(signal, weight, out, cy, cx, sky, sigma, half_width, block, near, min_excess, nsigma, patience, border)
+        if "rows" in axes:
+            _walk_spike(signal.T, weight.T, out.T, cx, cy, sky, sigma, half_width, block, near, min_excess, nsigma, patience,
+                        border)
     return out, len(stars)
+
+
+def _walk_spike(signal, weight, out, cy, cx, sky, sigma, half_width, block, near, min_excess, nsigma, patience, border):
+    """Follow one star's spike along axis 0 of the arrays, masking it in ``out`` in place.
+
+    Parameters
+    ----------
+    signal : ndarray, shape (nrows, ncols)
+        Sky-subtracted rate, zero outside the background.
+    weight : ndarray, shape (nrows, ncols)
+        1.0 on background pixels, 0.0 elsewhere.
+    out : ndarray of bool, shape (nrows, ncols)
+        The mask being built, True where background; a transposed view
+        walks the other axis.
+    cy : float
+        Row of the star's core.
+    cx : float
+        Column of the star's core.
+    sky : float
+        Sky level in the units of ``signal``.
+    sigma : float
+        Robust per-pixel noise of the background.
+    half_width : int
+        Columns either side of the current centre that enter the profile.
+    block : int
+        Rows per block.
+    near : int
+        Columns either side of the centre in which a spike may be detected.
+    min_excess : float
+        Smallest excess over the local background, as a fraction of the sky.
+    nsigma : float
+        Detection threshold in units of the profile's noise.
+    patience : int
+        Blocks without a detection after which the walk ends.
+    border : int
+        Rows and columns at the frame edge the walk does not enter.
+    """
+    ny, nx = signal.shape
+    smooth = np.ones(3) / 3.0
+    for direction in (-1, 1):
+        centre = int(round(cx))
+        y = int(round(cy))
+        misses = 0
+        while True:
+            r0, r1 = (y - block, y) if direction < 0 else (y, y + block)
+            if r0 < border or r1 > ny - border:
+                break
+            y += direction * block
+            c0, c1 = max(border, centre - half_width), min(nx - border, centre + half_width + 1)
+            total = np.convolve(signal[r0:r1, c0:c1].sum(axis=0), smooth, mode="same")
+            count = np.convolve(weight[r0:r1, c0:c1].sum(axis=0), smooth, mode="same")
+            dx = np.arange(c0, c1) - centre
+            inner = np.abs(dx) <= near
+            if count[inner].sum() < 0.25 * block * inner.sum():
+                continue  # inside the star's own mask
+            with np.errstate(invalid="ignore", divide="ignore"):
+                profile = np.where(count >= 0.25 * block, total / count, np.nan)
+            outer = profile[np.abs(dx) > near + 10]
+            if np.isfinite(outer).sum() < 10:
+                continue
+            excess = profile - np.nanmedian(outer)
+            noise = nsigma * sigma / np.sqrt(np.maximum(count, 1.0))
+            with np.errstate(invalid="ignore"):
+                detected = inner & (excess > min_excess * abs(sky)) & (excess > noise)
+            if not detected.any():
+                misses += 1
+                if misses >= patience:
+                    break
+                continue
+            misses = 0
+            centre = int(round(np.average(np.arange(c0, c1)[detected], weights=excess[detected])))
+            columns = ndimage.binary_dilation(detected, structure=np.ones(3, dtype=bool))
+            out[r0:r1, c0:c1][:, columns] = False

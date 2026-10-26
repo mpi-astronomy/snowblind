@@ -49,6 +49,40 @@ Four results matter for the pipeline:
    reset. Without the correction the reset-anchored fit shifts the median
    rate of all pixels by 1 percent.
 
+Running the steps
+-----------------
+
+The defaults are set for sky-limited imaging, which is what the
+measurements below cover: the background of each group difference is a
+scalar median measured on the flat-fielded difference, sources come from
+the two-tier scene mask with the column spikes of saturated stars
+followed, and the reset fit takes the detector's reset scatter and
+first-read timing from a file packaged with snowblind, one per detector (ten NIRCam
+detectors and NIRISS, measured as described in the reset section) with
+the reset offset anchored to each exposure's own sky. ``StreamCleanStep``
+runs inside ``calwebb_detector1`` as a post-hook of the jump step, and
+the pipeline's own ``clean_flicker_noise`` step is skipped, since some
+parameter references turn it on; ``reset_rampfit`` then fits the saved
+cleaned ramp in place of the pipeline's ramp fit::
+
+    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs \
+        --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.jump.save_results=True \
+        --steps.clean_flicker_noise.skip=True
+    strun reset_rampfit jw..._jump.fits --output_dir=reset
+
+A snowblind step run as a hook inside a jwst pipeline sends its log
+messages to the pipeline's handlers, so they appear in the pipeline log
+like jwst's own. The scene mask also leaves out every pixel the DQ marks
+DO_NOT_USE, in the mask reference, the flat reference and the group
+flags, and follows the spikes of saturated stars along both image
+axes, since NIRCam reads out along science rows and NIRISS along
+science columns. On darks ``background_method=None`` is right (the
+median removes the dark current's own level); for extended emission
+larger than a few hundred pixels ``integration_model`` keeps it out of
+the noise estimate at the cost of the slowest 1/f; a dispersed
+(grism) exposure, whose background is a smooth function of position,
+has not been tested and would need its own background model.
+
 Readout geometry
 ----------------
 
@@ -342,6 +376,12 @@ bright excess is not channel timing.
 
    Ratio of the reset difference to the rate from the other differences
    against the first group difference, NRCA1, with the two-parameter model.
+   The form is the same on every detector measured; only the numbers
+   move: k from 0.88 to 0.95 at a first-group time of 10.7 s (a delay of
+   0.5 to 1.3 s; the ten NIRCam detectors 0.88 to 0.94, NIRISS 0.95), the
+   four channels of a detector within 0.03 of each other, and the offset
+   b between -9 and +4 DN. The values live in the packaged calibration
+   of each detector.
 
 Curve-of-growth test on NRCA1: 30 isolated stars with cores saturating
 from group 2, fully recovered by the reset fit, against the core-to-ring
@@ -533,6 +573,20 @@ dark for 3 to 100 groups.
    and is 5 times worse at 100 groups, where it also raises the pixel
    scatter by 55 percent, the turnover the documentation reports. The
    stream clean stays below SIRS by a factor 1.8 to 2.3 at every length.
+
+.. figure:: figures/noise_vs_groups_linear.png
+   :width: 100%
+
+   The same measurement as total noise per integration in DN (rate
+   scatter times integration time) on linear axes, as the detector
+   performance pages show it, on the NRCA1 dark and on a NIRISS dark
+   (NISRAPID, one frame per group on both). The stream clean is below
+   SIRS at every ramp length on both detectors, by 11 to 12 percent at
+   3 groups and 3 to 7 percent at 100; the jwst median is below SIRS
+   for short ramps and above it beyond 20 groups, by 24 percent on
+   NIRISS and 55 on NRCA1 at 100 groups, which is the random walk of
+   per-difference medians along the ramp.
+
 
 A crowded field: Omega Cen
 --------------------------
@@ -795,6 +849,65 @@ point to 0.1 percent at every brightness. What remains between the
 reset fit and OLS_C on the sky of that exposure, half a percent, is
 the likelihood fit's own difference from OLS_C on a faint 6-group ramp,
 present without the reset point as well (see the observations below).
+
+A NIRISS field
+--------------
+
+Six NIRISS F200W direct images from WFSS programs (NIS and NISRAPID, 7
+to 20 groups) are the first NIRISS fields. NIRISS carries much stronger
+column structure than NIRCam: on an 8-group NISRAPID exposure the
+column-mean scatter of the sky pixels is 0.038 DN/s before cleaning,
+visible as vertical bands, against 0.017 along rows.
+
+.. figure:: figures/field_rate_images_niriss_f200w_full.jpg
+   :width: 100%
+
+   NIRISS F200W, NISRAPID, 8 groups, flat-fielded, full frame binned
+   2 by 2. Row-mean scatter 0.0165 DN/s (SIRS), 0.0147 (jwst median),
+   0.0022 (stream clean); column-mean scatter 0.0384, 0.0117, 0.0039.
+   On a 7-group NIS exposure with a 1.4 DN/s sky the stream clean
+   reaches 0.0006 and 0.0009 against 0.0045 and 0.0066 for SIRS.
+   Aperture photometry of 75 sources with complete apertures agrees
+   between every chain and SIRS to 0.5 percent in every flux quartile.
+
+The NIRISS frame also has four occulting spots, dark patches at a
+tenth of the sky that no DQ flag marks except the flat reference's,
+where they are DO_NOT_USE with a flat of zero. The jwst flat reader
+smooths over such pixels so that dividing by the flat is harmless, and
+the first run let them into the noise estimate, which read the deficit
+as slow noise and raised the cleaned sky by 8 percent around the
+largest spot. The step now reads the flat's own DQ and keeps those
+pixels out of the background, and the excess is gone. The same holds
+for any pixel a flat marks unusable on NIRCam.
+
+The NISRAPID exposure also gave the NIRISS first-read timing: k =
+0.950 at a first-group time of 10.7 s, a 0.5 s delay like NIRCam's,
+now in the packaged calibration; the reset offset of every NIRISS field
+exposure sits 5 to 7 DN above the darks', which the per-exposure sky
+anchoring absorbs.
+
+The 7-group NIS exposure showed where likelihood fitting and OLS_C part
+company. Fitting the same ramp six ways (raw and cleaned, with OLS_C,
+stcal's LIKELY and the reset fit) and measuring 115 sources with
+complete apertures in all six, the likelihood fit is 0.8 percent above
+OLS_C and the reset fit 1.3 percent, on the raw ramp and the cleaned
+ramp alike. Per pixel, between 5 and 50 DN/s, both likelihood fits
+carry an upper tail of 5 to 7 percent at the 84th percentile against
+OLS_C, and in the cores of bright stars, where the jump step and the
+charge migration step flag three to five of the seven groups, the two
+fits differ by up to 17 percent either way: with most groups flagged
+they weigh the few remaining differences differently, and neither has
+a claim to the truth. The reset point itself adds half a percent. This
+is the LIKELY-against-OLS_C observation of the CEERS section, larger
+on frame-averaged 7-group data with charge-migration flags, and one for
+the stcal developers rather than for this step. The same comparison on
+the NISRAPID exposure is within 0.2 percent. (A first look at this
+exposure had the reset fit's aperture photometry off by tens of
+percent; that was the measurement summing apertures with missing
+pixels as zero, where OLS_C leaves the saturating cores without a rate
+and the reset fit fills them, 2197 pixels here with values consistent
+with each pixel's first difference. Apertures with a missing pixel in
+any chain are now left out.)
 
 What this builds on
 -------------------

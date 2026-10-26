@@ -96,15 +96,61 @@ Finally, both these steps can be inserted as pre-hooks into the `Image3Pipeline`
 
 ## StreamCleanStep and ResetRampFitStep
 
-Both steps work on the `_jump` product and need the reference pixel step run with the SIRS algorithm:
+Both steps work on group data after the jump step, and want the reference
+pixel step run with the SIRS algorithm.  Their defaults are set for
+sky-limited imaging: the background of each group difference is a scalar
+median measured on the flat-fielded difference, sources come from a
+two-tier scene mask that also follows the column spikes of saturated stars,
+and the reset fit uses the reset calibration packaged for every NIRCam
+detector and NIRISS, with the reset offset anchored to the exposure's own
+sky.
 
-    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs --steps.jump.save_results=True
-    strun stream_clean jw..._jump.fits --fit_method=wiener --save_spectra=True
+`StreamCleanStep` slots into `calwebb_detector1` as a post-hook of the jump
+step.  The pipeline's own `clean_flicker_noise` step is skipped, as some
+parameter references turn it on, and the pipeline then fits the cleaned
+ramp with its usual ramp fit:
 
-`ResetRampFitStep` needs the reset-level scatter of the detector, measured once from dark ramps:
+    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.clean_flicker_noise.skip=True
+
+(the trailing comma makes `post_hooks` a list of one).  To use the
+reset-anchored fit in place of the pipeline's, save the cleaned ramp as well
+and fit it with `reset_rampfit`, which writes `_rate` and `_rateints`
+products in the pipeline's format; an output directory keeps them apart from
+the pipeline's own:
+
+    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.jump.save_results=True --steps.clean_flicker_noise.skip=True
+    strun reset_rampfit jw..._jump.fits --output_dir=reset
+
+The same in Python:
+
+```python
+from jwst.pipeline import Detector1Pipeline
+from snowblind import ResetRampFitStep
+
+steps = {
+    "refpix": {"refpix_algorithm": "sirs"},
+    "jump": {"post_hooks": ["snowblind.StreamCleanStep"], "save_results": True},
+    "clean_flicker_noise": {"skip": True},
+}
+Detector1Pipeline.call("jw..._uncal.fits", steps=steps, save_results=True)
+rate, rateints = ResetRampFitStep.call("jw..._jump.fits", save_results=True, output_dir="reset")
+```
+
+The packaged calibration holds, per detector, the reset-level scatter
+measured from dark ramps and the first-read timing measured on a field (see
+the documentation for the measurements).  To measure your own, for example
+for a detector or epoch not covered:
 
     snowblind-reset-calib jw..._nrca1_uncal.fits -o nrca1_reset_calib.asdf
     strun reset_rampfit jw..._nrca1_jump.fits --reset_calib=nrca1_reset_calib.asdf
+
+The file also carries the detector's mean reset-level map, which
+`reset_rampfit --use_pedestal_mean=True` uses as the prior; give the same
+file to `stream_clean --reset_calib=...` so that the first read is cleaned
+against the same prior.  On dark exposures set
+`--steps.stream_clean.background_method=None`; for fields with extended
+emission larger than a few hundred pixels, `integration_model` keeps that
+structure out of the noise estimate.
 
 Both steps build on published work:
 - the SIRS reference-pixel correction ([Rauscher, Fixsen and Mosby 2022, JATIS 8, 028002](https://arxiv.org/abs/2602.02253))

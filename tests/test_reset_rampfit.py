@@ -116,12 +116,13 @@ def test_call_rejects_calibration_for_other_detector(tmp_path):
         ResetRampFitStep.call(model, reset_calib=str(calib), override_readnoise=rn, override_gain=gain)
 
 
-def test_call_requires_sigma_b(tmp_path):
-    """ResetRampFitStep.call without reset_calib or sigma_b raises ValueError."""
+def test_call_requires_sigma_b_for_a_detector_without_packaged_calibration(tmp_path):
+    """ResetRampFitStep.call without reset_calib or sigma_b on a detector the packaged table lacks raises ValueError."""
     rn, gain = reference_files(tmp_path)
     model = make_ramp()
+    model.meta.instrument.detector = "NRS1"
 
-    with pytest.raises(ValueError, match="reset_calib or sigma_b"):
+    with pytest.raises(ValueError, match="No packaged reset calibration"):
         ResetRampFitStep.call(model, override_readnoise=rn, override_gain=gain)
 
 
@@ -450,3 +451,46 @@ def test_star_anchored_scales_recovers_a_short_first_read():
     scales = star_anchored_scales(model, 0.0, blocks, use_zeroframe=False, min_bright=5, fallback=[1.0] * 4, min_per_bin=1)
 
     np.testing.assert_allclose(scales, 0.8, atol=2e-3)
+
+
+def test_default_calibration_has_nrca1_timing_per_channel():
+    """default_calibration('nrca1') returns a positive sigma_b and four per-channel first-read scales."""
+    from snowblind.reset_calib import default_calibration
+
+    tree = default_calibration("nrca1")
+
+    assert tree["detector"] == "NRCA1"
+    assert 10.0 < tree["sigma_b_median"] < 30.0
+    assert len(tree["t1_scale_channels"]) == 4
+
+
+def test_default_calibration_unknown_detector_raises():
+    """default_calibration('MIRIMAGE') raises a ValueError naming the detector."""
+    from snowblind.reset_calib import default_calibration
+
+    with pytest.raises(ValueError, match="MIRIMAGE"):
+        default_calibration("MIRIMAGE")
+
+
+def test_call_without_calibration_uses_the_packaged_defaults(tmp_path):
+    """ResetRampFitStep.call on an NRCA1 ramp with neither reset_calib nor sigma_b completes with a finite rate."""
+    rn, gain = reference_files(tmp_path)
+    model = make_ramp()
+
+    out, _ints = ResetRampFitStep.call(model, override_readnoise=rn, override_gain=gain)
+
+    assert out.meta.cal_step.reset_rampfit == "COMPLETE"
+    assert np.isfinite(out.data).all()
+
+
+def test_call_with_save_results_writes_rate_and_rateints(tmp_path):
+    """ResetRampFitStep.call with save_results and an output_dir writes a _rate.fits and a _rateints.fits there."""
+    rn, gain = reference_files(tmp_path)
+    model = make_ramp()
+
+    ResetRampFitStep.call(
+        model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, save_results=True, output_dir=str(tmp_path)
+    )
+
+    assert len(list(tmp_path.glob("*_rate.fits"))) == 1
+    assert len(list(tmp_path.glob("*_rateints.fits"))) == 1

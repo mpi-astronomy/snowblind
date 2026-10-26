@@ -1,0 +1,46 @@
+#ASDF 1.0.0
+#ASDF_STANDARD 1.6.0
+%YAML 1.1
+%TAG ! tag:stsci.edu:asdf/
+--- !core/asdf-1.1.0
+asdf_library: !core/software-1.0.0 {author: The ASDF Developers, homepage: 'http://github.com/asdf-format/asdf',
+  name: asdf, version: 5.3.1}
+history:
+  entries:
+  - !core/history_entry-1.0.0
+    description: Scalar reset calibration of NRCA1 packaged from nrca1_reset_calib.asdf
+    software: !core/software-1.0.0 {author: James E. Davies, homepage: 'https://github.com/mpi-astronomy/snowblind',
+      name: snowblind, version: 0.2.2.dev20+gca9293deb.d20261020}
+    time: 2026-10-26 10:24:42+00:00
+  extensions:
+  - !core/extension_metadata-1.0.0
+    extension_class: asdf.extension._manifest.ManifestExtension
+    extension_uri: asdf://asdf-format.org/core/extensions/core-1.6.0
+    manifest_software: !core/software-1.0.0 {name: asdf_standard, version: 1.5.0}
+    software: !core/software-1.0.0 {name: asdf, version: 5.3.1}
+description: Scalar reset calibration, used by ResetRampFitStep when no reset_calib
+  file is given
+detector: NRCA1
+generated: '2026-10-26T10:24:42+00:00'
+n_integrations_max: 10
+provenance:
+  date: '2026-10-22T07:19:04+00:00'
+  input_files: [jw09022004001_02101_00001_nrca1_uncal.fits]
+  jwst_version: 3.1.0.dev4+gc06c74de4
+  refpix_algorithm: sirs
+  snowblind_version: 0.2.2.dev20+gca9293deb.d20261020
+  stcal_version: 1.20.1.dev43+g83fb1ca2a
+  superbias: jwst_nircam_superbias_0454.fits
+read_noise_single_median: 5.187603950500488
+reset_offset: -3.0859131813049316
+reset_offset_channels: [-2.868408203125, -2.0250625610351562, -1.9305051565170288,
+  -5.578310012817383]
+sigma_b: 16.82921028137207
+source: nrca1_reset_calib.asdf
+t1_scale: 0.9042337592532719
+t1_scale_channels: [0.8965817303190603, 0.8967701652710285, 0.9098363895498378, 0.9136566269456685]
+t1_seconds: 10.73677
+timing_provenance: {b: median of R1 - k a t1 over sky pixels with first differences
+    below 50 DN, file: jw06154001001_02101_00004_nrca1_uncal.fits, k: 'slope of R1
+    - a t1 against a t1 over first differences of 50 to 2000 DN, no flags'}
+...

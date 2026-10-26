@@ -211,7 +211,7 @@ def test_step_wiener_with_user_mask_saves_spectra(tmp_path, tmp_cwd):
     mask_model.save(mask_path)
 
     result = StreamCleanStep.call(
-        model, fit_method="wiener", user_mask=str(mask_path), background_method="median",
+        model, apply_flat_field=False, fit_method="wiener", user_mask=str(mask_path), background_method="median",
         clip_sigma=0, max_lag=MAX_LAG, save_spectra=True,
     )
 

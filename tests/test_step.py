@@ -23,3 +23,58 @@ def test_module_loggers_are_children_of_the_snowblind_logger():
     child = logging.getLogger("snowblind.jump_plus")
 
     assert child.parent is logging.getLogger("snowblind")
+
+
+class LoggingStep(Step):
+    """A step whose process logs one line through a snowblind module logger and returns its input."""
+
+    class_alias = "logging_step"
+    spec = """
+    """
+
+    def process(self, value):
+        logging.getLogger("snowblind.logging_step").info("hello from a hook")
+        return value
+
+
+class ListHandler(logging.Handler):
+    """A handler that keeps the messages it receives."""
+
+    def __init__(self):
+        super().__init__()
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+def test_run_sends_package_messages_to_the_stpipe_handlers():
+    """LoggingStep().run(1), with a handler and INFO level on the 'stpipe' logger only, delivers the step's message there."""
+    handler = ListHandler()
+    stpipe_logger = logging.getLogger("stpipe")
+    previous_level = stpipe_logger.level
+    stpipe_logger.addHandler(handler)
+    stpipe_logger.setLevel(logging.INFO)
+    try:
+        LoggingStep().run(1)
+    finally:
+        stpipe_logger.removeHandler(handler)
+        stpipe_logger.setLevel(previous_level)
+
+    assert "hello from a hook" in handler.messages
+
+
+def test_run_returns_the_borrowed_handlers_afterwards():
+    """After LoggingStep().run(1) the 'snowblind' logger no longer holds the handler borrowed from 'stpipe'."""
+    handler = ListHandler()
+    stpipe_logger = logging.getLogger("stpipe")
+    previous_level = stpipe_logger.level
+    stpipe_logger.addHandler(handler)
+    stpipe_logger.setLevel(logging.INFO)
+    try:
+        LoggingStep().run(1)
+    finally:
+        stpipe_logger.removeHandler(handler)
+        stpipe_logger.setLevel(previous_level)
+
+    assert handler not in logging.getLogger("snowblind").handlers

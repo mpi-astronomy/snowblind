@@ -254,7 +254,7 @@ def test_step_call_with_user_mask_cleans_and_completes(tmp_path):
     mask_path = write_mask(tmp_path, np.ones((NY, NX), dtype=bool))
 
     result = StreamCleanStep.call(
-        model, fit_method="row_median", user_mask=mask_path, background_method="median", clip_sigma=0
+        model, apply_flat_field=False, fit_method="row_median", user_mask=mask_path, background_method="median", clip_sigma=0
     )
 
     assert result.meta.cal_step.stream_clean == "COMPLETE"
@@ -269,7 +269,7 @@ def test_step_skips_subarray():
     model.meta.subarray.name = "SUB64P"
     model.data[:] = 3.0
 
-    result = StreamCleanStep.call(model, fit_method="row_median")
+    result = StreamCleanStep.call(model, apply_flat_field=False, fit_method="row_median")
 
     assert result.meta.cal_step.stream_clean == "SKIPPED"
     np.testing.assert_array_equal(result.data, 3.0)
@@ -280,7 +280,7 @@ def test_step_skips_miri():
     model = make_ramp_model()
     model.meta.instrument.name = "MIRI"
 
-    result = StreamCleanStep.call(model, fit_method="row_median")
+    result = StreamCleanStep.call(model, apply_flat_field=False, fit_method="row_median")
 
     assert result.meta.cal_step.stream_clean == "SKIPPED"
 
@@ -500,7 +500,9 @@ def test_step_masks_reference_border_before_fitting(tmp_path):
     model.data = data
     mask_path = write_mask(tmp_path, np.ones((NY, NX), dtype=bool))
 
-    result = StreamCleanStep.call(model, fit_method="row_median", user_mask=mask_path, background_method="median")
+    result = StreamCleanStep.call(
+        model, apply_flat_field=False, fit_method="row_median", user_mask=mask_path, background_method="median"
+    )
 
     diffs = np.diff(result.data[0], axis=0)[:, 4:-4, 4:-4]
     assert np.all(np.ptp(diffs, axis=(1, 2)) < 1e-3)
@@ -515,7 +517,7 @@ def test_step_second_mask_pass_runs_and_completes(tmp_path):
     mask_path = write_mask(tmp_path, np.ones((NY, NX), dtype=bool))
 
     result = StreamCleanStep.call(
-        model, fit_method="row_median", user_mask=mask_path, background_method="median", mask_passes=2
+        model, apply_flat_field=False, fit_method="row_median", user_mask=mask_path, background_method="median", mask_passes=2
     )
 
     assert result.meta.cal_step.stream_clean == "COMPLETE"
@@ -790,3 +792,59 @@ def test_exclude_reference_border_with_zero_width_returns_the_mask_unchanged():
     out = exclude_reference_border(mask, width=0)
 
     assert out.all()
+
+
+def test_unusable_in_flat_marks_do_not_use_and_zero_pixels(tmp_path):
+    """unusable_in_flat on a flat with DO_NOT_USE in one block and zeros in another returns True on both blocks only."""
+    from stdatamodels.jwst import datamodels
+    from stdatamodels.jwst.datamodels import dqflags
+    from snowblind.stream_clean import unusable_in_flat
+
+    model = make_ramp_model()
+    flat = datamodels.FlatModel((NY, NX))
+    flat.data[:] = 1.0
+    flat.dq[:] = 0
+    flat.dq[10:20, 10:20] = dqflags.pixel["DO_NOT_USE"]
+    flat.data[30:40, 30:40] = 0.0
+    path = tmp_path / "flat.fits"
+    flat.save(path)
+
+    unusable = unusable_in_flat(model, str(path))
+
+    assert unusable[10:20, 10:20].all()
+    assert unusable[30:40, 30:40].all()
+    assert unusable.sum() == 200
+
+
+def test_step_keeps_flat_do_not_use_pixels_out_of_the_saved_mask(tmp_path):
+    """StreamCleanStep.call with apply_flat_field and an override flat that flags a block writes a mask False on that block."""
+    from stdatamodels.jwst import datamodels
+    from stdatamodels.jwst.datamodels import dqflags
+
+    rng = np.random.default_rng(14)
+    data, _ = striped_ramp(rng)
+    model = make_ramp_model()
+    model.data[:] = data
+    flat = datamodels.FlatModel((NY, NX))
+    flat.data[:] = 1.0
+    flat.dq[:] = 0
+    flat.dq[20:30, 20:30] = dqflags.pixel["DO_NOT_USE"]
+    flat.meta.instrument.name = model.meta.instrument.name
+    for m in (flat, model):
+        m.meta.subarray.name = "FULL"
+        m.meta.subarray.xstart, m.meta.subarray.ystart = 1, 1
+        m.meta.subarray.xsize, m.meta.subarray.ysize = NX, NY
+    flat_path = tmp_path / "flat.fits"
+    flat.save(flat_path)
+    mask_model = datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32))
+    mask_path = tmp_path / "mask.fits"
+    mask_model.save(mask_path)
+
+    StreamCleanStep.call(
+        model, apply_flat_field=True, override_flat=str(flat_path), fit_method="row_median", user_mask=str(mask_path),
+        background_method="median", save_mask=True, output_dir=str(tmp_path),
+    )
+
+    with datamodels.open(next(tmp_path.glob("*_mask.fits"))) as saved:
+        assert not saved.data[20:30, 20:30].any()
+        assert saved.data[40:50, 40:50].all()

@@ -34,13 +34,20 @@ def load_flat(panel_dir):
 
 
 def photometry(image, positions):
+    """Background-subtracted aperture sums; NaN for an aperture that holds any non-finite pixel.
+
+    A chain that leaves the core of a saturating star without a rate would
+    otherwise sum a smaller aperture than one that fills it, and the ratio
+    would measure the missing pixels rather than the cleaning.
+    """
     data = np.where(np.isfinite(image), image, np.nan)
     aperture = CircularAperture(positions, r=4.0)
     annulus = CircularAnnulus(positions, r_in=8.0, r_out=12.0)
     mask = ~np.isfinite(data)
     flux = aperture_photometry(np.where(mask, 0.0, data), aperture, mask=mask)["aperture_sum"].value
+    missing = aperture_photometry(mask.astype(np.float64), aperture)["aperture_sum"].value
     background = np.array([np.nanmedian(m.get_values(data)) for m in annulus.to_mask(method="center")])
-    return flux - background * aperture.area
+    return np.where(missing > 0, np.nan, flux - background * aperture.area)
 
 
 def spike_profile(change, center, sky, nbins=20, rmax=400.0, ndir=12):
@@ -87,7 +94,7 @@ def main():
     found = finder(np.where(np.isfinite(sirs), sirs - sky, 0.0))
     positions = np.transpose([found["xcentroid"], found["ycentroid"]])
     reference = photometry(sirs, positions)
-    print(f"{len(found)} sources; sky {sky:.4f} DN/s")
+    print(f"{len(found)} sources, {int(np.isfinite(reference).sum())} with complete apertures on SIRS; sky {sky:.4f} DN/s")
     report = {"sky": sky, "n_sources": int(len(found)), "photometry": {}, "spikes": {}}
     bins = np.percentile(reference[reference > 0], [0, 25, 50, 75, 100])
     for label, name in chains.items():

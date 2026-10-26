@@ -11,7 +11,9 @@ and groups is adapted from ``do_correction`` in
 import logging
 
 import numpy as np
+from crds.core.exceptions import CrdsError
 from jwst import datamodels
+from jwst.lib.reffile_utils import get_subarray_model
 from .step import Step
 from stdatamodels.jwst.datamodels import dqflags
 
@@ -94,14 +96,14 @@ class StreamCleanStep(Step):
         fit_method = option('wiener', 'boxcar', 'row_median', default='wiener')  # noise estimator per channel
         window_length = integer(default=4096)  # pixel times (10 microseconds each); boxcar only
         psd_prior = string(default=None)  # optional ASDF with a dark-derived PSD shape per channel; wiener only
-        background_method = option('median', 'model', 'integration_model', 'exposure_model', None, default='integration_model')  # background removed before fitting
+        background_method = option('median', 'model', 'integration_model', 'exposure_model', None, default='median')  # background removed before fitting: a scalar median suits sky-limited fields, integration_model (a box model) only extended structure above its box, None darks
         background_box_size = int_list(min=2, max=2, default=None)  # box size for background_method='model'
         scene_mask = option('chisel', 'clip', default='chisel')  # how sources are found in the draft rate image
         n_sigma = float(default=2.0)  # clipping level for scene_mask='clip'
         mask_passes = integer(default=1)  # with 2 or more, re-derive the chisel mask from the cleaned ramp and clean again
         clip_sigma = float(default=0.0)  # per-difference clipping of the background-subtracted image; 0 keeps the cleaning linear
         mask_science_regions = boolean(default=False)  # mask known science regions
-        apply_flat_field = boolean(default=False)  # divide by the flat before fitting
+        apply_flat_field = boolean(default=True)  # measure the background on the flat-fielded difference (the sky times the response); without a flat reference the raw difference is used
         user_mask = string(default=None)  # path to a user-supplied background mask
         mask_dilation = integer(default=0)  # pixels by which to grow the masked (source) regions, for source wings
         mask_spikes = boolean(default=True)  # mask the column-aligned spikes of saturated stars along their extent (chisel mask only)
@@ -124,6 +126,8 @@ class StreamCleanStep(Step):
     """  # noqa: E501
 
     reference_file_types = ["flat"]
+    # fetched in process, where an exposure type without a flat (a dark) is handled, instead of up front
+    prefetch_references = False
 
     def process(self, input_data):
         """Clean the group data of a ramp.
@@ -161,10 +165,23 @@ class StreamCleanStep(Step):
             return result
 
         flat = None
+        flat_unusable = None
         if self.apply_flat_field:
-            flat_filename = self.get_reference_file(result, "flat")
-            log.info(f"Using FLAT reference file {flat_filename}")
-            flat = read_flat_file(result, flat_filename)
+            try:
+                flat_filename = self.get_reference_file(result, "flat")
+            except CrdsError as err:
+                log.info(f"CRDS has no flat for this exposure ({err})")
+                flat_filename = None
+            if flat_filename in (None, "", "N/A"):
+                log.info("No flat reference for this exposure; the background is measured on the raw difference")
+            else:
+                log.info(f"Using FLAT reference file {flat_filename}")
+                flat = read_flat_file(result, flat_filename)
+                flat_unusable = unusable_in_flat(result, flat_filename)
+                log.info(
+                    f"The flat marks {100 * flat_unusable.mean():.2f} percent of pixels unusable; "
+                    "they are kept out of the background"
+                )
 
         self._scene = None
         if self.scene_model is not None:
@@ -176,6 +193,8 @@ class StreamCleanStep(Step):
 
         background_mask, mask_model = self._scene_mask(result, flat)
         background_mask = exclude_reference_border(background_mask)
+        if flat_unusable is not None:
+            background_mask = background_mask & ~flat_unusable
         if self.mask_dilation > 0:
             background_mask = dilate_sources(background_mask, self.mask_dilation)
         if background_mask.shape[-2:] != result.data.shape[-2:]:
@@ -197,6 +216,8 @@ class StreamCleanStep(Step):
             draft = draft / (result.meta.exposure.group_time or 1.0)
             draft[(result.pixeldq & dqflags.pixel["DO_NOT_USE"]) > 0] = np.nan
             background_mask = exclude_reference_border(self._chisel_scene_mask(draft))
+            if flat_unusable is not None:
+                background_mask = background_mask & ~flat_unusable
             if self.mask_dilation > 0:
                 background_mask = dilate_sources(background_mask, self.mask_dilation)
             log.info(f"Scene mask pass {extra_pass + 1}: {100 * (~background_mask).mean():.2f} percent of pixels masked")
@@ -394,6 +415,36 @@ class StreamCleanStep(Step):
         if image_model is not model:
             image_model.close()
         return background_mask, mask_model
+
+
+def unusable_in_flat(model, flat_filename):
+    """Pixels the flat reference marks DO_NOT_USE or leaves at zero or NaN.
+
+    The jwst flat reader used for the flat itself replaces such pixels by
+    a smoothed local value, so that dividing by the flat is harmless there;
+    but the data under them are not sky (the NIRISS occulting spots are
+    flagged only here, at a tenth of the sky, and no other DQ marks them),
+    and to a linear noise estimate a dark patch is slow 1/f noise as much
+    as a bright source.  The step keeps these pixels out of the background.
+
+    Parameters
+    ----------
+    model : `~stdatamodels.jwst.datamodels.RampModel`
+        The data; the flat is cut to its subarray when their shapes differ.
+    flat_filename : str
+        Path of the flat reference file.
+
+    Returns
+    -------
+    ndarray of bool, shape (nrows, ncols)
+        True where the flat is unusable.
+    """
+    with datamodels.FlatModel(flat_filename) as flat_model:
+        if flat_model.data.shape != model.data.shape[-2:]:
+            flat_model = get_subarray_model(model, flat_model)
+        data = np.asarray(flat_model.data, dtype=np.float64)
+        dq = np.asarray(flat_model.dq)
+    return ((dq & dqflags.pixel["DO_NOT_USE"]) > 0) | ~np.isfinite(data) | (data <= 0)
 
 
 def read_scene_model(path, shape):

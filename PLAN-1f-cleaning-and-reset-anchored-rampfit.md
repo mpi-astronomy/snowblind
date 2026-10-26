@@ -60,7 +60,7 @@ this plan; the short version of each is given inline below.
 - CRDS: `~/crds_cache/jwst_ops` exists. Set `CRDS_PATH` and `CRDS_SERVER_URL`
   as usual. The SIRS kernel files and the current NIRCam darks are already
   cached or will be fetched on first use.
-- Test data: see section C.4. Ask James for the file list before running on
+- Test data: see section C.4. Get the file list before running on
   real data; do not go looking for proprietary data.
 - Repo conventions (from James's global instructions): no `git commit` or
   `git add` unless told; do not create branches; tests are small, one behavior
@@ -2708,3 +2708,218 @@ regenerated from the new runs; unit tests cover the star selection
 (a spike-shaped mask around NaNs is a star, a filled square around
 NaNs is not), the walk beyond the arm of a star-shaped mask, and the
 refusal of an unsaturated source.
+
+### 2026-10-26: defaults, the packaged calibration, the pipeline recipe, and a NIRISS field
+
+James asked where testing stood across data types, for an example of
+running the two steps through the existing pipeline infrastructure
+with their defaults, and for the defaults to be the most generally
+usable. Tested so far: NIRCam darks (all ten detectors' reset
+calibrations), NIRISS darks, and three NIRCam fields (Omega Cen, CEERS
+F444W, NEXUS with a bright star). Missing: a NIRISS field, which the
+NIRISS first-read timing also needed. Six NIRISS F200W exposures in
+`~/data/jwst_niriss_test/` (all `NIS_IMAGE`, CLEAR + F200W: the direct
+images of WFSS programs, nothing dispersed) cover NIS and NISRAPID, 7
+to 20 groups, one with 6 integrations.
+
+Defaults changed (`StreamCleanStep`): `background_method='median'`
+(was `integration_model`, the box model the measurements had not
+recommended since Omega Cen), `apply_flat_field=True` (an exposure
+without a flat reference, such as a dark, is cleaned in raw DN with a
+log line). `ResetRampFitStep` with neither `reset_calib` nor `sigma_b`
+now uses a table packaged with snowblind,
+`src/snowblind/data/reset_calib_defaults.json`, written by
+`scripts/package_reset_defaults.py` from the calibration directory:
+per detector the median sigma_b, t1_scale and reset offset (detector-wide
+and per channel), t1_seconds and the provenance; the pedestal maps stay
+in the ASDF files (`use_pedestal_mean` and `per_pixel_sigma_b` need the
+file). With `save_results` the step writes `_rate` and `_rateints`
+itself, since stpipe would give a two-model result indexed names.
+
+Pipeline recipe (README and write-up "Running the steps"), verified end
+to end on `jw03383060001_07201_00002_nis` (results/2026-10-26_niriss_strun_v2):
+
+    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs \
+        --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.jump.save_results=True \
+        --steps.clean_flicker_noise.skip=True
+    strun reset_rampfit jw..._jump.fits --output_dir=reset
+
+Two things the first attempt taught: a one-element `post_hooks` needs
+the trailing comma (a bare string is "of the wrong type"), and the
+NIRISS `pars-detector1pipeline` reference turns `clean_flicker_noise`
+ON, so without the skip the pipeline cleaned our cleaned ramp a second
+time with its median (the saved `_jump` is taken before that step, so
+the reset products were unaffected). stpipe post-hook results replace
+the step result, so the saved `_jump` is the cleaned ramp. A hook's own
+log messages did not appear in the pipeline log: stpipe configures
+handlers for the loggers the TOP-LEVEL class names, and jwst's pipeline
+does not name ours. `snowblind.step.Step.run` now lends the `snowblind`
+logger the handlers (and level) of the `stpipe` logger for the duration
+of the run; standalone it is a no-op (the handlers are there already).
+Two tests in test_step.py.
+
+Spike mask on NIRISS: `saturated_stars` first took the thin network of
+bad pixels that the chisel mask joins across the frame (a 26k px region
+filling 1 percent of its box, with an 8761 px NaN cluster spanning
+2040 x 2040) and two masked bad-column strips as stars. A star's core
+must now be compact: the largest saturated cluster at least 16 px and
+filling at least 0.3 of its own bounding box (`min_core`, `core_fill`).
+Stars found: NRCB2 1, NRCBLONG 2, CEERS 0, NRCA1 2 (unchanged), NIRISS
+jw03807 1 (the 1500 DN/s star), jw01571 0.
+
+NIRISS first-read timing (`scripts/exp_reset_field.py`): jw04681
+(NISRAPID, 20 groups) has too few bright pixels (3229 in 50-800 DN,
+per-channel fits 0.45-0.86: noise). jw03807 (NISRAPID, 8 groups, 118
+sources) gives the two-parameter fit k = 0.950, b = -2.3 DN (bright),
+faint-pixel b = +5.4 DN, 4 bins, 4373 pixels; per channel 1.00, 0.95,
+0.98, 0.98 from 2-3 bins each. Written into the NIRISS calibration
+(`update_timing`, detector-wide k for every channel, t1_seconds 10.737,
+history entry) and repackaged. A 0.05 shortfall at t1 = 10.7 s is a
+0.53 s delay, close to NIRCam's. The NIS exposure (t1 = 26.8 s) gets
+k = 0.980 from the delay model; its own fit says 0.98-1.06 per channel.
+The sky-anchored offsets come out +5.4 to +6.8 DN on every NIRISS field
+exposure against the darks' 0: the epoch drift again.
+
+NIRISS field results (`results/2026-10-26_niriss_field_v2/`, median
+background, flat applied, calibration with the new timing; 
+`compare_backgrounds --flat`, `compare_field_photometry`):
+
+| exposure | chain | row-mean | col-mean | sky % | LS % |
+|---|---|---|---|---|---|
+| jw03807 NISRAPID 8 gr, sky 0.58 | SIRS | 0.0165 | 0.0384 | | |
+| | jwst median | 0.0147 | 0.0117 | -0.00 | 3.09 |
+| | stream clean | 0.0022 | 0.0039 | -0.17 | 3.78 |
+| | stream clean + reset fit | 0.0021 | 0.0037 | -0.59 | 3.68 |
+| jw01571 NIS 7 gr, sky 1.38 | SIRS | 0.0045 | 0.0066 | | |
+| | jwst median | 0.0046 | 0.0024 | +0.04 | 0.12 |
+| | stream clean | 0.0006 | 0.0009 | -0.07 | 0.40 |
+| | stream clean + reset fit | 0.0006 | 0.0009 | -0.06 | 0.41 |
+
+NIRISS carries much stronger column structure than NIRCam (SIRS
+column-mean scatter 0.038 DN/s on jw03807, visible as vertical bands in
+the figure); the stream clean removes it to 0.0039 (jwst median
+0.0117). Photometry on jw03807, complete apertures, 75 sources: every
+chain within 0.5 percent of SIRS in every quartile (reset fit 0.9966,
+1.0020, 1.0004, 1.0002).
+
+Photometry on jw01571 (NIS) looked alarming at first: the reset fit's
+quartiles 1.14-1.61 with scatter 0.3-0.7. Three causes, in order found:
+(1) `compare_field_photometry` summed apertures with NaN pixels as
+zero, so for a saturating star whose core OLS_C leaves without a rate
+and the reset fit fills (2197 recovered pixels on this exposure, core
+values 170-465 DN/s consistent with each pixel's first difference) the
+"ratio" measured the missing core; the script now takes complete
+apertures only. (2) With that, 16 sources remained, the brightest, and
+their quartiles were still 1.09-1.61: small numbers. (3) The controlled
+comparison (`results/2026-10-26_niriss_recovered_jw01571/chain_matrix.npz`:
+the same ramp fitted raw and cleaned with OLS_C, stcal LIKELY and the
+reset fit, 115 sources complete in all six) gives, relative to raw
+OLS_C: cleaned OLS 1.001, LIKELY 1.008-1.009, reset fit 1.013-1.014
+(mad 0.02-0.03), the same on the raw and the cleaned ramp. So the
+reset fit sits 1.3 percent above OLS_C here, 0.8 of it the likelihood
+fitter itself and 0.5 the reset point. Per pixel at 5-50 DN/s, LIKELY
+and the reset fit have an upper tail of +5 to +7 percent at the 84th
+percentile against OLS_C, present for unflagged pixels too (n = 347),
+and the brightest pixels (50-200 DN/s, 3-5 of 7 groups flagged by the
+jump step and charge migration, values in the 2 and 4 flags) differ by
+up to 17 percent either way: on ramps where most groups are flagged
+OLS_C and the likelihood fit weigh the few remaining differences
+differently and neither has a claim to the truth. This is the
+LIKELY-vs-OLS_C observation of the CEERS section again, larger on NIS
+7-group data with charge-migration flags, and one for the stcal
+developers; the reset point adds half a percent to it. On the NISRAPID
+exposure the same comparison is within 0.2 percent.
+
+Open: a dispersed exposure (its smooth dispersed background would need
+the box model or a scene model; the direct images here are not that),
+and the extended-emission field. (NIRISS never has a zeroframe, James
+notes: NISRAPID is one frame per group and NIS averages four frames
+without a separate first frame; the zeroframe is a NIRCam product for
+NFRAMES > 1.)
+
+### 2026-10-26 (later): the occulting spots, the flat's DQ, spikes on both axes, ASDF defaults
+
+James, from the NIRISS figure: the four occulting spots are not dealt
+with, the largest raises the stream clean's estimate around it; are
+we using the DO_NOT_USE flags from dq_init at all? And: NIRISS has its
+PSF spikes along the 1/f direction, not the column correction, unlike
+NIRCam. Also: package the defaults as ASDF rather than JSON, like a
+future CRDS reference. And a request for the total noise against
+number of groups on linear axes, as the jdocs detector pages do it.
+
+DQ use, as it was: the draft rate's DO_NOT_USE pixels become NaN and
+are masked (and the pixeldq in the extra passes), and each group
+difference drops DO_NOT_USE, JUMP_DET and SATURATED groups through the
+jwst `_mask_unusable` helper. The spots, measured on jw03807: two dark
+blobs of 581 and 320 px at (1885,1060) and (1862,749) at 0.07 and 0.04
+DN/s against a 0.58 sky, with DQ 'none' in the mask reference, the
+PIXELDQ and the rate DQ (no NON_SCIENCE anywhere in the frame), and 7
+and 0 percent of them in the scene mask. Before writing a detector for
+dark regions (a sign-flipped chisel pass; written, measured, dropped),
+James asked for the other DQ to be checked: the FLAT reference marks
+them DO_NOT_USE with a flat value of 0.0. The jwst `read_flat_file`
+helper we use replaces zeros and NaNs in the flat by a smoothed local
+value on purpose, so that dividing by the flat is harmless there, and
+our `flat_ok` test never saw them. Effect, change against SIRS around
+the big spot in units of the sky: +0.085 (0-8 px), +0.074 (8-15),
++0.040 (15-25), -0.007 (25-40), -0.025 (40-80, the general level); the
+stream filter read the 88 percent deficit as negative slow noise and
+raised the cleaned values at and around the spot.
+
+Fix: `unusable_in_flat(model, flat_filename)` reads the flat's own DQ
+and data and the step keeps DO_NOT_USE, zero and NaN flat pixels out
+of the background mask (first pass and extra passes; the saved mask
+shows it). Rerun (`results/2026-10-26_niriss_field_v3/`): the spots
+are masked entirely, the 8-15 px ring goes from +0.074 to +0.004 and
+the rings beyond sit at the general level (-0.03 to -0.04); sky
+statistics and photometry unchanged to the last digit. Tests: the
+helper on a flat with a DO_NOT_USE block and a zero block, and the
+step with an override flat writing a mask that excludes the block.
+Side effect of the flat default: `get_reference_file` RAISES
+CrdsLookupError on an exposure type without a flat (a dark), in the
+prefetch too, which took every dark experiment down; the step now
+fetches the flat in `process`, treats a CRDS miss as no flat, and sets
+`prefetch_references = False`.
+
+Spikes on both axes: `spike_mask` walks each star's row as well as its
+column (the same walker on transposed views; `axes` option). For
+NIRCam the column spike is the one that biases the per-column offsets;
+for NIRISS, which reads out along science columns, the column spike
+lies along the stream (where the Wiener estimate would dig a local
+trough through it) and the row spike is the one the column offsets see.
+Cost on NIRCam frames: none measurable (no horizontal spikes).
+
+The defaults are now one ASDF file per detector,
+`src/snowblind/data/reset_calib_<detector>.asdf` (James: so that one
+detector can be updated alone, and NIRSpec is two more files), each
+with a history entry naming its source calibration file; the JSON and
+the single table are gone.
+
+Memory: running two 100-group dark experiments and the NIRISS panel
+chain at once exhausted the laptop's 18 GB and crashed it. One heavy
+job at a time from now on; the dark runs for the linear noise figure
+(`results/2026-10-26_darks_vs_ngroups/`, NIS and NRCA1, n = 3 to 100,
+variants sirs, sirs_jwst_median, sirs_wiener_none) run sequentially.
+
+Noise against ramp length, both detectors, one integration, no
+background model (the dark setting), pixel scatter of the OLS_C rate in
+DN/s (`results/2026-10-26_darks_vs_ngroups/n*/{NIS,NRCA1}/summary.json`):
+
+| groups | NIS SIRS | NIS jwst median | NIS stream | NRCA1 SIRS | NRCA1 jwst median | NRCA1 stream |
+|---|---|---|---|---|---|---|
+| 3 | 0.4655 | 0.4417 | 0.4134 | 0.3486 | 0.3382 | 0.3284 |
+| 5 | 0.2120 | 0.2018 | 0.1878 | 0.1578 | 0.1535 | 0.1481 |
+| 10 | 0.0781 | 0.0753 | 0.0687 | 0.0558 | 0.0550 | 0.0526 |
+| 20 | 0.0298 | 0.0303 | 0.0270 | 0.0205 | 0.0213 | 0.0193 |
+| 50 | 0.0106 | 0.0121 | 0.0099 | 0.0059 | 0.0074 | 0.0056 |
+| 100 | 0.0060 | 0.0074 | 0.0058 | 0.0027 | 0.0042 | 0.0025 |
+
+The same picture on NIRISS as on NIRCam: the stream clean is below SIRS
+at every length (11 to 12 percent at 3 groups, 3 to 7 percent at 100),
+and the jwst median helps at short ramps and HURTS beyond 20 groups (24
+percent above SIRS at 100 groups on NIS, 55 on NRCA1), the random walk
+of per-difference medians along the ramp. `noise_vs_groups_linear.png`
+(scripts/make_figures.py `noise_vs_groups_linear`) shows it as total
+noise per integration in DN (rate scatter times integration time,
+10.74 s per group on both) on linear axes, the form of the jdocs
+detector pages, one panel per detector.

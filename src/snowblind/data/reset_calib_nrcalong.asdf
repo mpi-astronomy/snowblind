@@ -1,0 +1,46 @@
+#ASDF 1.0.0
+#ASDF_STANDARD 1.6.0
+%YAML 1.1
+%TAG ! tag:stsci.edu:asdf/
+--- !core/asdf-1.1.0
+asdf_library: !core/software-1.0.0 {author: The ASDF Developers, homepage: 'http://github.com/asdf-format/asdf',
+  name: asdf, version: 5.3.1}
+history:
+  entries:
+  - !core/history_entry-1.0.0
+    description: Scalar reset calibration of NRCALONG packaged from nrcalong_reset_calib.asdf
+    software: !core/software-1.0.0 {author: James E. Davies, homepage: 'https://github.com/mpi-astronomy/snowblind',
+      name: snowblind, version: 0.2.2.dev20+gca9293deb.d20261020}
+    time: 2026-10-26 10:24:42+00:00
+  extensions:
+  - !core/extension_metadata-1.0.0
+    extension_class: asdf.extension._manifest.ManifestExtension
+    extension_uri: asdf://asdf-format.org/core/extensions/core-1.6.0
+    manifest_software: !core/software-1.0.0 {name: asdf_standard, version: 1.5.0}
+    software: !core/software-1.0.0 {name: asdf, version: 5.3.1}
+description: Scalar reset calibration, used by ResetRampFitStep when no reset_calib
+  file is given
+detector: NRCALONG
+generated: '2026-10-26T10:24:42+00:00'
+n_integrations_max: 10
+provenance:
+  date: '2026-10-22T08:27:52+00:00'
+  input_files: [jw09022004001_02101_00001_nrcalong_uncal.fits]
+  jwst_version: 3.1.0.dev4+gc06c74de4
+  refpix_algorithm: sirs
+  snowblind_version: 0.2.2.dev20+gca9293deb.d20261020
+  stcal_version: 1.20.1.dev43+g83fb1ca2a
+  superbias: jwst_nircam_superbias_0443.fits
+read_noise_single_median: 4.778120040893555
+reset_offset: -0.8443036079406738
+reset_offset_channels: [-1.9508461952209473, -2.2165238857269287, 1.325667381286621,
+  -0.08679723739624023]
+sigma_b: 17.64012908935547
+source: nrcalong_reset_calib.asdf
+t1_scale: 0.9431897659438307
+t1_scale_channels: [0.9462916774960715, 0.9519018969265248, 0.935795957155094, 0.9433269183780034]
+t1_seconds: 10.73677
+timing_provenance: {b: median of R1 - k a t1 over sky pixels with first differences
+    below 50 DN, file: jw06154001001_02101_00004_nrcalong_uncal.fits, k: 'slope of
+    R1 - a t1 against a t1 over first differences of 50 to 2000 DN, no flags'}
+...

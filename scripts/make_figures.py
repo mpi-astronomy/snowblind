@@ -166,6 +166,8 @@ def first_read():
 
 
 NGROUPS_ROOT = "results/2026-10-21_darks_vs_ngroups"
+# the same experiment on an NRCA1 and a NIRISS dark with the no-background cleaning, for the linear-axes figure
+NGROUPS_LINEAR_ROOT = "results/2026-10-26_darks_vs_ngroups"
 RATE_PANELS = "results/2026-10-21_rate_images_v5/NRCA1"
 # the same panels on a NIRISS dark: (panel directory, label for the titles, suffix of the figure files)
 # jump step with min_jump_area 8 and expand_factor 2.5 (NRCA1) or 3 (NIRISS); plan section D, 2026-10-23
@@ -208,6 +210,45 @@ def noise_vs_groups():
     axes[0].legend(loc="upper right")
     fig.tight_layout()
     fig.savefig(os.path.join(OUT, "noise_vs_groups.png"), dpi=150)
+
+
+def noise_vs_groups_linear():
+    """Total noise per integration against ramp length on linear axes, NRCA1 and NIRISS, as the jdocs pages show it."""
+    import glob
+
+    # both darks are one frame per group, so the integration time is ngroups times the frame time
+    group_time = {"NRCA1": 10.73677, "NIS": 10.73677}
+    detectors = [("NRCA1", "NRCA1 dark (RAPID)"), ("NIS", "NIRISS dark (NISRAPID)")]
+    picks = [("sirs", "SIRS only", SERIES[0]), ("sirs_jwst_median", "SIRS + jwst median", SERIES[1]),
+             ("sirs_wiener_none", "SIRS + stream clean", SERIES[2])]
+    runs = {}
+    for detector, _ in detectors:
+        found = []
+        for path in sorted(glob.glob(os.path.join(NGROUPS_LINEAR_ROOT, "n*", detector, "summary.json"))):
+            record = json.load(open(path))
+            found.append((record["ngroups_used"], {v["variant"]: v for v in record["variants"]}))
+        found.sort()
+        if found:
+            runs[detector] = found
+    if not runs:
+        return
+    fig, axes = plt.subplots(1, len(runs), figsize=(5.5 * len(runs), 4.5), squeeze=False)
+    for ax, (detector, title) in zip(axes[0], [d for d in detectors if d[0] in runs]):
+        ngroups = np.array([n for n, _ in runs[detector]])
+        for name, label, color in picks:
+            if not all(name in table for _, table in runs[detector]):
+                continue
+            rate_sigma = np.array([table[name]["rate_robust_sigma"] for _, table in runs[detector]])
+            values = rate_sigma * ngroups * group_time[detector]
+            ax.plot(ngroups, values, color=color, marker="o", markersize=5, label=label)
+        ax.set_xlabel("number of groups")
+        ax.set_ylabel("total noise per integration (DN)")
+        ax.set_xlim(0, ngroups[-1] * 1.05)
+        ax.set_ylim(0, None)
+        ax.set_title(title, loc="left")
+    axes[0, 0].legend(loc="upper right")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT, "noise_vs_groups_linear.png"), dpi=150)
 
 
 def dark_rate_images(panels_dir=RATE_PANELS, label="NRCA1 dark", suffix=""):
@@ -320,6 +361,8 @@ FIELD_PANEL_SETS = [
     ("results/2026-10-23_coarse_mask/jw05105014018_08101_00001_nrca1", "NRCA1", "NEXUS", "nexus_nrca1",
      "median, flat applied", True),
     ("results/2026-10-23_spike_mask/jw09263005003_03201_00001_nrcblong", "NRCBLONG", "NEXUS", "nexus_nrcblong",
+     "median, flat applied", True),
+    ("results/2026-10-26_niriss_field_v3/jw03807002001_07101_00001_nis", "NIS", "NIRISS F200W", "niriss_f200w",
      "median, flat applied", True),
 ]
 
@@ -450,6 +493,7 @@ if __name__ == "__main__":
     flux_bias()
     first_read()
     noise_vs_groups()
+    noise_vs_groups_linear()
     for panels_dir, label, suffix in DARK_PANEL_SETS:
         dark_rate_images(panels_dir, label, suffix)
         dark_rate_images_full(panels_dir, label, suffix)

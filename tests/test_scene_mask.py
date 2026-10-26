@@ -209,3 +209,20 @@ def test_saturated_stars_with_zero_border_still_finds_the_star():
     stars = saturated_stars(mask, finite, border=0)
 
     assert len(stars) == 1
+
+
+def test_spike_mask_follows_a_row_spike_too():
+    """spike_mask on a saturated star with a horizontal spike of 0.1 sky masks the spike where the star mask stopped."""
+    from snowblind.scene_mask import spike_mask
+
+    rng = np.random.default_rng(43)
+    rate = rng.normal(1.0, 0.05, (512, 512))
+    rate[254:259, 20:406] += 0.1  # a horizontal spike through the star
+    rate[250:263, 250:263] = np.nan  # the saturated core
+    core = star_shaped_mask((512, 512), 256, 256)  # the arm ends at column 106
+
+    masked, nstars = spike_mask(rate, core)
+
+    assert nstars == 1
+    assert (~masked[256, 64:106]).mean() > 0.9
+    assert masked[300, 64:106].mean() > 0.95

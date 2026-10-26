@@ -607,6 +607,75 @@ def update_timing(
         handle.update()
 
 
+DEFAULTS_PATTERN = "reset_calib_{detector}.asdf"
+
+
+def default_calibration(detector):
+    """The packaged scalar reset calibration of a detector, shaped like a calibration tree without the maps.
+
+    ``snowblind/data/reset_calib_<detector>.asdf``, one file per detector
+    (the ten NIRCam detectors and NIRISS), holds the median reset scatter
+    ``sigma_b``, the first-read scale and reset offset (detector-wide and
+    per output channel), the first-group time the timing was measured at
+    and the provenance of the dark and field exposures
+    (``scripts/package_reset_defaults.py`` writes them from a directory of
+    calibration files, and one detector can be updated alone).
+    `ResetRampFitStep` falls back on the detector's file when it is given
+    neither ``reset_calib`` nor ``sigma_b``.
+
+    Parameters
+    ----------
+    detector : str
+        Detector name as in ``meta.instrument.detector``, e.g. ``NRCA1``;
+        case does not matter.
+
+    Returns
+    -------
+    dict
+        The entry with the keys `read_calibration` returns for scalars
+        (``detector``, ``sigma_b``, ``sigma_b_median``, ``t1_scale``,
+        ``reset_offset``, ``t1_scale_channels``, ``reset_offset_channels``,
+        ``t1_seconds``, ``provenance``, ``timing_provenance``) plus the
+        file's ``source`` and ``generated``; no pedestal maps.
+
+    Raises
+    ------
+    ValueError
+        If the package has no file for the detector.
+    """
+    from importlib.resources import files
+
+    key = str(detector).upper()
+    data_dir = files("snowblind").joinpath("data")
+    path = data_dir.joinpath(DEFAULTS_PATTERN.format(detector=key.lower()))
+    if not path.is_file():
+        available = sorted(
+            entry.name[len("reset_calib_"):-len(".asdf")].upper()
+            for entry in data_dir.iterdir()
+            if entry.name.startswith("reset_calib_") and entry.name.endswith(".asdf")
+        )
+        raise ValueError(
+            f"No packaged reset calibration for detector {detector!r} (available: {', '.join(available)}); "
+            "measure one with snowblind-reset-calib and pass it as reset_calib"
+        )
+    with asdf.open(str(path), lazy_load=False, memmap=False) as handle:
+        entry = {k: v for k, v in handle.tree.items() if k not in ("asdf_library", "history")}
+    return {
+        "detector": key,
+        "sigma_b": entry["sigma_b"],
+        "sigma_b_median": entry["sigma_b"],
+        "t1_scale": entry["t1_scale"],
+        "reset_offset": entry["reset_offset"],
+        "t1_scale_channels": entry["t1_scale_channels"],
+        "reset_offset_channels": entry["reset_offset_channels"],
+        "t1_seconds": entry["t1_seconds"],
+        "provenance": entry["provenance"],
+        "timing_provenance": entry["timing_provenance"],
+        "source": entry["source"],
+        "generated": entry["generated"],
+    }
+
+
 def read_calibration(path):
     """Return the tree of a calibration ASDF file as a plain dict with arrays loaded.
 
