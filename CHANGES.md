@@ -57,6 +57,10 @@ its GitHub release.
 - A `scene_model` given to `StreamCleanStep` is handled in the flat's
   units when a flat is in use.
 - `snowblind-reset-calib` refuses darks with different frames per group.
+- `StreamCleanStep` warns when the unmasked background under a scalar
+  median has large-scale structure (a galaxy across the frame, a dispersed
+  background), which that background would hand to the noise estimate,
+  and names the box model.
 - `StreamCleanStep` keeps the pixels the flat reference marks DO_NOT_USE
   (or leaves at zero) out of the background: the jwst flat reader smooths
   over them, but the data under them, such as the NIRISS occulting spots,

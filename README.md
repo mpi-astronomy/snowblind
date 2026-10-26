@@ -189,8 +189,12 @@ The file also carries the detector's mean reset-level map, which
 file to `stream_clean --reset_calib=...` so that the first read is cleaned
 against the same prior.  On dark exposures set
 `--steps.stream_clean.background_method=None`; for fields with extended
-emission larger than a few hundred pixels, `integration_model` keeps that
-structure out of the noise estimate.
+emission larger than a few hundred pixels, `integration_model` (a box
+model) keeps that structure out of the noise estimate at the cost of the
+1/f slower than its box, and the step warns when the unmasked background
+under the median has that much structure.  In one exposure, extended
+emission and slow 1/f cannot be told apart; a scene model from the other
+dithers (`scene_model`) is the way to do better.
 
 Both steps build on published work:
 - the SIRS reference-pixel correction ([Rauscher, Fixsen and Mosby 2022, JATIS 8, 028002](https://arxiv.org/abs/2602.02253))

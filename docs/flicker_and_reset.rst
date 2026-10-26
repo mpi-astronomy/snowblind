@@ -919,6 +919,36 @@ and the reset fit fills them, 2197 pixels here with values consistent
 with each pixel's first difference. Apertures with a missing pixel in
 any chain are now left out.)
 
+Crowded fields and extended emission
+------------------------------------
+
+The 1/f workshop test set adds two crowded LMC fields, a sparse MEDIUM8
+field and an exposure of NGC 1566 that fills half the frame. On the
+crowded fields a quarter of the frame is masked and the unmasked pixels
+still carry star wings, so the tiled sky on 32-pixel tiles ranges from
+0.6 to 1.4 of its median; the stream clean removes the banding (NIRCam
+0.020 to 0.002 DN/s on rows, NIRISS 0.097 to 0.010 on columns), lowers
+the sky by 1 and 3 percent, and leaves photometry within 0.2 percent of
+SIRS in every quartile. The jwst median lowers the NIRISS LMC sky by 14
+percent, its clipped-median background on a crowded field.
+
+.. figure:: figures/field_rate_images_ngc1566_nrcb2_full.jpg
+   :width: 100%
+
+   NGC 1566 on NRCB2, BRIGHT1, 3 groups, flat-fielded, full frame binned
+   2 by 2, the stream clean with the 32-pixel box background. The galaxy
+   fills the left half of the frame and its disk is not source to any
+   mask; under the scalar median the stream clean removes the disk's
+   gradient (30 percent of the sky either side) and the jwst row medians
+   do the same in stripes. In the galaxy-free right third the box model
+   leaves the sky unchanged to 0.1 percent and removes 28 percent of the
+   row structure; a 128-pixel box removes 57 percent for 0.8 percent of
+   bias, and 256 pixels 60 percent for 4. In one exposure, extended
+   emission and slow 1/f are the same thing to any estimator: the box
+   model is the safe choice, a scene model from the other dithers the
+   way to do better, and the step now warns when the unmasked background
+   under the median carries that much structure.
+
 What this builds on
 -------------------
 

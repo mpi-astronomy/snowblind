@@ -36,7 +36,7 @@ from .noise_spectrum import (
     taper_high_frequencies,
     wiener_gain,
 )
-from .scene_mask import chisel_mask, spike_mask
+from .scene_mask import chisel_mask, spike_mask, tiled_sky
 from .stream_filters import FILTERS, boxcar_noise, row_median_noise, wiener_noise
 
 __all__ = [
@@ -411,6 +411,15 @@ class StreamCleanStep(Step):
             if hasattr(image_model, "dq") and image_model.dq is not None:
                 rate[(image_model.dq & dqflags.pixel["DO_NOT_USE"]) > 0] = np.nan
             background_mask = self._chisel_scene_mask(rate, self._scene_flat)
+            if self.background_method == "median" and self._scene is None:
+                low, high = background_structure(rate, background_mask)
+                if high - low > 0.5:
+                    # a galaxy across the frame, a dispersed background, or heavy crowding; flat sky fields sit within 0.15
+                    log.warning(
+                        f"The unmasked background has large-scale structure: its 32-pixel tiled sky runs from {low:.2f} to "
+                        f"{high:.2f} times the median.  A scalar median background hands that structure to the noise "
+                        "estimate, which removes it; for extended emission use background_method='integration_model'"
+                    )
             mask_model = make_intermediate_model(image_model, background_mask) if self.save_mask else None
         else:
             background_mask, mask_model = make_scene_mask(
@@ -455,6 +464,46 @@ def unusable_in_flat(model, flat_filename):
         data = np.asarray(flat_model.data, dtype=np.float64)
         dq = np.asarray(flat_model.dq)
     return ((dq & dqflags.pixel["DO_NOT_USE"]) > 0) | ~np.isfinite(data) | (data <= 0)
+
+
+def background_structure(rate, background_mask, box=32, percentiles=(1.0, 99.0)):
+    """How much large-scale structure the unmasked background holds, as a range relative to its median.
+
+    A scalar median background assumes the background is flat.  Extended
+    emission that the scene mask does not cover, such as a galaxy filling
+    half the frame, is a gradient of tens of percent of the sky, and under
+    a scalar background the stream filter removes it as slow noise.  The
+    tiled sky of the masked rate on ``box``-pixel tiles, away from the
+    reference border, measures that structure.
+
+    Parameters
+    ----------
+    rate : ndarray, shape (nrows, ncols)
+        Draft rate image in DN/s, NaN where unusable.
+    background_mask : ndarray of bool, shape (nrows, ncols)
+        True for background pixels.
+    box : int
+        Tile size in pixels of the sky model.
+    percentiles : tuple of float
+        The low and high percentiles of the tiled sky that bound the range.
+
+    Returns
+    -------
+    low : float
+        The low percentile of the tiled sky divided by its median.
+    high : float
+        The high percentile of the tiled sky divided by its median.
+    """
+    sky = tiled_sky(rate, background_mask, box)
+    inner = sky[readout.NREFPIX:-readout.NREFPIX, readout.NREFPIX:-readout.NREFPIX]
+    inner = inner[np.isfinite(inner)]
+    if inner.size == 0:
+        return 1.0, 1.0
+    level = float(np.median(inner))
+    if not np.isfinite(level) or level == 0.0:
+        return 1.0, 1.0
+    low, high = np.percentile(inner, percentiles)
+    return float(low / level), float(high / level)
 
 
 def read_scene_model(path, shape):

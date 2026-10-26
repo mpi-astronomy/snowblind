@@ -3042,6 +3042,70 @@ groups, NIS NISRAPID 5 groups, and NRCB2 BRIGHT1 3 groups on NGC 1566
 with extended emission) is the next test set; the NRCB2 exposure is the
 extended-emission case the plan has wanted.
 
+### 2026-10-26 (late): the workshop set, crowded fields and extended emission
+
+All four non-NIRSpec workshop exposures through `make_field_panels`
+(defaults: median background, flat applied; NGC 1566 also with the box
+models), `compare_backgrounds --flat` and `compare_field_photometry`
+(`results/2026-10-26_workshop/`, NGC 1566 rerun with box32 first in
+`results/2026-10-26_workshop_ngc1566/`):
+
+| exposure | masked | SIRS rows / cols | jwst median | stream clean (median) | sky change | photometry |
+|---|---|---|---|---|---|---|
+| NRCA1 F070W BRIGHT1 5 gr, LMC, 2472 sources | 19.5% | 0.0195 / 0.0085 | 0.0066 / 0.0085 | 0.0020 / 0.0014 | -1.0% (jwst +0.0) | within 0.15% |
+| NRCA3 F150W MEDIUM8 5 gr, sparse | 8.5% | 0.0015 / 0.0011 | 0.0006 / 0.0011 | 0.0002 / 0.0001 | -0.2% | within 0.3% |
+| NIS F200W NISRAPID 5 gr, LMC, 7876 sources | 26.1% | 0.058 / 0.097 | 0.058 / 0.056 | 0.0099 / 0.0101 | -2.7% (jwst -13.9%) | within 0.2% |
+| NRCB2 F200W BRIGHT1 3 gr, NGC 1566 | 11.9% | 0.142 / 0.544 | 0.122 / 0.542 | 0.031 / 0.015 | -8.0%, LS 53% | see below |
+
+The two LMC fields are the crowding limit: a quarter of the frame
+masked, the unmasked pixels still carrying star wings, so the tiled sky
+on 32 px tiles ranges 0.6-1.4 of the median; the stream clean lowers the
+sky by 1 (NRCam) and 2.7 percent (NIRISS) and the large-scale change is
+8-16 percent, while photometry is unchanged to 0.2 percent. The jwst
+median lowers the NIRISS LMC sky by 14 percent: its clipped-median
+background on a crowded field. The sparse MEDIUM8 field is the usual
+picture, 7x on rows and 10x on columns below SIRS.
+
+NGC 1566 fills the left half of the frame; the chisel mask covers the
+core (12 percent of the frame) and the disk stays unmasked, the 32 px
+tiled sky running from 0.18 to 3.4 of the median. Under the scalar
+median the stream clean removes the disk's gradient (change map: -30
+percent on the left, +30 on the right; LS 53 percent of the sky, sky
+-8 percent), and the jwst row medians do the same in horizontal
+stripes of +-30 percent. In the galaxy-free right third (columns
+1500-2040, masked sky pixels; the galaxy's outer light still gives SIRS
+0.084 / 0.067 DN/s there):
+
+| chain | rows | cols | median change |
+|---|---|---|---|
+| SIRS | 0.084 | 0.067 | 0 |
+| jwst median | 0.063 | 0.069 | -0.031 sky |
+| stream box32 | 0.061 | 0.069 | +0.001 sky |
+| stream box128 | 0.036 | 0.063 | +0.008 sky |
+| stream box256 | 0.034 | 0.015 | +0.040 sky |
+| stream median | 0.009 | 0.003 | +0.574 sky |
+
+The box model keeps the galaxy and gives back the 1/f slower than its
+box: box 32 is unbiased (+0.1 percent) and removes 28 percent of the
+row structure in the sky region, box 128 removes 57 percent for 0.8
+percent of bias, box 256 removes 60 percent of rows and most of the
+columns for 4 percent. Photometry of the 13 bright sources: box 32 and
+box 256 at -0.3 to -0.5 percent, jwst -0.1, the reset fit +0.3 to +0.9
+(a 3-group BRIGHT1 ramp leans on the first read; NRCB2's k is 0.88, the
+lowest of the ten, and the direction is consistent with k slightly too
+low; noted, not pursued). Conclusion as before, now measured: in one
+exposure, extended emission and slow 1/f are the same thing to any
+estimator; the box model (``integration_model``, box 32) is the safe
+default for such a field and a scene model from the other dithers the
+way to do better. New: the step measures the structure of the unmasked
+background (`background_structure`: the 32 px tiled sky's 1st-99th
+percentile range over its median) when the background is the scalar
+median, and warns above 0.5 (NGC 1566 3.2, WFSS 0.7, the LMC fields
+0.6-0.8; CEERS, NEXUS and the MEDIUM8 field 0.1-0.15), naming the box
+model. The figure set gets the NGC 1566 panels with the box-32 clean,
+and the field figures now label the stream clean's background from
+`panels.json` rather than assuming the median.
+
 Citation: README gets a "Citing snowblind" section at the top with the
 concept DOI and a BibTeX entry; CITATION.cff's author becomes a
 family-names/given-names person entry (GitHub's own examples use that

@@ -557,7 +557,8 @@ def star_anchored_scales(model, base_level, blocks, use_zeroframe, min_bright=50
     resultant : tuple or None
         The output of `_first_resultant` for ``model``, when the caller has it
         already; None computes it here.
-\1        Fewer bright pixels than this in a channel keeps its fallback scale.
+    min_bright : int
+        Fewer bright pixels than this in a channel keeps its fallback scale.
     fallback : sequence of float or None
         Scale per channel to keep when the fit is not possible; None means
         1.0 everywhere.
@@ -641,7 +642,8 @@ def sky_anchored_offsets(
     resultant : tuple or None
         The output of `_first_resultant` for ``model``, when the caller has it
         already; None computes it here.
-\1        Fewer sky pixels than this in a channel keeps its fallback offset.
+    min_pixels : int
+        Fewer sky pixels than this in a channel keeps its fallback offset.
     fallback : sequence of float or None
         Offset per channel in DN to keep when there are too few sky pixels;
         None means 0.0 everywhere.

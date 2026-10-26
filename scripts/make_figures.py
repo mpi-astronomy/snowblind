@@ -364,17 +364,24 @@ FIELD_PANEL_SETS = [
      "median, flat applied", True),
     ("results/2026-10-26_niriss_field_v3/jw03807002001_07101_00001_nis", "NIS", "NIRISS F200W", "niriss_f200w",
      "median, flat applied", True),
+    ("results/2026-10-26_workshop_ngc1566/jw02107025001_02101_00001_nrcb2", "NRCB2", "NGC 1566 extended emission",
+     "ngc1566_nrcb2", "median, flat applied", True),
 ]
 
 
 def _field_panels(root, detector, jwst_label, flat_fielded=False):
     """Rate images, background mask and display parameters for one detector of the field panels."""
     folder = os.path.join(root, detector)
+    with open(os.path.join(folder, "panels.json")) as handle:
+        info = json.load(handle)
+    # the unsuffixed stream clean files hold the first background setting of the run
+    setting = (info.get("stream_clean_backgrounds") or ["median"])[0]
+    background_label = f"box background, {setting[3:]} px" if setting.startswith("box") else f"{setting} background"
     panels = [
         ("sirs_ols.npz", "SIRS refpix, no cleaning,\nOLS_C (pipeline default)"),
         ("sirs_jwst_usage_ols.npz", f"SIRS + jwst clean_flicker_noise\n({jwst_label}), OLS_C"),
-        ("sirs_stream_clean_ols.npz", "SIRS + snowblind stream_clean\n(median background), OLS_C"),
-        ("sirs_stream_clean_reset.npz", "SIRS + snowblind stream_clean\n(median background),\nsnowblind reset_rampfit"),
+        ("sirs_stream_clean_ols.npz", f"SIRS + snowblind stream_clean\n({background_label}), OLS_C"),
+        ("sirs_stream_clean_reset.npz", f"SIRS + snowblind stream_clean\n({background_label}),\nsnowblind reset_rampfit"),
     ]
     if os.path.exists(os.path.join(folder, "sirs_remstriping_ols.npz")):
         # CEERS: the team's remstriping on the SIRS rate takes the place of the reset-fit panel, which equals
@@ -385,8 +392,6 @@ def _field_panels(root, detector, jwst_label, flat_fielded=False):
         return None
     with datamodels.open(os.path.join(folder, "stream_clean_mask.fits")) as mask_model:
         background = mask_model.data.astype(bool)
-    with open(os.path.join(folder, "panels.json")) as handle:
-        info = json.load(handle)
     flat = 1.0
     if flat_fielded:
         from jwst.flatfield import FlatFieldStep

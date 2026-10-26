@@ -7,6 +7,7 @@ from stdatamodels.jwst.datamodels import dqflags
 
 from snowblind import StreamCleanStep, readout
 from snowblind.stream_clean import (
+    background_structure,
     clean_difference,
     clean_ramp,
     column_offset_pattern,
@@ -835,3 +836,24 @@ def test_step_keeps_flat_do_not_use_pixels_out_of_the_saved_mask(tmp_path):
     with datamodels.open(next(tmp_path.glob("*_mask.fits"))) as saved:
         assert not saved.data[20:30, 20:30].any()
         assert saved.data[40:50, 40:50].all()
+
+
+def test_background_structure_is_flat_for_flat_sky():
+    """background_structure on flat sky with noise returns a range within a few percent of one."""
+    rng = np.random.default_rng(21)
+    rate = rng.normal(1.0, 0.05, (256, 256))
+
+    low, high = background_structure(rate, np.ones((256, 256), dtype=bool))
+
+    assert 0.95 < low < 1.0 < high < 1.05
+
+
+def test_background_structure_sees_a_gradient():
+    """background_structure on sky that doubles from left to right returns a range of about 0.7 to 1.3."""
+    rng = np.random.default_rng(22)
+    rate = rng.normal(1.0, 0.02, (256, 256)) * np.linspace(1.0, 2.0, 256)[None, :]
+
+    low, high = background_structure(rate, np.ones((256, 256), dtype=bool))
+
+    assert low < 0.75
+    assert high > 1.25
