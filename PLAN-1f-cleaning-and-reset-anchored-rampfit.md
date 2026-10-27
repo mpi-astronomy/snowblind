@@ -3457,3 +3457,23 @@ usable group in any integration became NaN, which the scale fit already
 skips. Replaced by `mean_slope_per_group`, which sums the finite slopes
 and divides by their count under errstate, NaN where the count is zero;
 test with the warning turned into an error.
+
+### 2026-10-27 (afternoon): CI failed on CRDS
+
+Run 40515705526 on the fork: 18 tests died with "CRDS server connection
+and cache load FAILED" (crds calls sys.exit when the server is
+unreachable and the cache has no config). The workflow did set
+CRDS_PATH and CRDS_SERVER_URL; the STScI server was simply unreachable
+from the runner at 13:52 UTC. Reproduced locally with
+CRDS_SERVER_URL=https://127.0.0.1:9 and an empty cache: 50 tests fail,
+every one that goes through Step.call (the step-parameter reference
+lookup) and every jwst step that used a reference file, override or not
+(finalize_result asks for the CRDS context). Fix, keeping the rule that
+unit tests are CRDS-free: conftest.py has an autouse fixture that makes
+get_config_from_reference return an empty ConfigObj on every class of
+the snowblind Step's MRO and stubs stpipe.crds_client.get_context_used;
+the reset-fit tests' reference_files helper also writes a SuperBiasModel
+and every call passes override_superbias, since the step looks the
+superbias up for its warning. 286 pass with the server unreachable
+(and 12 s instead of 17). ci.yml no longer sets the CRDS environment,
+so a test that touches CRDS fails deterministically there.
