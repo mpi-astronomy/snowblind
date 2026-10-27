@@ -2,9 +2,11 @@ import logging
 
 import pytest
 from astropy.io import fits
+from stdatamodels.jwst import datamodels
 
+from snowblind import __version__
 from snowblind import JumpPlusStep, OpenPixelStep, PersistenceFlagStep, ResetRampFitStep, SnowblindStep, StreamCleanStep
-from snowblind.step import Step, _history
+from snowblind.step import Step, _history, carry_cal_step
 
 
 def test_step_names_the_snowblind_logger_after_the_jwst_ones():
@@ -31,7 +33,6 @@ def test_module_loggers_are_children_of_the_snowblind_logger():
 
 class LoggingStep(Step):
     """A step whose process logs one line through a snowblind module logger and returns its input."""
-
     class_alias = "logging_step"
     spec = """
     """
@@ -43,7 +44,6 @@ class LoggingStep(Step):
 
 class ListHandler(logging.Handler):
     """A handler that keeps the messages it receives."""
-
     def __init__(self):
         super().__init__()
         self.messages = []
@@ -104,9 +104,6 @@ def test_fits_keywords_are_distinct():
 
 def test_set_cal_step_adds_version_history_entry():
     """SnowblindStep.set_cal_step with COMPLETE adds one history entry with the snowblind version, even when called twice."""
-    from stdatamodels.jwst import datamodels
-    from snowblind import __version__
-
     model = datamodels.ImageModel((4, 4))
     step = SnowblindStep()
     step.set_cal_step(model, "COMPLETE")
@@ -117,9 +114,6 @@ def test_set_cal_step_adds_version_history_entry():
 
 def test_history_entry_is_in_fits_header_and_survives_reopen(tmp_path):
     """Saving a model after SnowblindStep.set_cal_step puts the entry in the FITS HISTORY cards and the reopened history."""
-    from stdatamodels.jwst import datamodels
-    from snowblind import __version__
-
     model = datamodels.ImageModel((4, 4))
     SnowblindStep().set_cal_step(model, "COMPLETE")
     model.save(tmp_path / "out.fits")
@@ -132,9 +126,6 @@ def test_history_entry_is_in_fits_header_and_survives_reopen(tmp_path):
 
 def test_carry_cal_step_copies_snowblind_history_only():
     """carry_cal_step from a model with a snowblind and an unrelated history entry copies only the snowblind one."""
-    from stdatamodels.jwst import datamodels
-    from snowblind.step import carry_cal_step
-
     source = datamodels.RampModel((1, 3, 4, 4))
     SnowblindStep().set_cal_step(source, "COMPLETE")
     source.add_history_entry("something else")

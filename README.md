@@ -203,7 +203,19 @@ CRDS background reference for the grism and filter, scales it once to the
 exposure on the masked background pixels, and subtracts it from every
 group difference before the noise fit, so the same fixed background
 applies to every difference and nothing random-walks along the ramp.  The
-ordinary pipeline recipe applies unchanged:
+NIRCam references are flat-fielded while the NIRISS ones carry the
+detector's pixel response, and neither the files nor their documentation
+say which; the step tells them apart from the pixel pattern (logged, with
+a warning when it is unclear, and `reference_units` to decide by hand) and
+multiplies a flat-fielded one by the flat first, so that the flat's
+large-scale structure is not read as noise.  It
+also turns the per-column offset correction (`column_offsets`) off, since
+on a dispersed exposure the traces run along the columns and their
+outskirts would bias each column's masked mean, a flux loss of a few to
+30 percent on faint traces when it was left on; and it notches the Wiener
+gain at the readout row period, where the unmasked wings of traces along
+the columns, at the same clock in every row, would otherwise pass as
+noise.  The ordinary pipeline recipe applies unchanged:
 
     strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.clean_flicker_noise.skip=True
 

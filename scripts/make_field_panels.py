@@ -31,7 +31,7 @@ from jwst.ramp_fitting import RampFitStep
 
 from snowblind import ResetRampFitStep, StreamCleanStep
 from snowblind.reset_calib import run_detector1_to_jump
-from snowblind.stream_clean import reference_scale
+from snowblind.stream_clean import reference_in_raw_units, reference_scale
 
 
 def save(out_dir, name, model):
@@ -133,9 +133,15 @@ def main():
         import crds
         from stdatamodels.jwst import datamodels as sdm
 
-        bkg_path = crds.getreferences(sirs.get_crds_parameters(), reftypes=["bkg"], observatory="jwst")["bkg"]
+        refs = crds.getreferences(sirs.get_crds_parameters(), reftypes=["bkg", "flat"], observatory="jwst")
+        bkg_path = refs["bkg"]
         with sdm.open(bkg_path) as bkg_model:
             bkg = np.array(bkg_model.data, dtype=np.float64)
+        with sdm.FlatModel(refs["flat"]) as flat_model:
+            flat = np.array(flat_model.data, dtype=np.float64)
+            flat[(flat_model.dq & 1) > 0] = np.nan
+        # the step's convention: a flat-fielded reference (NIRCam) goes into raw units before scaling
+        bkg, carries_flat = reference_in_raw_units(bkg, flat)
         with sdm.open(os.path.join(out_dir, "stream_clean_mask.fits")) as mask_model:
             mask = mask_model.data.astype(bool)
         rate_sirs = np.load(os.path.join(out_dir, "sirs_ols.npz"))["rate"].astype(np.float64)
@@ -143,7 +149,7 @@ def main():
         background_reference = os.path.basename(bkg_path)
         np.savez_compressed(
             os.path.join(out_dir, "scaled_background.npz"), scene=(background_scale * bkg).astype(np.float32),
-            scale=background_scale, reference=background_reference,
+            scale=background_scale, reference=background_reference, reference_carries_flat=carries_flat,
         )
 
     with open(os.path.join(out_dir, "panels.json"), "w") as handle:

@@ -12,6 +12,7 @@ import logging
 
 import numpy as np
 from crds.core.exceptions import CrdsError
+from scipy import ndimage
 from jwst import datamodels
 from jwst.lib.reffile_utils import get_subarray_model
 from .step import Step
@@ -32,6 +33,7 @@ from .noise_spectrum import (
     fit_power_law,
     power_law,
     smooth_spectrum,
+    notch_period as notch_gain_period,
     taper_high_frequencies,
     wiener_gain,
 )
@@ -98,6 +100,7 @@ class StreamCleanStep(Step):
         background_method = option('median', 'integration_model', 'exposure_model', 'crds_background', None, default='median')  # background removed before fitting: a scalar median suits sky-limited fields, integration_model (a box model) only extended structure above its box, None darks; crds_background (the scaled CRDS background reference) is the default on WFSS exposures
         background_box_size = int_list(min=2, max=2, default=None)  # box size of the box-spline background (integration_model, exposure_model); default 32 by 32
         apply_flat_field = boolean(default=True)  # measure the background on the flat-fielded difference (the sky times the response); without a flat reference the raw difference is used
+        reference_units = option('auto', 'raw', 'flat_fielded', default='auto')  # units of the CRDS background reference: raw (it carries the detector's pixel response, as the NIRISS files do), flat_fielded (as the NIRCam files are), or auto (decided from its pixel pattern against the flat)
         user_mask = string(default=None)  # path to a user-supplied background mask
         mask_dilation = integer(default=0)  # pixels by which to grow the masked (source) regions, for source wings
         mask_spikes = boolean(default=True)  # mask the column-aligned spikes of saturated stars along their extent (chisel mask only)
@@ -108,7 +111,7 @@ class StreamCleanStep(Step):
         min_density = float(default=0.2)  # local background fraction below which the estimate tapers off
         first_direction = integer(default=1)  # readout direction of channel 0 in the detector frame, 1 or -1
         even_odd_columns = boolean(default=True)  # remove the per-channel even-odd column offset of each difference
-        column_offsets = boolean(default=True)  # remove each column's masked mean from each difference (a per-column offset that drifts during the integration)
+        column_offsets = boolean(default=True)  # remove each column's masked mean from each difference (a per-column offset that drifts during the integration); turned off on WFSS exposures, where the traces run along the columns and would bias the means
         anchor_mean = boolean(default=True)  # set each channel's mean removed noise to the masked mean of the residual, so a robust estimator cannot bias the sky
         max_lag = integer(default=65536)  # autocorrelation length in pixel times for the noise spectrum; wiener only
         min_period = integer(default=300)  # pixel times (3 ms); the wiener gain is zero for shorter periods (None keeps all)
@@ -159,8 +162,9 @@ class StreamCleanStep(Step):
         grism = dispersion_along_stream(result)
         if grism is not None and not self.allow_dispersion_along_stream:
             log.warning(
-                f"{grism} disperses along the readout stream: a trace is a 100 to 200 clock feature there, with its "
-                "continuum shape and emission lines at the scales the Wiener gain passes, so the spectral shape of "
+                f"{grism} disperses along the readout stream: a trace is a feature of a few hundred (NIRISS) to over a "
+                "thousand (NIRCam) clocks there, with its continuum shape and emission lines at the scales the Wiener "
+                "gain passes, so the spectral shape of "
                 "faint traces and trace wings under the scene mask's threshold would be read as 1/f noise and removed; "
                 "skipping stream_clean (allow_dispersion_along_stream=True overrides, at that risk)"
             )
@@ -169,7 +173,30 @@ class StreamCleanStep(Step):
         if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES and self.background_method == "median":
             # the dispersed background is a smooth function of position that no scalar background can model
             self.background_method = "crds_background"
-            log.info("A WFSS exposure: background_method set to 'crds_background', the scaled CRDS background reference")
+            log.debug("WFSS exposure: background_method set to 'crds_background'")
+        if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES and self.column_offsets:
+            # the traces run along the axis the offsets are measured on, so each column's masked mean carries
+            # the outskirts of its detected traces and the whole of its undetected ones, a bias that would be
+            # removed from every trace in the column
+            self.column_offsets = False
+            log.debug("WFSS exposure: column_offsets turned off")
+        self._stripe_axes = (1, 0)
+        self._notch_period = None
+        if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES:
+            # the scene mask destripes the draft rate with row and column medians before detecting; a trace along
+            # more than half of a column (or row) would set that median and vanish, so only the stream's axis is used
+            self._stripe_axes = (1,) if abs(int(result.meta.subarray.fastaxis or 1)) == 1 else (0,)
+            # the unmasked wings and faint traces along the columns sit at the same clock in every readout row, a
+            # pattern at the row frequency that the Wiener gain would pass as noise; a narrow notch there removes it
+            det_shape = readout.to_detector_frame(
+                np.zeros(result.data.shape[-2:], dtype=np.uint8), result.meta.subarray.fastaxis, result.meta.subarray.slowaxis
+            ).shape
+            self._notch_period = float(readout.channel_width(det_shape[1]) + readout.LINE_OVERHEAD)
+            log.debug(f"WFSS exposure: the Wiener gain is notched at the readout row period of {self._notch_period:.0f} clocks")
+            log.info(
+                "A dispersed exposure: the background is the scaled CRDS background reference, and the traces along the "
+                "columns are kept out of the noise estimate (no per-column offsets, the readout row period notched)"
+            )
 
         flat = None
         flat_unusable = None
@@ -185,7 +212,7 @@ class StreamCleanStep(Step):
                 log.info(f"Using FLAT reference file {flat_filename}")
                 flat = read_flat_file(result, flat_filename)
                 flat_unusable = unusable_in_flat(result, flat_filename)
-                log.info(
+                log.debug(
                     f"The flat marks {100 * flat_unusable.mean():.2f} percent of pixels unusable; "
                     "they are kept out of the background"
                 )
@@ -236,7 +263,10 @@ class StreamCleanStep(Step):
         if self.mask_dilation > 0:
             background_mask = dilate_sources(background_mask, self.mask_dilation)
 
-        log.info(f"Cleaning {result.meta.filename} with fit_method={self.fit_method}")
+        log.info(
+            f"Cleaning {result.meta.filename} with "
+            + ("the Wiener filter along the readout stream" if self.fit_method == "wiener" else "row medians")
+        )
         cleaned, spectra = self._clean_with_mask(result, background_mask, flat)
 
         if self.save_spectra and spectra is not None:
@@ -297,7 +327,7 @@ class StreamCleanStep(Step):
                 result.meta.subarray.slowaxis,
                 science_superbias=result.meta.ref_file.superbias.name,
             )
-            log.info(f"First read cleaned against the reset prior of {self.reset_calib}")
+            log.info(f"The first read is cleaned against the reset level of {self.reset_calib}")
         scene_background = None
         if self._scene_flat is not None:
             # the scene in DN per group, in the units the backgrounds are in (flat-fielded when a flat is in use);
@@ -333,6 +363,7 @@ class StreamCleanStep(Step):
             min_density=self.min_density,
             max_lag=self.max_lag,
             min_period=self.min_period,
+            notch_period=self._notch_period,
             return_spectra=True,
             first_group_scale=first_group_time_ratio(result),
             even_odd_columns=self.even_odd_columns,
@@ -358,7 +389,9 @@ class StreamCleanStep(Step):
         background_mask : ndarray of bool, shape (nrows, ncols)
             True for background pixels.
         flat : ndarray or None, shape (nrows, ncols)
-            Flat field in use, or None; the scaled reference is divided by
+            Flat field in use, or None.  A flat-fielded reference (the
+            NIRCam ones) is multiplied by it first, through
+            `reference_in_raw_units`, and the scaled reference is divided by
             it for the flat-fielded paths.
         """
         data, groupdq = np.asarray(model.data), np.asarray(model.groupdq)
@@ -367,14 +400,31 @@ class StreamCleanStep(Step):
         mask = np.asarray(background_mask, dtype=bool)
         if mask.ndim == 3:
             mask = mask.all(axis=0)
-        scale = reference_scale(draft, self._reference, mask)
+        reference, carries_flat = reference_in_raw_units(self._reference, flat, self.reference_units)
+        if flat is not None:
+            if self.reference_units == "auto":
+                correlation = reference_flat_correlation(self._reference, flat)
+                log.debug(f"Pixel-scale structure of the background reference against the flat's: correlation {correlation:.2f}")
+                log.info(
+                    "The background reference carries the detector's pixel response and is used as it is" if carries_flat
+                    else "The background reference is flat-fielded; it is multiplied by the flat before scaling"
+                )
+                if not np.isfinite(correlation) or 0.3 <= correlation <= 0.7:
+                    log.warning(
+                        "That correlation does not settle whether the background reference is flat-fielded (the NIRISS "
+                        "files give 0.8 to 0.97 against their own flats, the NIRCam files 0); set reference_units to "
+                        "'raw' or 'flat_fielded' to decide"
+                    )
+            else:
+                log.info(f"The background reference is taken as {self.reference_units.replace('_', '-')} (reference_units)")
+        scale = reference_scale(draft, reference, mask)
         self._reference_scale = scale
-        self._scene = (scale * self._reference).astype(np.float64)
+        self._scene = (scale * reference).astype(np.float64)
         self._scene_flat = self._scene
         if flat is not None:
             with np.errstate(invalid="ignore", divide="ignore"):
                 self._scene_flat = np.where(np.isfinite(flat) & (flat > 0), self._scene / flat, np.nan)
-        log.info(f"Background reference scaled to this exposure once: {scale:.4f} DN/s at the reference's unit level")
+        log.info(f"Background reference scaled to this exposure by {scale:.4g} (one scale for every group difference)")
 
     def _chisel_scene_mask(self, rate, scene=None):
         """The chisel scene mask of a rate image, with the scene model and the spike mask applied.
@@ -398,13 +448,14 @@ class StreamCleanStep(Step):
         rate = np.array(rate, dtype=np.float64)
         if scene is not None:
             rate = rate - scene
-        background_mask = chisel_mask(rate)
+        background_mask = chisel_mask(rate, stripe_axes=getattr(self, "_stripe_axes", (1, 0)))
         if scene is not None:
             background_mask &= np.isfinite(scene)
-        log.info(f"Scene mask (chisel): {100 * (~background_mask).mean():.2f} percent of pixels masked")
+        log.debug(f"Scene mask (chisel): {100 * (~background_mask).mean():.2f} percent of pixels masked")
         if self.mask_spikes:
             background_mask, nstars = spike_mask(rate, background_mask)
-            log.info(f"Spike mask: {nstars} bright stars, {100 * (~background_mask).mean():.2f} percent of pixels masked")
+            log.debug(f"Spike mask: {nstars} bright stars, {100 * (~background_mask).mean():.2f} percent of pixels masked")
+            self._spike_stars = nstars
         return background_mask
 
     def _scene_mask(self, model, flat):
@@ -461,6 +512,11 @@ class StreamCleanStep(Step):
                         "estimate, which removes it; for extended emission use background_method='integration_model', "
                         "for a dispersed exposure 'crds_background'"
                     )
+            stars = getattr(self, "_spike_stars", 0)
+            log.info(
+                f"Background mask: {100 * (~background_mask).mean():.1f} percent of pixels are sources"
+                + (f", the diffraction spikes of {stars} bright star{'s' if stars != 1 else ''} among them" if stars else "")
+            )
             mask_model = make_intermediate_model(image_model, background_mask) if self.save_mask else None
         else:
             # the jwst helper reads the user's mask file; the sigma-clip arguments do not apply to a given mask
@@ -500,6 +556,112 @@ def unusable_in_flat(model, flat_filename):
         data = np.asarray(flat_model.data, dtype=np.float64)
         dq = np.asarray(flat_model.dq)
     return ((dq & dqflags.pixel["DO_NOT_USE"]) > 0) | ~np.isfinite(data) | (data <= 0)
+
+
+def reference_flat_correlation(reference, flat, size=15):
+    """Correlation of the pixel-scale structure of a background reference image with the flat field's.
+
+    The CRDS WFSS background references are not all in the same units:
+    the NIRISS ones are stacks of rate images and carry the detector's
+    pixel response, the NIRCam ones are flat-fielded and smooth, and
+    neither the files nor their documentation say which.  The pixel-scale
+    structure of each image (the image over its local mean on ``size``
+    pixels, minus one) tells them apart: its correlation with the flat's
+    is 0.8 to 0.97 for the NIRISS files against the flats CRDS selects for
+    them and within 0.03 of zero for the NIRCam files.
+
+    Parameters
+    ----------
+    reference : ndarray, shape (nrows, ncols)
+        Background reference image.
+    flat : ndarray, shape (nrows, ncols)
+        Flat field for the same detector and filter.
+    size : int
+        Side of the local mean, in pixels.
+
+    Returns
+    -------
+    float
+        Pearson correlation of the two structure images over the usable
+        pixels, or NaN when fewer than 10000 pixels are usable or either
+        image has no structure.
+    """
+    reference = np.asarray(reference, dtype=np.float64)
+    flat = np.asarray(flat, dtype=np.float64)
+    usable = np.isfinite(reference) & np.isfinite(flat) & (flat > 0.5)
+    usable &= reference > 0.2 * np.nanmedian(reference[usable]) if usable.any() else False
+    if usable.sum() < 10000:
+        return float("nan")
+    filled_ref = np.where(usable, reference, np.nanmedian(reference[usable]))
+    filled_flat = np.where(usable, flat, 1.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ref_structure = filled_ref / ndimage.uniform_filter(filled_ref, size) - 1.0
+        flat_structure = filled_flat / ndimage.uniform_filter(filled_flat, size) - 1.0
+    x, y = ref_structure[usable], flat_structure[usable]
+    if x.std() == 0 or y.std() == 0:
+        return float("nan")
+    return float(np.corrcoef(x, y)[0, 1])
+
+
+def reference_carries_flat(reference, flat, size=15, threshold=0.5):
+    """Whether a background reference image carries the flat field's pixel-to-pixel pattern.
+
+    Parameters
+    ----------
+    reference : ndarray, shape (nrows, ncols)
+        Background reference image.
+    flat : ndarray, shape (nrows, ncols)
+        Flat field for the same detector and filter.
+    size : int
+        Side of the local mean of `reference_flat_correlation`, in pixels.
+    threshold : float
+        Correlation above which the reference is taken to carry the flat.
+
+    Returns
+    -------
+    bool
+        True when `reference_flat_correlation` exceeds ``threshold``.
+    """
+    correlation = reference_flat_correlation(reference, flat, size)
+    return bool(np.isfinite(correlation) and correlation > threshold)
+
+
+def reference_in_raw_units(reference, flat, units="auto"):
+    """A background reference in the raw detector units of a group difference.
+
+    A reference that already carries the flat's pixel pattern is returned
+    as it is; a flat-fielded one is multiplied by the flat, so that the
+    sky it models has the response the raw differences have (where the
+    flat is not finite or not positive the reference is left as it is).
+
+    Parameters
+    ----------
+    reference : ndarray, shape (nrows, ncols)
+        Background reference image.
+    flat : ndarray or None, shape (nrows, ncols)
+        Flat field in use, or None, in which case the reference is
+        returned unchanged.
+    units : {'auto', 'raw', 'flat_fielded'}
+        What the reference is in: ``raw`` leaves it alone, ``flat_fielded``
+        multiplies it by the flat, ``auto`` decides with
+        `reference_carries_flat`.
+
+    Returns
+    -------
+    raw : ndarray of float64, shape (nrows, ncols)
+        The reference in raw units.
+    carries_flat : bool
+        Whether the reference carried the flat already (True also when no
+        flat is given, since nothing was done).
+    """
+    reference = np.asarray(reference, dtype=np.float64)
+    if flat is None or units == "raw":
+        return reference, True
+    if units == "auto" and reference_carries_flat(reference, flat):
+        return reference, True
+    flat = np.asarray(flat, dtype=np.float64)
+    gain = np.where(np.isfinite(flat) & (flat > 0), flat, 1.0)
+    return reference * gain, False
 
 
 def reference_scale(rate, reference, background_mask, floor=0.2, min_pixels=1000):
@@ -839,6 +1001,7 @@ def clean_ramp(
     return_spectra=False,
     first_group_scale=1.0,
     min_period=None,
+    notch_period=None,
     even_odd_columns=False,
     column_offsets=False,
     anchor_mean=False,
@@ -894,6 +1057,10 @@ def clean_ramp(
         ``wiener`` only: the gain is cut to zero for periods shorter than
         this many clocks, so that compact sources missed by the scene mask
         are not filtered.
+    notch_period : float or None
+        ``wiener`` only: period in clocks at which the gain is notched, the
+        readout row length on a dispersed exposure, where unmasked traces
+        along the columns repeat in every row; None for no notch.
     even_odd_columns : bool
         Remove each channel's even-odd column offset per difference (see
         `estimate_noise`).
@@ -965,6 +1132,7 @@ def clean_ramp(
             first_group_reference=first_group_reference,
             first_group_scale=first_group_scale,
             min_period=min_period,
+            notch_period=notch_period,
         )
         gains = [[(ch["freq"], ch["gain"]) for ch in integration] for integration in spectra]
         for i in range(nints):
@@ -972,8 +1140,10 @@ def clean_ramp(
                 f"ch{k}: alpha={ch['alpha']:.2f} W={ch['white']:.3g} corner={ch['corner_period']:.0f} clocks"
                 for k, ch in enumerate(spectra[i])
             )
-            log.info(f"Integration {i + 1} noise spectra: {summary}")
+            log.debug(f"Integration {i + 1} noise spectra: {summary}")
 
+    removed_power = [0.0] * nints
+    removed_count = [0] * nints
     for i, j, image, mask in iterate_differences(data, groupdq, background_mask, clean_first_group, first_group_reference):
         if j == 0:
             previous = np.zeros_like(image) if first_group_reference is None else first_group_reference
@@ -999,7 +1169,17 @@ def clean_ramp(
         if cleaned_image is None:
             log.warning(f"No usable data in integration {i + 1}, group {j + 1}; difference left as is")
             cleaned_image = image
+        else:
+            removed = (image - cleaned_image)[mask & np.isfinite(image) & np.isfinite(cleaned_image)]
+            removed_power[i] += float(np.sum(removed.astype(np.float64) ** 2))
+            removed_count[i] += removed.size
         cleaned[i, j] = previous + cleaned_image
+    for i in range(nints):
+        if removed_count[i]:
+            log.info(
+                f"Integration {i + 1}: removed 1/f noise with an rms of "
+                f"{np.sqrt(removed_power[i] / removed_count[i]):.2f} DN per group difference over the background pixels"
+            )
 
     if zeroframe is not None and clean_first_group:
         reference = 0.0 if first_group_reference is None else first_group_reference
@@ -1333,6 +1513,7 @@ def estimate_channel_gains(
     first_group_reference=None,
     first_group_scale=1.0,
     min_period=None,
+    notch_period=None,
 ):
     """First pass of the ``wiener`` method: the noise spectrum and gain of every channel.
 
@@ -1383,6 +1564,8 @@ def estimate_channel_gains(
     min_period : int or None
         Period in clocks below which the gain is tapered to zero (see
         `channel_gain`).
+    notch_period : float or None
+        Period in clocks at which the gain is notched (see `channel_gain`).
 
     Returns
     -------
@@ -1426,7 +1609,7 @@ def estimate_channel_gains(
                 channels.append(zero_gain(lag_default))
                 continue
             median = np.median(per_integration[i][k], axis=0)
-            channels.append(channel_gain(freq, median, min_period=min_period))
+            channels.append(channel_gain(freq, median, min_period=min_period, notch_period=notch_period))
         results.append(channels)
     return results
 
@@ -1461,7 +1644,7 @@ def zero_gain(max_lag):
     }
 
 
-def channel_gain(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, min_period=None):
+def channel_gain(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, min_period=None, notch_period=None):
     """Turn a channel's median spectrum into a Wiener gain.
 
     A power law plus white floor is fitted to the log-binned spectrum.  The
@@ -1484,6 +1667,10 @@ def channel_gain(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, min_
     min_period : int or None
         Period in clocks below which the gain is ramped to zero
         (`taper_high_frequencies`); None keeps all frequencies.
+    notch_period : float or None
+        Period in clocks at which the gain is notched
+        (`snowblind.noise_spectrum.notch_period`), the readout row length
+        on a dispersed exposure; None for no notch.
 
     Returns
     -------
@@ -1507,6 +1694,8 @@ def channel_gain(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, min_
     gain = wiener_gain(combined, white)
     if min_period is not None:
         gain = taper_high_frequencies(freq, gain, min_period)
+    if notch_period is not None:
+        gain = notch_gain_period(freq, gain, notch_period)
     gain[0] = 1.0
     with np.errstate(divide="ignore"):
         corner_period = float((white / amplitude) ** (1.0 / alpha)) if amplitude > 0 else float("inf")

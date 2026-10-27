@@ -3247,3 +3247,195 @@ sees sources (the dispersed traces, extended along the dispersion
 axis) against a flat residual. Needs a dispersed exposure to test; the
 six files on disk are the direct images. The same mechanism serves
 NIRCam WFSS (``wfssbkg`` exists for it too).
+
+### 2026-10-27: NIRCam WFSS, and the per-column offsets on dispersed exposures
+
+James: no injection test (it will fail for NIRISS and worse for NIRCam,
+whose traces are longer); we just do not correct when the dispersion is
+parallel to the stream. Check NIRCam WFSS, and verify that the
+column-level correction orthogonal to the stream is safe for all the WFSS
+data even when it aligns with the dispersion.
+
+Data (~/data/nircam_wfss/): program 5398 F444W GRISMC (NRCALONG,
+SHALLOW2, 5 groups, a deep field, 11 percent masked) and GRISMR (MEDIUM8,
+7 groups), program 1076 F444W GRISMC of P330-E (BRIGHT1, 5 groups). CRDS
+has `bkg` references for both long-wavelength detectors and both grisms.
+The GRISMR exposure is skipped (SKIPPED, data untouched).
+
+The column-level correction is not safe as it was. Metric: per stream
+(row), the median correction in trace pixels minus that in the sky pixels
+of the same row; and the summed flux of the longest traces (object pixels
+of the mask, local sky from a box around) before and after. On 5398
+GRISMC with `column_offsets` on: excess -0.019 DN/s (a third of a pixel's
+noise, 0.061), the eight longest traces lose 3 to 29 percent; on P330-E
+-0.011 and 4 to 13 percent on the fainter traces. Variants (all with the
+CRDS background): row_median fit -0.018 (so not the Wiener filter),
+clean_first_group off -0.019, mask_dilation 6 -0.015, column_offsets off
++0.003. The cause: each column's masked mean carries the outskirts of its
+detected traces and the whole of its undetected ones, 1000-plus pixels
+long, and the offset removed takes that out of every trace in the column.
+Emulated estimators on the rate image (the correction is linear, so the
+column means of the rate reproduce it) with a hold-out (offsets from even
+rows, banding on odd rows): masked median -0.005, dilation 12/24/48
+across the dispersion -0.007/-0.007/-0.006 (plateau: undetected traces),
+high-pass of the offsets across 17 columns 0.000 but the removable
+column structure is largely at scales above 17 columns (0.0071 of 0.0109
+left), so the high-pass gives the banding back. Nothing separates a
+smooth per-column pattern from dispersed outskirts; the choice is off.
+What it costs on 5398: column-median scatter 0.0128 instead of 0.0027
+(SIRS 0.0225), the trace excess +0.003 (0.08 of a pixel's noise), the
+longest traces -4 to +4 percent (jwst median -5 to +6: the measurement's
+own scatter). Implemented: `column_offsets` forced False on WFSS
+exposures in `process`, logged, spec comment, two tests.
+
+NIRISS GR150C with the same metric: -0.0045 with the offsets on (the
+per-row offsets there), -0.0036 off; 21 long traces change by a median
+-0.1 percent (quartiles -2.5, +0.4). Dilation on this field: masked
+fraction 0.12 -> 0.32 (4) -> 0.61 (8) -> 0.95 (16), excess -0.0029,
+-0.0019, -0.0004; not a route. The GR150C row banding with the offsets
+off is 0.0035 (0.0010 on; SIRS 0.0059), columns 0.0010.
+
+P330-E also shows a 0.2 DN/s square over the top 400 rows (scattered
+light the reference lacks); the mask catches a tenth of it, the stream
+clean removes 0.06 DN/s of it, the jwst median adds 0.16. Extended
+emission beyond the reference is the `scene_model` case.
+
+Figures: FIELD_PANEL_SETS gains NIRCam GRISMC
+(results/2026-10-27_nircam_wfss_panels_v2) and GR150C moves to the rerun
+(results/2026-10-27_wfss_panels_v2). Write-up, README, CHANGES updated;
+the 1.0.0 changelog entry no longer claims the WFSS work (released
+2026-10-26 without it); the skip warning quotes the NIRCam trace length;
+the remaining in-body imports in the tests moved to the module tops.
+
+Also seen on 5398 GRISMC: the reference spans 0.26 to 1.01 along the
+dispersion (rows) and the single scale leaves a residual whose row
+medians run -0.04 to +0.14 DN/s (sky 0.58); the filter removes that
+gradient as slow noise (per-pixel change p5 -0.145 DN/s). A scale plus
+offset fit (a 0.41, b +0.15 DN/s) halves the residual span, so part of
+the sky is an undispersed additive component; not implemented, since the
+filter takes the residual either way and the trace excess (+0.003) shows
+extraction is unaffected. P330-E's residual is a shape mismatch (the
+offset fit does not change it). NIRISS GR150C: reference 0.70 to 1.06,
+residual 0.01 DN/s.
+
+### 2026-10-27 (later): the residuals James saw in the GRISMC figure
+
+James: odd residuals aligned in the cross-dispersion direction, the
+correction lowers the background there; does not look like the Wiener
+filter. Also: the figure is not flat-fielded, cross-hatching visible.
+Three more causes, all fixed:
+
+1. The CRDS `bkg` references differ in units. NIRCam's (bkg_0032) has no
+   pixel pattern (correlation of its pixel-scale structure with the
+   flat's 0.000); NIRISS's (bkg_0031) carries the flat (0.956). The step
+   took both as raw. On NIRCam that left sky x (flat - 1) in the residual
+   and the flat's large-scale structure went out as slow noise: the dark
+   patches correlate 0.72 with -scene x (flat - 1), and the largest one
+   (rows 1463-1542, cols 0-345, -0.04 DN/s) sits where the flat is 1.05
+   against a row median of 0.99. jwst's spec2 subtracts the bkg before
+   flat_field with no flat handling either. New: `reference_carries_flat`
+   (correlation > 0.5) and `reference_in_raw_units` (multiply by the flat
+   otherwise), used in `_fit_reference` and by the panel script for the
+   saved scene; five tests. The cross-hatching was the same thing: the
+   figure divides (rate - scene) by the flat.
+2. The scene mask lost the brightest trace. `remove_stripes` took
+   per-column medians of the draft rate; the trace at col 1516 covers
+   1190 of 2048 rows, median 6.5 DN/s, so it vanished from the detection
+   image except where brighter than that: masked 55 percent of its
+   length, one-sided (the mask started at the peak). Its unmasked flux at
+   a fixed clock every row gave a sinusoid at the row period in the
+   Wiener estimate: a bowl of -0.05 to +0.02 DN/s across channel 2 in
+   rows 1321-1392 (the row_median variant shows the same channel offset,
+   so not the Wiener filter as such). New: `remove_stripes(axes, clip)`
+   clips |x| > 3 MAD before the medians; `chisel_mask(stripe_axes)`;
+   the step uses only the stream axis on WFSS (from fastaxis). Trace now
+   fully masked; mask 10.2 -> 17.5 percent of the deep field; imaging
+   masks change by 0.5 percent of pixels (NEXUS, NIRISS F200W), NGC 1566
+   by 3.7 (more disk masked; the right-third banding and bias numbers
+   are unchanged to the last digit: box32 rows 0.054, cols 0.067, +0.1
+   percent). Four tests; the noise-free stripe test gets clip=None.
+3. The residual pattern at the row frequency. Mean correction against
+   clock phase within a channel row, over the frame: fundamental 0.002-
+   0.005 DN/s on GRISMC against 0.0002-0.0005 on NEXUS imaging. The
+   unmasked wings and faint traces along columns repeat every row. New:
+   `notch_period` (Gaussian notch, relative sigma 0.02) applied in
+   `channel_gain` at `channel_width + LINE_OVERHEAD` (524 clocks) on WFSS
+   exposures; fundamental -> 0.0001-0.0009, per-stream trace excess
+   -0.0014 -> -0.0008, column banding 0.0093 -> 0.0104 (the notch leaves
+   that sliver). Per-object within-row scatter (0.08 of the objects'
+   brightness) is unchanged by the notch: it is the real within-row 1/f
+   that the row median cannot see, not a bias.
+
+Final runs (results/2026-10-27_nircam_wfss_panels_v5,
+2026-10-27_wfss_panels_v5): 5398 trace excess -0.0008 +- 0.0033 DN/s,
+P330-E -0.0037 +- 0.0105, NIRISS GR150C -0.0012 +- 0.0038 (was -0.0036);
+banding rows/cols 5398 0.0146/0.0145 -> 0.0011/0.0104, P330-E
+0.0275/0.0153 -> 0.0022/0.0067, NIRISS 0.0055/0.0060 -> 0.0040/0.0010.
+The P330-E square at the top of the frame persists after the flat fix
+(real scattered light); the dispersion-direction gradient of the
+one-scale reference (-0.03..+0.13 DN/s) too. Figures regenerated;
+write-up, README, CHANGES updated.
+
+James asked how the convention is detected and whether it is defined
+somewhere. It is not: no BUNIT in either SCI extension, the NIRCam
+history says "stack of many science observations ... scaled such that
+level is unity in a fiducial region", the NIRISS one "CV3 data ...
+normalized_background" files; the jwst background_subtraction docs and
+the BKG reference page describe format and scaling only; JDox (NIRCam
+WFSS backgrounds) says "individually normalized, resulting in
+dimensionless images" and defers to Ryan et al. 2025 (in review, not
+public); Pirzkal, Boyer & Ryan 2026 (AJ 171, 232, arXiv 2602.13918)
+does not describe the sky images at all. calwebb_spec2 runs bkg_subtract
+before flat_field for WFSS and background_sub_wfss has no flat handling,
+so the pipeline assumes raw units for both and the NIRCam cal products
+keep the flat's pattern times the sky. Against the CRDS flats the
+correlation is 0.82-0.97 for the four NIRISS files and -0.02..+0.01 for
+the six NIRCam files (2018 Hilbert and 2025 Ryan alike); against an
+unrelated ground flat NIRISS drops to 0.3, so the test needs the
+matching flat, which the step uses. Added: `reference_flat_correlation`,
+the value logged, a warning for 0.3-0.7 or NaN, and the spec option
+`reference_units = auto | raw | flat_fielded`. Issue text for jwst
+drafted for James to post.
+
+James asked for a two-panel figure of the units mismatch made with the
+standard pipeline. `scripts/make_wfss_bkg_units_figure.py`: Detector1
+defaults, assign_wcs, then `subtract_wfss_bkg` (the background step's
+own WFSS function; the step itself refuses to run without a source
+catalog even with a user mask) with the stream clean's mask, once with
+jwst_nircam_bkg_0032 as delivered and once with it multiplied by
+flat_0761, both divided by the flat afterwards as flat_field does.
+Factors 0.5764 and 0.5786; sky residual row/column-mean scatter
+0.0199/0.0201 -> 0.0147/0.0145 DN/s, pixel 0.071 -> 0.064. Figure
+docs/figures/wfss_bkg_units.jpg, in the write-up and for the issue.
+
+James: the figure does not look right, why a big top-to-bottom gradient
+after the pipeline's scaled subtraction? Measured: the ratio of the
+sky to the scaled reference along rows is 2.36 at row 16, 1.61 at 128,
+1.30 at 256, 0.94 at 512 and 0.98-1.02 above 1024 (reference 0032 falls
+to 0.20 of its plateau at the bottom edge, the sky only to 0.48); the
+P330-E exposure (2022) gives 1.99, 1.29, 1.25, 0.90, 0.98-1.04; CEERS
+F444W imaging has a flat sky in every row (0.68 DN/s), so it is not the
+detector. 93 percent of the smoothed residual variance is a function of
+row; a*ref + b leaves p5/p95 -0.046/+0.038, adding a linear ramp does
+not help. So the reference's falloff along the dispersion is too steep
+in the bottom quarter, in every exposure in hand, independent of the
+flat question. JDox NIRCam WFSS known issues: single master background
+per detector/filter/grism, assumed constant in time and spectrum,
+"can be a limiting factor", NC-WFSS02 over-subtraction, workaround a
+local background subtraction on the extracted 2-D spectra. The figure
+now removes the row profile from both panels (the same in both) and
+quotes the 2-D structure on 33 px (0.0200 -> 0.0126), the column-mean
+scatter (0.0159 -> 0.0113) and the pixel scatter (0.055 -> 0.048);
+stretch +-0.06. Write-up and issue text carry both findings.
+
+James: the default INFO log (noise spectra alpha/W/corner, sigma_b and
+t1_scale arrays per channel) is not useful to an end user. Reworded: the
+WFSS switches are one sentence; the mask is one line with the source
+fraction and the spike-masked stars; "Cleaning <file> with the Wiener
+filter along the readout stream"; a new line per integration with the
+rms of the removed 1/f noise in DN per group difference over the
+background pixels; the reference units as a sentence; the reset fit as
+"the reset level enters as an extra resultant with a scatter of X DN,
+and the first read weighs k of its nominal time", the anchoring as
+ranges across channels against the calibration's. Spectra, correlation,
+per-channel arrays, flat DQ fraction, chisel passes all at DEBUG.

@@ -4,12 +4,22 @@
 
 ### Added
 
-- Now `StreamCleanStep` can clean 1/f noise for dispersed (WFSS) exposures,
-  `background_method='crds_background'`, the default there, scales the
-  CRDS background reference once to the exposure and subtracts it from
-  every difference; grisms that disperse along the readout stream (NIRISS
-  GR150R, NIRCam GRISMR) are skipped unless `allow_dispersion_along_stream`
-  is set.
+- `StreamCleanStep` now cleans grism WFSS exposures:
+  `background_method='crds_background'` (whic is the default for WFSS)
+  subtracts the scaled CRDS background from every difference, grisms that
+  disperse along the readout stream (NIRISS GR150R, NIRCam GRISMR) are
+  skipped unless `allow_dispersion_along_stream` is set, and the per-column
+  offsets, the scene mask's destriping and the Wiener gain are adjusted so
+  that traces along the columns are not read as noise. A flat-fielded
+  background reference (the NIRCam CRDS reffiles) is multiplied by the flat
+  before scaling; `reference_units` overrides the automatic choice.
+
+### Changed
+
+- The INFO log of `StreamCleanStep` and `ResetRampFitStep` now says in plain
+  words what each step did (the background mask, the rms of the 1/f noise
+  removed, how the reset level was anchored); the spectral fits and
+  per-channel numbers moved to DEBUG.
 
 ## [1.0.1] - 2026-10-26
 
@@ -49,12 +59,7 @@
   background measured on the flat-fielded difference (default) or a
   box-spline background per integration for extended emission, per-read
   even-odd and per-column offset corrections, and the first read cleaned
-  against the reset-level prior. For dispersed (WFSS) exposures,
-  `background_method='crds_background'`, the default there, scales the
-  CRDS background reference once to the exposure and subtracts it from
-  every difference; grisms
-  that disperse along the readout stream (NIRISS GR150R, NIRCam GRISMR)
-  are skipped unless `allow_dispersion_along_stream` is set.
+  against the reset-level prior.
 - `ResetRampFitStep`: likelihood ramp fitting with the superbias-subtracted
   reset level as an extra resultant, so that pixels with a single
   unsaturated group still get a rate. The reset offset is anchored to each

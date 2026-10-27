@@ -366,8 +366,10 @@ FIELD_PANEL_SETS = [
      "median, flat applied", True),
     ("results/2026-10-26_workshop_ngc1566/jw02107025001_02101_00001_nrcb2", "NRCB2", "NGC 1566 extended emission",
      "ngc1566_nrcb2", "median, flat applied", True),
-    ("results/2026-10-26_wfss_panels/jw03383014001_04201_00001_nis", "NIS", "NIRISS WFSS GR150C", "wfss_gr150c",
+    ("results/2026-10-27_wfss_panels_v5/jw03383014001_04201_00001_nis", "NIS", "NIRISS WFSS GR150C", "wfss_gr150c",
      "median, flat applied", True),
+    ("results/2026-10-27_nircam_wfss_panels_v5/jw05398466001_06201_00002_nrcalong", "NRCALONG", "NIRCam WFSS GRISMC",
+     "wfss_grismc", "median, flat applied", True),
     ("results/2026-10-26_wfss_panels/jw04681316001_07201_00007_nis", "NIS", "NIRISS WFSS GR150R", "wfss_gr150r",
      "median, flat applied", True),
 ]

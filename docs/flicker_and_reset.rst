@@ -953,42 +953,48 @@ the background-subtracted rate (rate minus the scaled reference,
 flat-fielded, over the mask). GR150C (NIS, 8 groups) and GR150R (NIS, 19
 groups), rows and columns in DN/s:
 
-=======  =============================  =======  =======  ================
-grism    chain                          rows     cols     residual median
-=======  =============================  =======  =======  ================
-GR150C   SIRS                           0.0059   0.0063   -0.0007 sky
-GR150C   jwst median                    0.0065   0.0172   +0.0027 sky
-GR150C   stream clean, median           0.0071   0.0239   -0.0087 sky
-GR150C   stream clean, box 256          0.0050   0.0060   +0.0024 sky
-GR150C   stream clean, reference        0.0004   0.0005   -0.0013 sky
-GR150R   SIRS                           0.0021   0.0067   -0.0008 sky
-GR150R   jwst median                    0.0021   0.0041   +0.0011 sky
-GR150R   stream clean, median           0.0250   0.0077   -0.0208 sky
-GR150R   stream clean, box 256          0.0053   0.0078   -0.0009 sky
-GR150R   stream clean, reference        0.0004   0.0003   -0.0014 sky
-=======  =============================  =======  =======  ================
+=======  =============================  =======  =======
+grism    chain                          rows     cols
+=======  =============================  =======  =======
+GR150C   SIRS                           0.0059   0.0063
+GR150C   jwst median                    0.0065   0.0172
+GR150C   stream clean, median           0.0071   0.0239
+GR150C   stream clean, box 256          0.0050   0.0060
+GR150C   stream clean, crds_background  0.0040   0.0010
+GR150R   SIRS                           0.0021   0.0067
+GR150R   jwst median                    0.0021   0.0041
+GR150R   stream clean, median           0.0250   0.0077
+GR150R   stream clean, box 256          0.0053   0.0078
+GR150R   stream clean, crds_background  0.0004   0.0003
+=======  =============================  =======  =======
 
-With the reference the banding drops by a factor 12 to 15 on GR150C and 5
-to 20 on GR150R, the residual median stays within 0.15 percent of the sky
-and the 5th and 95th percentiles of the per-pixel change are SIRS's own,
-so nothing at large scales is touched. The jwst median imprints column
-structure on GR150C, where the dispersion runs along rows.
+With the CRDS background the column banding (the readout stream) drops
+by a factor 6 on GR150C, the residual median of the background-subtracted
+sky stays within 0.05 percent of the sky and the 5th and 95th percentiles
+of the per-pixel change are SIRS's own, so nothing at large scales is
+touched. The row banding on GR150C drops only from 0.0059 to 0.0040: the
+per-column offsets are off on dispersed exposures (see below), and with
+them on it went to 0.0010. The GR150R rows were measured before the skip
+rule and with those offsets still on; they are kept as the record. The
+jwst median imprints column structure on GR150C, where the dispersion
+runs along rows.
 
 .. figure:: figures/field_rate_images_wfss_gr150c_full.jpg
    :width: 100%
 
    NIRISS GR150C, NIS, 8 groups, the scaled background reference
    subtracted from every panel for display, flat-fielded, full frame
-   binned 2 by 2. The stream clean with the reference as its background
-   takes the row- and column-mean scatter of the background-subtracted
-   sky from 0.006 to 0.0005 DN/s; the jwst median leaves the banding and
-   adds column structure at the right edge, where the dispersed
-   background falls off.
+   binned 2 by 2. The stream clean with the scaled CRDS background takes
+   the column-mean scatter of the background-subtracted sky from 0.006 to
+   0.001 DN/s and the row-mean scatter to 0.004; the jwst median leaves
+   the banding and adds column structure at the right edge, where the
+   dispersed background falls off.
 
 The sky statistics do not tell the two grisms apart, but the geometry
 does. NIRISS reads along science columns, and GR150R disperses along
-that axis, so a trace is a 100 to 200 clock feature in the readout
-stream with its continuum shape and emission lines at the 30 to 300
+that axis, so a trace is a feature of a few hundred clocks in the
+readout stream (over a thousand for a NIRCam GRISMR trace) with its
+continuum shape and emission lines at the 30 to 300
 pixel scales the Wiener gain passes. Masked traces are bridged from the
 samples either side, but faint traces and trace wings under the mask's
 threshold would have their spectral shape read as slow noise and
@@ -998,10 +1004,168 @@ NIRCam has the same split the other way round: it reads along rows, so
 GRISMR is the stream-parallel case and GRISMC the safe one. The step
 therefore skips a stream-parallel grism with a warning, decided from the
 filter and pupil keywords before any WCS exists, and
-``allow_dispersion_along_stream`` overrides it at that risk. An
-injection test of faint traces along the stream is what would set the
-size of the bias and say whether a longer cutoff period could make
-those exposures safe.
+``allow_dispersion_along_stream`` overrides it at that risk. The skip
+stands; no injection test was run, since the bias follows from the
+geometry and would only be larger for the longer NIRCam traces.
+
+The safe grisms are the ones whose traces run along the axis orthogonal
+to the stream, and two NIRCam F444W GRISMC exposures, a deep field
+(program 5398, NRCALONG, SHALLOW2, 5 groups) and the standard star
+P330-E (program 1076, BRIGHT1, 5 groups), showed four ways in which a
+source along that axis gets into the noise estimate. The measure used
+throughout is the correction (cleaned minus SIRS) in trace pixels minus
+the correction in the sky pixels of the same row, per row, in DN/s: zero
+when the traces are left alone, since the local background of an
+extraction, taken from the columns beside a trace, sees the same change
+as the trace.
+
+First, that axis has its own correction: ``column_offsets`` removes each
+column's masked mean from every difference (a per-column offset that
+drifts during the integration; on NIRISS the same correction runs along
+science rows). On an imaging field an undetected galaxy covers 10 or 20
+pixels of a 2048-pixel column and biases that mean by nothing; a
+dispersed trace covers hundreds to over a thousand pixels of it. With
+the per-column offsets on, the trace excess on the deep field was -0.019
+DN/s, a third of one pixel's noise in every pixel of every trace, and
+the summed flux of the eight longest traces fell by 3 to 29 percent. The
+outskirts of the detected traces and the whole of the undetected ones
+raise the masked mean of their columns, and the offset removed takes
+that flux out of every trace in the column. No estimator repairs it: a
+median instead of a mean, the mask widened by 6 to 48 pixels across the
+dispersion, or a high-pass of the offsets across columns each leave at
+least a third of the bias, because the column structure the correction
+is after is itself smooth over tens of columns (a hold-out on even and
+odd rows shows the removable part is largely at scales above 17 columns)
+and so indistinguishable from the outskirts of a dispersed source. The
+step therefore turns ``column_offsets`` off on WFSS exposures and says so
+in the log; the column banding it would have removed stays.
+
+Second, the CRDS background references are not all in the same units.
+The NIRISS ones are stacks of rate images and carry the detector's
+pixel response (the correlation of their pixel-scale structure with the
+flat's is 0.96); the NIRCam ones are flat-fielded and smooth
+(correlation 0.00). Taken as raw units, the NIRCam reference left the
+sky times (flat minus 1) in the residual, and the flat's large-scale
+structure (5 percent at the left edge of channel 0, for instance) was
+read as slow noise: dark bands 300 columns long beside the edge and
+beside bright traces, and cross-hatching in the flat-fielded figures.
+Neither the files (no BUNIT, a history that does not mention the flat)
+nor the pipeline documentation say which convention a file follows, and
+the pipeline itself subtracts both before flat fielding, so the step
+tells the two apart from the pixel pattern: the correlation of the
+reference's pixel-scale structure with the flat's is 0.82 to 0.97 for
+the NIRISS files against the flats CRDS selects for them and within
+0.03 of zero for the six NIRCam files in hand, from 2018 and 2025. The
+value is logged, a warning marks a correlation between 0.3 and 0.7, and
+``reference_units`` settles it by hand; a flat-fielded reference is
+multiplied by the flat before scaling.
+The pipeline's own background step shows the same thing. Run as
+delivered on the deep field (Detector1 defaults, the step's WFSS
+subtraction with the stream clean's background mask, then divided by
+the flat as ``flat_field`` does next), it leaves the flat's large-scale
+structure in the sky: the residual's structure on 33-pixel scales is
+0.020 DN/s on a sky of 0.54, its column-mean scatter 0.016 and its
+pixel scatter 0.055, against 0.013, 0.011 and 0.048 with the reference
+multiplied by the flat first; the scaling factors are 0.576 and 0.579.
+The same run shows a second, larger mismatch that has nothing to do
+with the flat: along the dispersion the reference falls to 0.2 of its
+plateau at the bottom edge of the frame while the sky falls only to
+0.48, so the ratio of sky to scaled reference is 2.4 at row 16, 1.3 at
+row 256 and within 6 percent of one above row 500. The P330-E exposure,
+three years earlier and on another field, has the same shape (2.0 at
+row 16, 1.25 at row 256), an F444W direct image has no edge excess at
+all (flat-fielded sky 0.68 DN/s in every row), and 93 percent of the
+variance of the residual is a function of row alone. The pipeline
+product therefore keeps a gradient of a quarter of the sky over the
+bottom quarter of the frame, the same for either reference convention;
+the figure removes that one-dimensional profile from both panels to
+show the two-dimensional difference, which is the flat's. The NIRCam
+WFSS known issues page notes that the single master background can
+over-subtract and recommends a local background subtraction on the
+extracted spectra, which handles both.
+
+.. figure:: figures/wfss_bkg_units.jpg
+   :width: 100%
+
+   The jwst background step on the program 5398 GRISMC exposure, the
+   result divided by the flat, the row profile along the dispersion
+   removed from both panels, full frame binned 2 by 2. Left, the NIRCam
+   reference as delivered: the flat's structure times the sky stays in
+   the frame, large-scale and pixel-scale. Right, the same reference
+   multiplied by the flat before scaling. Made by
+   ``scripts/make_wfss_bkg_units_figure.py``.
+
+
+Third, the scene mask destripes the draft rate image with row and column
+medians before detecting, and a trace along 1190 of the 2048 rows of a
+column set that column's median to 6.5 DN/s: the brightest trace of the
+deep field was masked over 55 percent of its length and only on one
+side, and its unmasked flux, at the same clock in every row, became a
+sinusoid at the row period in the Wiener estimate, a bowl of 0.07 DN/s
+across the whole channel in those rows. The medians now leave out
+pixels more than 3 sigma from zero, and on a dispersed exposure only the
+stream's axis is destriped; the mask of the deep field grows from 10 to
+17 percent of pixels as the fainter traces are found, and imaging masks
+change by half a percent of pixels.
+
+Fourth, what the mask still misses along the columns, the wings and the
+faintest traces, is a pattern that repeats every readout row, a line at
+the row frequency (524 clocks on a full frame) that the Wiener gain
+passed as noise: the mean correction against clock phase within a row
+had a fundamental of 0.004 DN/s on the deep field, against 0.0004 on an
+imaging field. On a WFSS exposure the gain is now notched there, a
+Gaussian 2 percent wide, which takes the fundamental to 0.0002 for a
+tenth more column banding left in.
+
+With all four in place the trace excess is -0.0008 DN/s on the deep
+field and -0.004 on P330-E (0.05 and 0.08 of a pixel's noise, the
+measurement's own scatter), and -0.001 on NIRISS GR150C, where it had
+been -0.005 with the per-column offsets on and -0.004 with them off
+before the mask and the notch. Background-subtracted rate, rows and
+columns in DN/s:
+
+==================  =============================  =======  =======
+exposure            chain                          rows     cols
+==================  =============================  =======  =======
+5398 GRISMC         SIRS                           0.0146   0.0145
+5398 GRISMC         jwst median                    0.0096   0.0212
+5398 GRISMC         stream clean, crds_background  0.0011   0.0104
+1076 GRISMC P330-E  SIRS                           0.0275   0.0153
+1076 GRISMC P330-E  jwst median                    0.0183   0.0237
+1076 GRISMC P330-E  stream clean, crds_background  0.0022   0.0067
+==================  =============================  =======  =======
+
+The row banding (the NIRCam stream) drops by a factor 12 on both; the
+column banding drops by a quarter and a half, which is what the even-odd
+correction and the stream filter leave, and the rest stays by choice.
+The residual median of the background-subtracted sky moves by +0.2 and
+-0.2 percent of the sky; the jwst median lowers it by 8 and 4 percent,
+its clipped median taken over the traces. One large-scale change does
+happen on the deep field. The NIRCam reference spans a factor of four
+along the dispersion, and one scale does not make it the sky: the row
+medians of the residual run from -0.03 to +0.13 DN/s, a quarter of the
+sky, from the top of the frame to the bottom. That gradient runs across
+the stream, so the filter reads it as slow noise and removes it (the 5th
+percentile of the per-pixel change is -0.14 DN/s), whereas on NIRISS
+GR150C the reference spans only 0.7 to 1.06 and the residual is 0.01
+DN/s. A fitted additive offset would halve the NIRCam residual and make
+no difference to the cleaned rate, since the filter takes the rest; the
+trace excess shows that an extraction is unaffected. The P330-E
+exposure also shows the limit of the background reference: a square of
+0.2 DN/s over the top 400 rows of the frame, scattered light the
+reference does not hold, of which the chisel mask catches a tenth; the
+stream clean removes 0.06 DN/s of it as slow noise where the mask does
+not reach, the jwst median adds 0.16. A ``scene_model`` is the remedy
+where such a feature matters.
+
+.. figure:: figures/field_rate_images_wfss_grismc_full.jpg
+   :width: 100%
+
+   NIRCam GRISMC, NRCALONG, 5 groups, program 5398, the scaled CRDS
+   background subtracted from every panel for display, flat-fielded,
+   full frame binned 2 by 2. The traces run along columns, across the
+   readout stream; the stream clean takes the row-mean scatter of the
+   sky from 0.015 to 0.001 DN/s and leaves the traces as SIRS has them.
 
 Crowded fields and extended emission
 ------------------------------------

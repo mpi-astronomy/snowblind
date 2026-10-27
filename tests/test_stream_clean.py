@@ -21,6 +21,9 @@ from snowblind.stream_clean import (
     masked_mean_background,
     prepare_difference,
     read_scene_model,
+    reference_carries_flat,
+    reference_flat_correlation,
+    reference_in_raw_units,
     reference_scale,
     slope_per_group,
     unusable_in_flat,
@@ -847,8 +850,6 @@ def test_reference_scale_recovers_the_factor():
 
 def test_step_reference_background_scales_the_reference_once_and_removes_nothing_from_a_clean_ramp(tmp_path):
     """StreamCleanStep with crds_background on a noiseless ramp of 3 times a reference fits a scale of 3 and keeps the data."""
-    from stdatamodels.jwst import datamodels
-
     model = make_ramp_model()
     yy, xx = np.mgrid[0:NY, 0:NX]
     reference = (1.0 + 0.5 * xx / NX).astype(np.float32)
@@ -906,8 +907,6 @@ def test_step_skips_a_grism_dispersing_along_the_stream(tmp_path):
 
 def test_step_cleans_a_stream_parallel_grism_when_allowed(tmp_path):
     """StreamCleanStep.call on a GR150R ramp with allow_dispersion_along_stream=True and a user mask completes."""
-    from stdatamodels.jwst import datamodels
-
     model = make_ramp_model()
     model.meta.instrument.name = "NIRISS"
     model.meta.instrument.detector = "NIS"
@@ -925,8 +924,6 @@ def test_step_cleans_a_stream_parallel_grism_when_allowed(tmp_path):
 
 def test_step_selects_the_crds_background_on_a_wfss_exposure(tmp_path):
     """StreamCleanStep on a NIS_WFSS GR150C ramp with the default background switches to crds_background and fits its scale."""
-    from stdatamodels.jwst import datamodels
-
     model = make_ramp_model()
     model.meta.instrument.name = "NIRISS"
     model.meta.instrument.detector = "NIS"
@@ -948,3 +945,135 @@ def test_step_selects_the_crds_background_on_a_wfss_exposure(tmp_path):
     assert step.background_method == "crds_background"
     assert abs(step._reference_scale - 2.0) < 0.01
     assert out.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def test_step_turns_off_column_offsets_on_a_wfss_exposure(tmp_path):
+    """StreamCleanStep on a NIS_WFSS GR150C ramp with the default column_offsets ends with column_offsets False."""
+    model = make_ramp_model()
+    model.meta.instrument.name = "NIRISS"
+    model.meta.instrument.detector = "NIS"
+    model.meta.instrument.filter = "GR150C"
+    model.meta.instrument.pupil = "F200W"
+    model.meta.exposure.type = "NIS_WFSS"
+    datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "bkg.fits")
+    datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
+    step = StreamCleanStep(
+        override_bkg=str(tmp_path / "bkg.fits"), user_mask=str(tmp_path / "mask.fits"), apply_flat_field=False,
+        fit_method="row_median",
+    )
+
+    out = step.run(model)
+
+    assert step.column_offsets is False
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def test_step_keeps_column_offsets_on_an_imaging_exposure(tmp_path):
+    """StreamCleanStep on a NRC_IMAGE ramp with the default column_offsets ends with column_offsets True."""
+    model = make_ramp_model()
+    datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
+    step = StreamCleanStep(user_mask=str(tmp_path / "mask.fits"), apply_flat_field=False, fit_method="row_median")
+
+    out = step.run(model)
+
+    assert step.column_offsets is True
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def make_patterned_flat(seed=0):
+    """A 256 by 256 flat with 5 percent pixel-to-pixel structure."""
+    rng = np.random.default_rng(seed)
+    return (1.0 + 0.05 * rng.standard_normal((256, 256))).astype(np.float64)
+
+
+def test_reference_carries_flat_for_a_reference_with_the_flat_pattern():
+    """reference_carries_flat on a smooth sky times the flat, against that flat, returns True."""
+    flat = make_patterned_flat()
+    yy = np.arange(256)[:, None] * np.ones((1, 256))
+    reference = (0.5 + yy / 256) * flat
+
+    assert reference_carries_flat(reference, flat) is True
+
+
+def test_reference_carries_flat_for_a_smooth_reference():
+    """reference_carries_flat on a smooth sky without the flat pattern, against a flat, returns False."""
+    flat = make_patterned_flat()
+    yy = np.arange(256)[:, None] * np.ones((1, 256))
+    reference = 0.5 + yy / 256
+
+    assert reference_carries_flat(reference, flat) is False
+
+
+def test_reference_in_raw_units_multiplies_a_smooth_reference_by_the_flat():
+    """reference_in_raw_units on a smooth reference and a patterned flat returns reference times flat and False."""
+    flat = make_patterned_flat()
+    reference = np.full((256, 256), 2.0)
+
+    raw, carries = reference_in_raw_units(reference, flat)
+
+    assert carries is False
+    assert np.allclose(raw, 2.0 * flat)
+
+
+def test_reference_in_raw_units_keeps_a_reference_that_carries_the_flat():
+    """reference_in_raw_units on a reference that is 2 times the flat returns it unchanged and True."""
+    flat = make_patterned_flat()
+    reference = 2.0 * flat
+
+    raw, carries = reference_in_raw_units(reference, flat)
+
+    assert carries is True
+    assert np.array_equal(raw, reference)
+
+
+def test_reference_in_raw_units_without_a_flat_returns_the_reference():
+    """reference_in_raw_units with flat=None returns the reference unchanged and True."""
+    reference = np.full((8, 8), 2.0)
+
+    raw, carries = reference_in_raw_units(reference, None)
+
+    assert carries is True
+    assert np.array_equal(raw, reference)
+
+
+def test_reference_flat_correlation_is_near_one_for_a_reference_with_the_flat_pattern():
+    """reference_flat_correlation on a smooth sky times the flat, against that flat, returns above 0.9."""
+    flat = make_patterned_flat()
+    yy = np.arange(256)[:, None] * np.ones((1, 256))
+
+    assert reference_flat_correlation((0.5 + yy / 256) * flat, flat) > 0.9
+
+
+def test_reference_flat_correlation_is_near_zero_for_a_smooth_reference():
+    """reference_flat_correlation on a smooth sky without the pattern, against a flat, returns within 0.1 of zero."""
+    flat = make_patterned_flat()
+    yy = np.arange(256)[:, None] * np.ones((1, 256))
+
+    assert abs(reference_flat_correlation(0.5 + yy / 256, flat)) < 0.1
+
+
+def test_reference_flat_correlation_is_nan_for_too_few_pixels():
+    """reference_flat_correlation on 8 by 8 images returns NaN."""
+    assert np.isnan(reference_flat_correlation(np.ones((8, 8)), np.ones((8, 8))))
+
+
+def test_reference_in_raw_units_raw_leaves_a_smooth_reference_alone():
+    """reference_in_raw_units with units='raw' on a smooth reference and a patterned flat returns it unchanged and True."""
+    flat = make_patterned_flat()
+    reference = np.full((256, 256), 2.0)
+
+    raw, carries = reference_in_raw_units(reference, flat, units="raw")
+
+    assert carries is True
+    assert np.array_equal(raw, reference)
+
+
+def test_reference_in_raw_units_flat_fielded_multiplies_even_a_patterned_reference():
+    """reference_in_raw_units with units='flat_fielded' on a reference that is 2 times the flat returns 2 flat squared."""
+    flat = make_patterned_flat()
+    reference = 2.0 * flat
+
+    raw, carries = reference_in_raw_units(reference, flat, units="flat_fielded")
+
+    assert carries is False
+    assert np.allclose(raw, 2.0 * flat * flat)

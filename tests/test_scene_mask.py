@@ -92,12 +92,12 @@ def test_chisel_mask_finds_sources_on_a_smooth_sky():
 
 
 def test_remove_stripes_takes_out_row_and_column_offsets():
-    """remove_stripes on an image of row offsets plus column offsets returns zeros everywhere."""
+    """remove_stripes with clip=None on an image of row offsets plus column offsets returns zeros everywhere."""
     rows = np.arange(64, dtype=float)[:, None]
     cols = np.arange(64, dtype=float)[None, :] * 0.5
     image = rows + cols
 
-    out = remove_stripes(image, np.isfinite(image))
+    out = remove_stripes(image, np.isfinite(image), clip=None)
 
     assert np.abs(out).max() < 1e-9
 
@@ -227,3 +227,48 @@ def test_chisel_mask_without_erosion_or_opening_masks_only_the_source():
 
     assert (~mask).mean() < 0.05
     assert not mask[105:115, 105:115].any()
+
+
+def test_remove_stripes_clips_a_bright_source_out_of_the_column_median():
+    """remove_stripes on noise with a 5 DN/s source down 70 percent of one column leaves that column's sky near zero."""
+    rng = np.random.default_rng(3)
+    image = 0.05 * rng.standard_normal((200, 64))
+    image[:140, 20] += 5.0
+
+    out = remove_stripes(image, np.isfinite(image))
+
+    assert abs(np.median(out[140:, 20])) < 0.03
+    assert np.median(out[:140, 20]) > 4.5
+
+
+def test_remove_stripes_without_clipping_subtracts_the_source_with_the_column_median():
+    """remove_stripes with clip=None on the same image sets the source's column median to zero, so the source is lost."""
+    rng = np.random.default_rng(3)
+    image = 0.05 * rng.standard_normal((200, 64))
+    image[:140, 20] += 5.0
+
+    out = remove_stripes(image, np.isfinite(image), clip=None)
+
+    assert abs(np.median(out[:140, 20])) < 0.03
+
+
+def test_remove_stripes_with_rows_only_leaves_the_column_medians():
+    """remove_stripes with axes=(1,) on an image with a 0.2 DN/s column offset keeps that offset."""
+    rng = np.random.default_rng(4)
+    image = 0.05 * rng.standard_normal((200, 64))
+    image[:, 10] += 0.2
+
+    out = remove_stripes(image, np.isfinite(image), axes=(1,))
+
+    assert abs(np.median(out[:, 10]) - 0.2) < 0.03
+
+
+def test_chisel_mask_with_stream_stripes_only_masks_a_trace_along_most_of_a_column():
+    """chisel_mask with stripe_axes=(1,) on a 3 DN/s trace down 70 percent of a column masks over 95 percent of it."""
+    rng = np.random.default_rng(5)
+    rate = 1.0 + 0.05 * rng.standard_normal((512, 256))
+    rate[:360, 120:124] += 3.0
+
+    background = chisel_mask(rate, stripe_axes=(1,))
+
+    assert (~background[:360, 120:124]).mean() > 0.95
