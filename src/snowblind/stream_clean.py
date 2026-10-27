@@ -394,8 +394,7 @@ class StreamCleanStep(Step):
             `reference_in_raw_units`, and the scaled reference is divided by
             it for the flat-fielded paths.
         """
-        data, groupdq = np.asarray(model.data), np.asarray(model.groupdq)
-        draft = np.nanmean([slope_per_group(data[i], groupdq[i]) for i in range(data.shape[0])], axis=0)
+        draft = mean_slope_per_group(np.asarray(model.data), np.asarray(model.groupdq))
         draft = draft / (model.meta.exposure.group_time or 1.0)
         mask = np.asarray(background_mask, dtype=bool)
         if mask.ndim == 3:
@@ -1333,6 +1332,30 @@ def prepare_difference(
         background = np.asarray(background, dtype=np.float32) * np.where(flat_ok, flat, 0.0)
     bkg_sub = image - background
     return bkg_sub, background, nan_pix
+
+
+def mean_slope_per_group(data, groupdq):
+    """Mean over the integrations of `slope_per_group`, NaN where no integration has a slope.
+
+    Parameters
+    ----------
+    data : ndarray, shape (nints, ngroups, nrows, ncols)
+        Group data, in DN.
+    groupdq : ndarray of int, same shape as ``data``
+        Group DQ flags.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, ncols)
+        Slope per pixel in DN per group, averaged over the integrations
+        that have one; NaN where none has, without a warning.
+    """
+    slopes = np.array([slope_per_group(data[i], groupdq[i]) for i in range(data.shape[0])])
+    valid = np.isfinite(slopes)
+    count = valid.sum(axis=0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = np.where(valid, slopes, 0.0).sum(axis=0) / count
+    return np.where(count > 0, mean, np.nan).astype(np.float32)
 
 
 def slope_per_group(data_int, groupdq_int):

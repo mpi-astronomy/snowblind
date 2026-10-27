@@ -27,6 +27,8 @@
   'reset_calib'": the ramp_fit parameters built from the snowblind spec were
   handed to the jwst ramp fit step. The reset-fit parameters are now dropped
   from that section when the jwst step takes the slot.
+- The "Mean of empty slice" warning the stream clean raised on dispersed
+  exposures, from pixels with no usable group in any integration, is gone.
 
 ## [1.0.1] - 2026-10-26
 

@@ -3448,3 +3448,12 @@ section from the class spec (ResetRampFitStep's), and the jwst RampFitStep
 rejects the extra keys. Fixed in __init__ by dropping the reset-only
 parameters (own spec minus the jwst spec minus the generic Step spec)
 from the section when the jwst step takes the slot; test added.
+
+There's a "RuntimeWarning: Mean of empty slice" at stream_clean.py:398
+on every snowblind_detector1 run of the WFSS file.  Check whether it
+matters. It is ours (the draft slope image that scales the CRDS
+reference, np.nanmean over integrations), harmless: pixels with no
+usable group in any integration became NaN, which the scale fit already
+skips. Replaced by `mean_slope_per_group`, which sums the finite slopes
+and divides by their count under errstate, NaN where the count is zero;
+test with the warning turned into an error.

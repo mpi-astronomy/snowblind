@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 from astropy.io import fits
@@ -24,6 +26,7 @@ from snowblind.stream_clean import (
     reference_carries_flat,
     reference_flat_correlation,
     reference_in_raw_units,
+    mean_slope_per_group,
     reference_scale,
     slope_per_group,
     unusable_in_flat,
@@ -1077,3 +1080,17 @@ def test_reference_in_raw_units_flat_fielded_multiplies_even_a_patterned_referen
 
     assert carries is False
     assert np.allclose(raw, 2.0 * flat * flat)
+
+
+def test_mean_slope_per_group_is_nan_without_a_warning_where_no_group_is_usable():
+    """mean_slope_per_group on a ramp with pixel (0, 0) flagged in every group returns NaN there, 1 elsewhere, no warning."""
+    data = np.arange(4, dtype=np.float32)[None, :, None, None] * np.ones((2, 4, 3, 3), dtype=np.float32)
+    groupdq = np.zeros((2, 4, 3, 3), dtype=np.uint8)
+    groupdq[:, :, 0, 0] = 1
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        slope = mean_slope_per_group(data, groupdq)
+
+    assert np.isnan(slope[0, 0])
+    assert abs(slope[1, 1] - 1.0) < 1e-6
