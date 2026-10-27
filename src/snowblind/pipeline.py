@@ -62,7 +62,14 @@ class Detector1Pipeline(JwstDetector1Pipeline):
             ramp fit.
         """
         if not kwargs.get("reset_fit", True):
-            self.step_defs = {**self.step_defs, "ramp_fit": JwstDetector1Pipeline.step_defs["ramp_fit"]}
+            jwst_ramp_fit = JwstDetector1Pipeline.step_defs["ramp_fit"]
+            self.step_defs = {**self.step_defs, "ramp_fit": jwst_ramp_fit}
+            # Step.call builds the ramp_fit section from this class's spec, which is ResetRampFitStep's; the jwst step
+            # would reject the parameters it does not know, so they are dropped from the section here
+            section = (kwargs.get("steps") or {}).get("ramp_fit")
+            if section is not None:
+                for key in _parameters_unknown_to(jwst_ramp_fit, section):
+                    section.pop(key, None)
         if kwargs.get("stream_clean", True):
             # edited in place: from strun this is a ConfigObj section whose sub-sections stpipe reads as such
             steps = kwargs.get("steps")
@@ -87,6 +94,28 @@ class Detector1Pipeline(JwstDetector1Pipeline):
             ``"pars-detector1pipeline"``.
         """
         return JwstDetector1Pipeline.get_config_reftype()
+
+
+def _parameters_unknown_to(step_class, section):
+    """The keys of a config section that a step class's spec does not define.
+
+    Parameters
+    ----------
+    step_class : type
+        A `stpipe.Step` subclass; its full spec (own parameters, the generic
+        step parameters and the ``override_*`` entries of its reference
+        types) is loaded with ``load_spec_file``.
+    section : mapping
+        A config section meant for that step.
+
+    Returns
+    -------
+    list of str
+        The keys of ``section`` the spec does not know, which the step's
+        validation would reject.
+    """
+    known = set(step_class.load_spec_file().keys())
+    return [key for key in section if key not in known]
 
 
 def _is_stream_clean(hook):

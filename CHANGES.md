@@ -21,6 +21,13 @@
   removed, how the reset level was anchored); the spectral fits and
   per-channel numbers moved to DEBUG.
 
+### Fixed
+
+- `snowblind_detector1 --reset_fit=False` failed with "Extra value
+  'reset_calib'": the ramp_fit parameters built from the snowblind spec were
+  handed to the jwst ramp fit step. The reset-fit parameters are now dropped
+  from that section when the jwst step takes the slot.
+
 ## [1.0.1] - 2026-10-26
 
 ### Fixed

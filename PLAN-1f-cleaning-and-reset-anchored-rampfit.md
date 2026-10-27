@@ -3439,3 +3439,12 @@ background pixels; the reference units as a sentence; the reset fit as
 and the first read weighs k of its nominal time", the anchoring as
 ranges across channels against the calibration's. Spectra, correlation,
 per-channel arrays, flat DQ fraction, chisel passes all at DEBUG.
+
+### 2026-10-27 (afternoon): the flattened NIRISS sky, and reset_fit=False
+
+Found that Detector1Pipeline.call(..., reset_fit=False) raised
+"Extra value 'reset_calib' in root": Step.call builds the steps.ramp_fit
+section from the class spec (ResetRampFitStep's), and the jwst RampFitStep
+rejects the extra keys. Fixed in __init__ by dropping the reset-only
+parameters (own spec minus the jwst spec minus the generic Step spec)
+from the section when the jwst step takes the slot; test added.

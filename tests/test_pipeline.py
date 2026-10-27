@@ -55,3 +55,11 @@ def test_pipeline_accepts_a_single_hook_string():
     pipeline = Detector1Pipeline(steps={"jump": {"post_hooks": hook}})
 
     assert pipeline.jump.post_hooks == [hook]
+
+
+def test_pipeline_without_reset_fit_drops_the_reset_parameters_from_the_ramp_fit_section():
+    """Detector1Pipeline(reset_fit=False) with a ramp_fit section holding reset_calib builds a jwst RampFitStep with OLS_C."""
+    pipeline = Detector1Pipeline(reset_fit=False, steps={"ramp_fit": {"reset_calib": None, "algorithm": "OLS_C"}})
+
+    assert type(pipeline.ramp_fit) is RampFitStep
+    assert pipeline.ramp_fit.algorithm == "OLS_C"
