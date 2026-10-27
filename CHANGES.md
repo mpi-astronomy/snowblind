@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-27
+
 ### Added
 
 - `StreamCleanStep` now cleans grism WFSS exposures:
@@ -32,6 +34,12 @@
 
 ## [1.0.1] - 2026-10-26
 
+### Added
+
+- `SnowblindStep` on a ramp now fills `meta.exposure.extended_emission_events`
+  (FITS keyword `EXTNCRS`) with the number of large events it found per
+  million pixels per second, replacing the value written by the jump step.
+
 ### Fixed
 
 - The FutureWarnings from scikit-image about `binary_opening` and
@@ -47,12 +55,6 @@
 - Each step also adds a HISTORY entry such as `snowblind 1.0.0 SnowblindStep:
   COMPLETE`, which records the snowblind version in both the FITS header and
   the ASDF extension.
-
-### Added
-
-- `SnowblindStep` on a ramp now fills `meta.exposure.extended_emission_events`
-  (FITS keyword `EXTNCRS`) with the number of large events it found per
-  million pixels per second, replacing the value written by the jump step.
 
 ## [1.0.0] - 2026-10-26
 
@@ -162,7 +164,8 @@ First release.
 - Steps register as stpipe plugins and run with `strun` or as pipeline
   hooks.
 
-[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.0.1...HEAD
+[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.1.0...HEAD
+[1.1.0]: https://github.com/mpi-astronomy/snowblind/compare/1.0.1...1.1.0
 [1.0.1]: https://github.com/mpi-astronomy/snowblind/compare/1.0.0...1.0.1
 [1.0.0]: https://github.com/mpi-astronomy/snowblind/compare/0.2.0...1.0.0
 [0.2.1]: https://github.com/mpi-astronomy/snowblind/compare/0.2.0...0.2.1
