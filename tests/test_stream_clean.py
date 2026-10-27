@@ -12,6 +12,7 @@ from snowblind.stream_clean import (
     clean_ramp,
     column_offset_pattern,
     dilate_sources,
+    dispersion_along_stream,
     estimate_noise,
     even_odd_pattern,
     exclude_reference_border,
@@ -20,6 +21,7 @@ from snowblind.stream_clean import (
     masked_mean_background,
     prepare_difference,
     read_scene_model,
+    reference_scale,
     slope_per_group,
     unusable_in_flat,
 )
@@ -829,3 +831,120 @@ def test_background_structure_sees_a_gradient():
 
     assert low < 0.75
     assert high > 1.25
+
+
+def test_reference_scale_recovers_the_factor():
+    """reference_scale on a rate that is 2.5 times a smooth reference plus noise returns 2.5 within one percent."""
+    rng = np.random.default_rng(31)
+    yy, xx = np.mgrid[0:128, 0:128]
+    reference = 1.0 + 0.3 * np.sin(xx / 20.0) + 0.1 * np.cos(yy / 15.0)
+    rate = 2.5 * reference + rng.normal(0.0, 0.05, reference.shape)
+
+    scale = reference_scale(rate, reference, np.ones(reference.shape, dtype=bool))
+
+    assert abs(scale - 2.5) < 0.025
+
+
+def test_step_reference_background_scales_the_reference_once_and_removes_nothing_from_a_clean_ramp(tmp_path):
+    """StreamCleanStep with crds_background on a noiseless ramp of 3 times a reference fits a scale of 3 and keeps the data."""
+    from stdatamodels.jwst import datamodels
+
+    model = make_ramp_model()
+    yy, xx = np.mgrid[0:NY, 0:NX]
+    reference = (1.0 + 0.5 * xx / NX).astype(np.float32)
+    group_time = model.meta.exposure.group_time
+    for g in range(model.data.shape[1]):
+        model.data[0, g] = 3.0 * reference * group_time * (g + 1)
+    datamodels.ImageModel(reference).save(tmp_path / "bkg.fits")
+    datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
+    original = model.data.copy()
+    step = StreamCleanStep(
+        background_method="crds_background", override_bkg=str(tmp_path / "bkg.fits"), user_mask=str(tmp_path / "mask.fits"),
+        apply_flat_field=False, fit_method="row_median",
+    )
+
+    out = step.run(model)
+
+    assert abs(step._reference_scale - 3.0) < 0.01
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+    np.testing.assert_allclose(out.data[:, :, 4:-4, 4:-4], original[:, :, 4:-4, 4:-4], atol=1e-3)
+
+
+def test_dispersion_along_stream_names_the_stream_parallel_grisms():
+    """dispersion_along_stream names NIRISS GR150R and NIRCam GRISMR and returns None for GR150C, GRISMC and imaging."""
+    model = make_ramp_model()
+    model.meta.instrument.name = "NIRISS"
+    model.meta.instrument.filter = "GR150R"
+    model.meta.instrument.pupil = "F200W"
+    assert dispersion_along_stream(model) == "NIRISS GR150R"
+    model.meta.instrument.filter = "GR150C"
+    assert dispersion_along_stream(model) is None
+    model.meta.instrument.name = "NIRCAM"
+    model.meta.instrument.filter = "F322W2"
+    model.meta.instrument.pupil = "GRISMR"
+    assert dispersion_along_stream(model) == "NIRCam GRISMR"
+    model.meta.instrument.pupil = "GRISMC"
+    assert dispersion_along_stream(model) is None
+    model.meta.instrument.pupil = "CLEAR"
+    assert dispersion_along_stream(model) is None
+
+
+def test_step_skips_a_grism_dispersing_along_the_stream(tmp_path):
+    """StreamCleanStep.call on a NIRISS GR150R ramp sets SKIPPED and leaves the data alone."""
+    model = make_ramp_model()
+    model.meta.instrument.name = "NIRISS"
+    model.meta.instrument.detector = "NIS"
+    model.meta.instrument.filter = "GR150R"
+    model.meta.instrument.pupil = "F200W"
+    model.data[:] = 5.0
+
+    result = StreamCleanStep.call(model, apply_flat_field=False, fit_method="row_median")
+
+    assert result.meta.cal_step.stream_clean == "SKIPPED"
+    np.testing.assert_array_equal(result.data, 5.0)
+
+
+def test_step_cleans_a_stream_parallel_grism_when_allowed(tmp_path):
+    """StreamCleanStep.call on a GR150R ramp with allow_dispersion_along_stream=True and a user mask completes."""
+    from stdatamodels.jwst import datamodels
+
+    model = make_ramp_model()
+    model.meta.instrument.name = "NIRISS"
+    model.meta.instrument.detector = "NIS"
+    model.meta.instrument.filter = "GR150R"
+    model.meta.instrument.pupil = "F200W"
+    datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
+
+    result = StreamCleanStep.call(
+        model, apply_flat_field=False, fit_method="row_median", user_mask=str(tmp_path / "mask.fits"),
+        background_method="median", allow_dispersion_along_stream=True,
+    )
+
+    assert result.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def test_step_selects_the_crds_background_on_a_wfss_exposure(tmp_path):
+    """StreamCleanStep on a NIS_WFSS GR150C ramp with the default background switches to crds_background and fits its scale."""
+    from stdatamodels.jwst import datamodels
+
+    model = make_ramp_model()
+    model.meta.instrument.name = "NIRISS"
+    model.meta.instrument.detector = "NIS"
+    model.meta.instrument.filter = "GR150C"
+    model.meta.instrument.pupil = "F200W"
+    model.meta.exposure.type = "NIS_WFSS"
+    reference = np.ones((NY, NX), dtype=np.float32)
+    for g in range(model.data.shape[1]):
+        model.data[0, g] = 2.0 * model.meta.exposure.group_time * (g + 1)
+    datamodels.ImageModel(reference).save(tmp_path / "bkg.fits")
+    datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
+    step = StreamCleanStep(
+        override_bkg=str(tmp_path / "bkg.fits"), user_mask=str(tmp_path / "mask.fits"), apply_flat_field=False,
+        fit_method="row_median",
+    )
+
+    out = step.run(model)
+
+    assert step.background_method == "crds_background"
+    assert abs(step._reference_scale - 2.0) < 0.01
+    assert out.meta.cal_step.stream_clean == "COMPLETE"

@@ -3128,6 +3128,104 @@ with a measurement behind them: `exposure_model`, `scene_model`,
 `use_pedestal_mean` and `prior_highpass`, `anchor_timing_to_stars`,
 `reset_offset`, `rejection_threshold`, and the defaults.
 
+### 2026-10-26 (night): the WFSS background reference as the background model
+
+James: subtract a scaled CRDS background from each difference before the
+1/f removal, fit once for all differences so that nothing random-walks.
+The reftype is ``bkg`` (`jwst_niriss_bkg_0027.fits` for GR150C F200W,
+`_0029` for GR150R), a normalised image (median 1.00, range 0.07-1.55)
+in raw detector units, which the pipeline's WFSS background step scales
+to the data with an error-weighted mean ratio and 1 percent clipping
+behind a catalog-based source mask. Here: one scale per exposure, the
+median of the ratio of the ramp's least-squares slope image to the
+reference over the chisel mask where the reference is above 0.2 of its
+median (0.758 DN/s on GR150C, 0.535 on GR150R); the scaled reference
+then goes through the fixed-background path like a scene model, scaled
+to each difference by its time only.
+
+Trial through the `scene_model` option (`results/2026-10-26_wfss_reference/`),
+GR150C jw03383014 (NIS, 8 groups) and GR150R jw04681316 (NIS, 19 groups).
+Direct check first: the 64 px smoothed sky over the mask runs from 0.35
+to 1.06 of the median before and -0.02 to +0.04 after subtracting the
+scaled reference. A trap in the metrics: on a dispersed exposure the
+row- and column-mean scatter of the rate is the dispersed background
+itself (it varies along the dispersion), so the median background's
+"0.0008" column scatter on GR150C is the background flattened away and
+the reference run's "0.024" is the background kept. Measured properly,
+on the background-subtracted flat-fielded rate (rate minus scale x bkg)
+over the mask:
+
+| grism | chain | rows | cols | residual median | 5 / 95 pct |
+|---|---|---|---|---|---|
+| GR150C | SIRS | 0.0059 | 0.0063 | -0.0007 | -0.101 / +0.107 |
+| GR150C | jwst median | 0.0065 | 0.0172 | +0.0027 | -0.107 / +0.130 |
+| GR150C | stream, median bkg | 0.0071 | 0.0239 | -0.0087 | -0.121 / +0.261 |
+| GR150C | stream, box 256 | 0.0050 | 0.0060 | +0.0024 | -0.107 / +0.208 |
+| GR150C | stream, reference | 0.0004 | 0.0005 | -0.0013 | -0.099 / +0.103 |
+| GR150R | SIRS | 0.0021 | 0.0067 | -0.0008 | -0.079 / +0.093 |
+| GR150R | jwst median | 0.0021 | 0.0041 | +0.0011 | -0.077 / +0.089 |
+| GR150R | stream, median bkg | 0.0250 | 0.0077 | -0.0208 | -0.119 / +0.396 |
+| GR150R | stream, box 256 | 0.0053 | 0.0078 | -0.0009 | -0.096 / +0.282 |
+| GR150R | stream, reference | 0.0004 | 0.0003 | -0.0014 | -0.076 / +0.080 |
+
+(rows and cols in DN/s, the rest in units of the sky; sky 0.749 and
+0.529 DN/s.) With the reference the banding drops 12-15x on GR150C and
+5-20x on GR150R, the residual median is within 0.14 percent of the sky
+and the 5/95 percentiles are SIRS's own, i.e. nothing at large scales
+is touched; the median background flattens the dispersed sky (the
+warning fires, 0.38 and 0.32 to 1.05), the box model gains little, and
+the jwst median imprints column structure on GR150C. Implemented as
+`background_method='crds_background'` (first named `reference`; James:
+that is anodyne for a per-filter, per-grism background, and it should be
+the default on WFSS, where it now is): ``bkg`` joins the step's reference
+types, fetched in `process`; the scale is fitted on the step's own
+least-squares slope image in raw DN/s (no flat needed, and CRDS-free in
+the tests) over the mask, the scaled reference becomes the scene model
+(divided by the flat where one is in use), the chisel mask is rebuilt
+on the residual, and the structure warning names the option for
+dispersed exposures. `make_field_panels` takes `crds_background` as a
+background setting.
+
+Through the step itself (`results/2026-10-26_wfss_panels/`, median and
+reference backgrounds, flat applied, with the reset fit on the reference
+chain): scales 0.7584 (GR150C) and 0.5342 DN/s (GR150R), masks 12.1 and
+17.6 percent; banding of the background-subtracted rate, rows / cols in
+DN/s: GR150C SIRS 0.0059 / 0.0064, stream reference 0.0004 / 0.0005,
+reference + reset fit 0.0006 / 0.0007, stream median 0.0071 / 0.0240;
+GR150R SIRS 0.0021 / 0.0067, reference 0.0004 / 0.0003, with the reset
+fit 0.0005 / 0.0003, median 0.0250 / 0.0077. Residual medians within
+0.2 percent of the sky for the reference chains. The two multi-integration
+WFSS files (5 and 6 integrations) are the next check, for one scale per
+exposure against integrations. Figures `field_rate_images_wfss_gr150c`
+and `_gr150r` added to the set. Environment note: a non-editable
+snowblind 1.0.1 was installed into site-packages at 17:03 (not by this
+session), shadowing the editable tree; tests and scripts run with
+`PYTHONPATH=src` until the editable install is restored.
+
+### 2026-10-27: skip the grisms that disperse along the stream
+
+James: GR150R causes real problems for the Wiener filter, dispersed
+spectra sit right in its frequency range and pile up with the real
+spectral variations on the same spatial scales; refuse to run on NIRISS
+GRxxxR, or at least warn loudly. The geometry: NIRISS reads along science
+columns and GR150R disperses along detector rows, the same axis, so a
+trace is a 100-200 clock feature in the stream with continuum shape and
+lines at the 30-300 px scales the gain passes; masked traces are bridged,
+faint traces and wings under the chisel threshold lose spectral shape to
+the noise estimate. No sky statistic sees it, which is why the GR150R
+numbers looked as good as GR150C's. GR150C crosses the stream in a few
+clocks (safe). NIRCam reads along rows: GRISMR is the stream-parallel
+case there, GRISMC safe. Implemented as `dispersion_along_stream(model)`
+from the filter and pupil keywords (works before any WCS) and a skip in
+`StreamCleanStep.process` with a warning that explains why, overridden
+by `allow_dispersion_along_stream=True`. The pipeline class inherits it
+through the hook. Three tests. The GR150R rows and figure stay as the
+record; an injection test of faint traces along the stream (synthetic
+traces of known shape in the GR150R ramp, recovered flux and shape
+along the trace, against the same traces across the stream in GR150C)
+is the way to size the bias and to decide whether a longer cutoff
+period could make those exposures safe.
+
 Citation: README gets a "Citing snowblind" section at the top with the
 concept DOI and a BibTeX entry; CITATION.cff's author becomes a
 family-names/given-names person entry (GitHub's own examples use that

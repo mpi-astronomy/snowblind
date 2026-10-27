@@ -89,9 +89,10 @@ axes, since NIRCam reads out along science rows and NIRISS along
 science columns. On darks ``background_method=None`` is right (the
 median removes the dark current's own level); for extended emission
 larger than a few hundred pixels ``integration_model`` keeps it out of
-the noise estimate at the cost of the slowest 1/f; a dispersed
-(grism) exposure, whose background is a smooth function of position,
-has not been tested and would need its own background model.
+the noise estimate at the cost of the slowest 1/f; for a dispersed
+(grism) exposure the step defaults to ``background_method='crds_background'``,
+which scales the CRDS background reference once to the exposure and
+subtracts it from every difference (see the WFSS section).
 
 Readout geometry
 ----------------
@@ -925,6 +926,82 @@ pixels as zero, where OLS_C leaves the saturating cores without a rate
 and the reset fit fills them, 2197 pixels here with values consistent
 with each pixel's first difference. Apertures with a missing pixel in
 any chain are now left out.)
+
+Dispersed exposures
+-------------------
+
+A NIRISS WFSS exposure carries the dispersed zodiacal and stray light as
+a smooth background that varies along the dispersion by a factor of
+three across the frame. A scalar median background hands that gradient
+to the filter, which removes it (a change of 25 to 40 percent of the sky
+at the 95th percentile of pixels, the sky lowered by 2 percent), and the
+box-spline background keeps the gradient but gives back the banding. The
+pipeline's own WFSS background step scales a CRDS reference image of the
+dispersed background to the data; the stream clean does the same with
+``background_method='crds_background'``, its default on WFSS exposures:
+the reference is scaled once to the
+exposure, by the median ratio to the ramp's own slope image over the
+masked background pixels, and the scaled reference is subtracted from
+every group difference, scaled only by its time, through the same fixed
+background path as the box-spline model, so nothing is fitted per
+difference. The scene mask is then built on the residual, where the
+traces stand against a flat sky.
+
+On a dispersed exposure the row- and column-mean scatter of the rate is
+the dispersed background itself, so the banding has to be measured on
+the background-subtracted rate (rate minus the scaled reference,
+flat-fielded, over the mask). GR150C (NIS, 8 groups) and GR150R (NIS, 19
+groups), rows and columns in DN/s:
+
+=======  =============================  =======  =======  ================
+grism    chain                          rows     cols     residual median
+=======  =============================  =======  =======  ================
+GR150C   SIRS                           0.0059   0.0063   -0.0007 sky
+GR150C   jwst median                    0.0065   0.0172   +0.0027 sky
+GR150C   stream clean, median           0.0071   0.0239   -0.0087 sky
+GR150C   stream clean, box 256          0.0050   0.0060   +0.0024 sky
+GR150C   stream clean, reference        0.0004   0.0005   -0.0013 sky
+GR150R   SIRS                           0.0021   0.0067   -0.0008 sky
+GR150R   jwst median                    0.0021   0.0041   +0.0011 sky
+GR150R   stream clean, median           0.0250   0.0077   -0.0208 sky
+GR150R   stream clean, box 256          0.0053   0.0078   -0.0009 sky
+GR150R   stream clean, reference        0.0004   0.0003   -0.0014 sky
+=======  =============================  =======  =======  ================
+
+With the reference the banding drops by a factor 12 to 15 on GR150C and 5
+to 20 on GR150R, the residual median stays within 0.15 percent of the sky
+and the 5th and 95th percentiles of the per-pixel change are SIRS's own,
+so nothing at large scales is touched. The jwst median imprints column
+structure on GR150C, where the dispersion runs along rows.
+
+.. figure:: figures/field_rate_images_wfss_gr150c_full.jpg
+   :width: 100%
+
+   NIRISS GR150C, NIS, 8 groups, the scaled background reference
+   subtracted from every panel for display, flat-fielded, full frame
+   binned 2 by 2. The stream clean with the reference as its background
+   takes the row- and column-mean scatter of the background-subtracted
+   sky from 0.006 to 0.0005 DN/s; the jwst median leaves the banding and
+   adds column structure at the right edge, where the dispersed
+   background falls off.
+
+The sky statistics do not tell the two grisms apart, but the geometry
+does. NIRISS reads along science columns, and GR150R disperses along
+that axis, so a trace is a 100 to 200 clock feature in the readout
+stream with its continuum shape and emission lines at the 30 to 300
+pixel scales the Wiener gain passes. Masked traces are bridged from the
+samples either side, but faint traces and trace wings under the mask's
+threshold would have their spectral shape read as slow noise and
+removed, a spectrophotometric bias no sky statistic can see. GR150C
+traces cross the stream in a few clocks, above the cutoff, and are safe.
+NIRCam has the same split the other way round: it reads along rows, so
+GRISMR is the stream-parallel case and GRISMC the safe one. The step
+therefore skips a stream-parallel grism with a warning, decided from the
+filter and pupil keywords before any WCS exists, and
+``allow_dispersion_along_stream`` overrides it at that risk. An
+injection test of faint traces along the stream is what would set the
+size of the bias and say whether a longer cutoff period could make
+those exposures safe.
 
 Crowded fields and extended emission
 ------------------------------------

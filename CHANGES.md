@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Now `StreamCleanStep` can clean 1/f noise for dispersed (WFSS) exposures,
+  `background_method='crds_background'`, the default there, scales the
+  CRDS background reference once to the exposure and subtracts it from
+  every difference; grisms that disperse along the readout stream (NIRISS
+  GR150R, NIRCam GRISMR) are skipped unless `allow_dispersion_along_stream`
+  is set.
+
 ## [1.0.1] - 2026-10-26
 
 ### Fixed
@@ -40,7 +49,12 @@
   background measured on the flat-fielded difference (default) or a
   box-spline background per integration for extended emission, per-read
   even-odd and per-column offset corrections, and the first read cleaned
-  against the reset-level prior.
+  against the reset-level prior. For dispersed (WFSS) exposures,
+  `background_method='crds_background'`, the default there, scales the
+  CRDS background reference once to the exposure and subtracts it from
+  every difference; grisms
+  that disperse along the readout stream (NIRISS GR150R, NIRCam GRISMR)
+  are skipped unless `allow_dispersion_along_stream` is set.
 - `ResetRampFitStep`: likelihood ramp fitting with the superbias-subtracted
   reset level as an extra resultant, so that pixels with a single
   unsaturated group still get a rate. The reset offset is anchored to each
