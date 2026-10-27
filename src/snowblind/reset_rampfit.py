@@ -37,6 +37,27 @@ __all__ = ["ResetRampFitStep", "write_resetfit"]
 log = logging.getLogger(__name__)
 
 
+def _span(values, fmt):
+    """The range of ``values`` as "low to high" in the format ``fmt``, or the one value when they all agree.
+
+    Parameters
+    ----------
+    values : sequence of float
+        Per-channel values.
+    fmt : str
+        Format spec for one value, such as ``'+.2f'``.
+
+    Returns
+    -------
+    str
+        ``f"{low:{fmt}} to {high:{fmt}}"`` or ``f"{value:{fmt}}"``.
+    """
+    low, high = min(values), max(values)
+    if f"{low:{fmt}}" == f"{high:{fmt}}":
+        return f"{low:{fmt}}"
+    return f"{low:{fmt}} to {high:{fmt}}"
+
+
 class ResetRampFitStep(Step):
     """Fit ramps by maximum likelihood with a Gaussian prior on the reset level.
 
@@ -153,10 +174,12 @@ class ResetRampFitStep(Step):
         if self.firstgroup is not None or self.lastgroup is not None:
             log.warning("firstgroup and lastgroup are accepted for the ramp_fit slot but not implemented; all groups are fitted")
         log.info(
-            f"Reset-anchored likelihood fit: sigma_b "
-            f"{'per pixel, median ' if np.ndim(sigma_b) == 2 else ''}"
-            f"{float(np.nanmedian(sigma_b)):.3g} DN, t1_scale {t1_scale:.4f}, "
-            f"reset level median {float(np.nanmedian(reset_level)):.2f} DN"
+            f"Reset-anchored likelihood fit: the reset level enters as an extra resultant with a scatter of "
+            f"{float(np.nanmedian(sigma_b)):.3g} DN, and the first read weighs {t1_scale:.3f} of its nominal time"
+        )
+        log.debug(
+            f"sigma_b {'per pixel, median ' if np.ndim(sigma_b) == 2 else ''}{float(np.nanmedian(sigma_b)):.3g} DN, "
+            f"t1_scale {t1_scale:.4f}, reset level median {float(np.nanmedian(reset_level)):.2f} DN"
             + (f", per channel t1_scale {channel_timing[0]} offsets {channel_timing[1]}" if channel_timing else "")
         )
         blocks = readout.channel_blocks(result.data.shape[-2:], result.meta.subarray.fastaxis, result.meta.subarray.slowaxis)
@@ -174,8 +197,11 @@ class ResetRampFitStep(Step):
                     fallback=list(t1_scales), resultant=resultant,
                 )
                 log.info(
-                    "First-read scales anchored to this exposure's bright pixels, per channel: "
-                    + ", ".join(f"{k:.4f}" for k in fitted)
+                    f"First-read timing anchored to this exposure's bright pixels: {_span(fitted, '.3f')} of the nominal "
+                    f"time across the channels (calibration {_span(t1_scales, '.3f')})"
+                )
+                log.debug(
+                    "First-read scales per channel: " + ", ".join(f"{k:.4f}" for k in fitted)
                     + " (calibration file, carried to this pattern: " + ", ".join(f"{k:.4f}" for k in t1_scales) + ")"
                 )
                 t1_scales = [float(k) for k in fitted]
@@ -184,8 +210,11 @@ class ResetRampFitStep(Step):
                 fallback=file_offsets, resultant=resultant,
             )
             log.info(
-                "Reset offsets anchored to this exposure's sky pixels, per channel: "
-                + ", ".join(f"{b:+.2f}" for b in anchored)
+                f"Reset level anchored to this exposure's sky pixels: offsets of {_span(anchored, '+.2f')} DN across the "
+                f"channels, against {_span(file_offsets, '+.2f')} in the calibration"
+            )
+            log.debug(
+                "Reset offsets per channel: " + ", ".join(f"{b:+.2f}" for b in anchored)
                 + " DN (calibration file: " + ", ".join(f"{b:+.2f}" for b in file_offsets) + ")"
             )
             channel_timing = (t1_scales, [float(b) + self.reset_offset for b in anchored])
@@ -292,10 +321,14 @@ class ResetRampFitStep(Step):
         elif sigma_b is None:
             tree = default_calibration(model.meta.instrument.detector)
             provenance = tree.get("provenance") or {}
+            files = provenance.get("input_files", [])
             log.info(
-                f"Using the reset calibration packaged for {tree['detector']}: sigma_b {tree['sigma_b_median']:.2f} DN, "
-                f"t1_scale {tree['t1_scale']:.4f}, measured {str(provenance.get('date', ''))[:10]} "
-                f"from {', '.join(provenance.get('input_files', []))}"
+                f"Using the reset calibration packaged for {tree['detector']}, measured "
+                f"{str(provenance.get('date', ''))[:10]} from {len(files)} dark exposure{'s' if len(files) != 1 else ''}"
+            )
+            log.debug(
+                f"Packaged calibration: sigma_b {tree['sigma_b_median']:.2f} DN, t1_scale {tree['t1_scale']:.4f}, "
+                f"from {', '.join(files)}"
             )
         if tree is not None:
             file_offset = float(tree.get("reset_offset", 0.0) or 0.0)
@@ -340,9 +373,10 @@ class ResetRampFitStep(Step):
                 if channel_timing is not None:
                     channel_timing = ([rescale_t1(k, float(t1_cal), t1_data) for k in channel_timing[0]], channel_timing[1])
                 log.info(
-                    f"First-read timing carried from a first-group time of {float(t1_cal):.2f} s to {t1_data:.2f} s: "
-                    f"t1_scale {t1_scale:.4f}"
+                    f"First-read timing carried from the calibration's first-group time of {float(t1_cal):.2f} s to this "
+                    f"exposure's {t1_data:.2f} s"
                 )
+                log.debug(f"t1_scale after the carry: {t1_scale:.4f}")
             elif t1_cal is None and tree.get("t1_scale") is not None and abs(float(tree.get("t1_scale", 1.0)) - 1.0) > 1e-6:
                 log.warning(
                     "The calibration's t1_scale has no first-group time recorded; it is used as it is, which is only right "

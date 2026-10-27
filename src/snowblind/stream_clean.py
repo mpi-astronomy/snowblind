@@ -12,6 +12,7 @@ import logging
 
 import numpy as np
 from crds.core.exceptions import CrdsError
+from scipy import ndimage
 from jwst import datamodels
 from jwst.lib.reffile_utils import get_subarray_model
 from .step import Step
@@ -32,6 +33,7 @@ from .noise_spectrum import (
     fit_power_law,
     power_law,
     smooth_spectrum,
+    notch_period as notch_gain_period,
     taper_high_frequencies,
     wiener_gain,
 )
@@ -78,7 +80,9 @@ class StreamCleanStep(Step):
     The main options (see ``spec`` for the full list and defaults):
     ``fit_method`` picks the per-channel noise estimator (``wiener`` or
     ``row_median``); ``background_method`` and ``scene_model`` choose the
-    background removed before the fit; ``user_mask``, ``mask_dilation``
+    background removed before the fit (``crds_background``, the default
+    on WFSS exposures, scales the CRDS background reference once to the
+    ramp); ``user_mask``, ``mask_dilation``
     and ``mask_spikes`` control which pixels count as background; ``clean_first_group`` and
     ``reset_calib`` extend the cleaning to group 1 (and the zeroframe)
     against zero or the reset-level prior; ``even_odd_columns``,
@@ -93,19 +97,21 @@ class StreamCleanStep(Step):
 
     spec = """
         fit_method = option('wiener', 'row_median', default='wiener')  # noise estimator per channel
-        background_method = option('median', 'integration_model', 'exposure_model', None, default='median')  # background removed before fitting: a scalar median suits sky-limited fields, integration_model (a box model) only extended structure above its box, None darks
+        background_method = option('median', 'integration_model', 'exposure_model', 'crds_background', None, default='median')  # background removed before fitting: a scalar median suits sky-limited fields, integration_model (a box model) only extended structure above its box, None darks; crds_background (the scaled CRDS background reference) is the default on WFSS exposures
         background_box_size = int_list(min=2, max=2, default=None)  # box size of the box-spline background (integration_model, exposure_model); default 32 by 32
         apply_flat_field = boolean(default=True)  # measure the background on the flat-fielded difference (the sky times the response); without a flat reference the raw difference is used
+        reference_units = option('auto', 'raw', 'flat_fielded', default='auto')  # units of the CRDS background reference: raw (it carries the detector's pixel response, as the NIRISS files do), flat_fielded (as the NIRCam files are), or auto (decided from its pixel pattern against the flat)
         user_mask = string(default=None)  # path to a user-supplied background mask
         mask_dilation = integer(default=0)  # pixels by which to grow the masked (source) regions, for source wings
         mask_spikes = boolean(default=True)  # mask the column-aligned spikes of saturated stars along their extent (chisel mask only)
+        allow_dispersion_along_stream = boolean(default=False)  # clean a grism exposure whose dispersion runs along the readout stream (NIRISS GR150R, NIRCam GRISMR), where faint trace shapes are read as noise; skipped otherwise
         clean_first_group = boolean(default=True)  # also clean group 1, against zero or against the reset prior; needed for reset_rampfit, harmless for OLS
         reset_calib = string(default=None)  # snowblind-reset-calib ASDF; with it the first read is cleaned against its reset-level prior, as reset_rampfit will use it
         scene_model = string(default=None)  # FITS image of the scene in DN/s, detector frame, before flat-fielding (e.g. the blotted mosaic); replaces the background model
         min_density = float(default=0.2)  # local background fraction below which the estimate tapers off
         first_direction = integer(default=1)  # readout direction of channel 0 in the detector frame, 1 or -1
         even_odd_columns = boolean(default=True)  # remove the per-channel even-odd column offset of each difference
-        column_offsets = boolean(default=True)  # remove each column's masked mean from each difference (a per-column offset that drifts during the integration)
+        column_offsets = boolean(default=True)  # remove each column's masked mean from each difference (a per-column offset that drifts during the integration); turned off on WFSS exposures, where the traces run along the columns and would bias the means
         anchor_mean = boolean(default=True)  # set each channel's mean removed noise to the masked mean of the residual, so a robust estimator cannot bias the sky
         max_lag = integer(default=65536)  # autocorrelation length in pixel times for the noise spectrum; wiener only
         min_period = integer(default=300)  # pixel times (3 ms); the wiener gain is zero for shorter periods (None keeps all)
@@ -115,8 +121,9 @@ class StreamCleanStep(Step):
         skip = boolean(default=False)
     """  # noqa: E501
 
-    reference_file_types = ["flat"]
-    # fetched in process, where an exposure type without a flat (a dark) is handled, instead of up front
+    reference_file_types = ["flat", "bkg"]
+    # fetched in process, where an exposure type without a flat, such as a dark, is handled.  Same for WFSS
+    # exposures that need bkg.
     prefetch_references = False
 
     def process(self, input_data):
@@ -152,6 +159,44 @@ class StreamCleanStep(Step):
             log.warning(f"{reason}; skipping stream_clean")
             self.set_cal_step(result, "SKIPPED")
             return result
+        grism = dispersion_along_stream(result)
+        if grism is not None and not self.allow_dispersion_along_stream:
+            log.warning(
+                f"{grism} disperses along the readout stream: a trace is a feature of a few hundred (NIRISS) to over a "
+                "thousand (NIRCam) clocks there, with its continuum shape and emission lines at the scales the Wiener "
+                "gain passes, so the spectral shape of "
+                "faint traces and trace wings under the scene mask's threshold would be read as 1/f noise and removed; "
+                "skipping stream_clean (allow_dispersion_along_stream=True overrides, at that risk)"
+            )
+            self.set_cal_step(result, "SKIPPED")
+            return result
+        if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES and self.background_method == "median":
+            # the dispersed background is a smooth function of position that no scalar background can model
+            self.background_method = "crds_background"
+            log.debug("WFSS exposure: background_method set to 'crds_background'")
+        if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES and self.column_offsets:
+            # the traces run along the axis the offsets are measured on, so each column's masked mean carries
+            # the outskirts of its detected traces and the whole of its undetected ones, a bias that would be
+            # removed from every trace in the column
+            self.column_offsets = False
+            log.debug("WFSS exposure: column_offsets turned off")
+        self._stripe_axes = (1, 0)
+        self._notch_period = None
+        if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES:
+            # the scene mask destripes the draft rate with row and column medians before detecting; a trace along
+            # more than half of a column (or row) would set that median and vanish, so only the stream's axis is used
+            self._stripe_axes = (1,) if abs(int(result.meta.subarray.fastaxis or 1)) == 1 else (0,)
+            # the unmasked wings and faint traces along the columns sit at the same clock in every readout row, a
+            # pattern at the row frequency that the Wiener gain would pass as noise; a narrow notch there removes it
+            det_shape = readout.to_detector_frame(
+                np.zeros(result.data.shape[-2:], dtype=np.uint8), result.meta.subarray.fastaxis, result.meta.subarray.slowaxis
+            ).shape
+            self._notch_period = float(readout.channel_width(det_shape[1]) + readout.LINE_OVERHEAD)
+            log.debug(f"WFSS exposure: the Wiener gain is notched at the readout row period of {self._notch_period:.0f} clocks")
+            log.info(
+                "A dispersed exposure: the background is the scaled CRDS background reference, and the traces along the "
+                "columns are kept out of the noise estimate (no per-column offsets, the readout row period notched)"
+            )
 
         flat = None
         flat_unusable = None
@@ -167,7 +212,7 @@ class StreamCleanStep(Step):
                 log.info(f"Using FLAT reference file {flat_filename}")
                 flat = read_flat_file(result, flat_filename)
                 flat_unusable = unusable_in_flat(result, flat_filename)
-                log.info(
+                log.debug(
                     f"The flat marks {100 * flat_unusable.mean():.2f} percent of pixels unusable; "
                     "they are kept out of the background"
                 )
@@ -185,6 +230,24 @@ class StreamCleanStep(Step):
             if flat is not None:
                 with np.errstate(invalid="ignore", divide="ignore"):
                     self._scene_flat = np.where(np.isfinite(flat) & (flat > 0), self._scene / flat, np.nan)
+        self._reference = None
+        self._reference_scale = None
+        if self.background_method == "crds_background":
+            if self.scene_model is not None:
+                raise ValueError("background_method='crds_background' and scene_model are both scene models; give one of them")
+            try:
+                bkg_filename = self.get_reference_file(result, "bkg")
+            except CrdsError as err:
+                raise ValueError(
+                    f"background_method='crds_background' needs the CRDS background reference, and CRDS has none: {err}"
+                ) from err
+            if bkg_filename in (None, "", "N/A"):
+                raise ValueError(
+                    "background_method='crds_background' needs the CRDS background reference; CRDS has none for this exposure"
+                )
+            log.info(f"Using BKG reference file {bkg_filename}")
+            with datamodels.open(bkg_filename) as bkg_model:
+                self._reference = np.array(bkg_model.data, dtype=np.float64)
 
         background_mask, mask_model = self._scene_mask(result, flat)
         if background_mask.shape[-2:] != result.data.shape[-2:]:
@@ -200,7 +263,10 @@ class StreamCleanStep(Step):
         if self.mask_dilation > 0:
             background_mask = dilate_sources(background_mask, self.mask_dilation)
 
-        log.info(f"Cleaning {result.meta.filename} with fit_method={self.fit_method}")
+        log.info(
+            f"Cleaning {result.meta.filename} with "
+            + ("the Wiener filter along the readout stream" if self.fit_method == "wiener" else "row medians")
+        )
         cleaned, spectra = self._clean_with_mask(result, background_mask, flat)
 
         if self.save_spectra and spectra is not None:
@@ -261,7 +327,7 @@ class StreamCleanStep(Step):
                 result.meta.subarray.slowaxis,
                 science_superbias=result.meta.ref_file.superbias.name,
             )
-            log.info(f"First read cleaned against the reset prior of {self.reset_calib}")
+            log.info(f"The first read is cleaned against the reset level of {self.reset_calib}")
         scene_background = None
         if self._scene_flat is not None:
             # the scene in DN per group, in the units the backgrounds are in (flat-fielded when a flat is in use);
@@ -297,12 +363,67 @@ class StreamCleanStep(Step):
             min_density=self.min_density,
             max_lag=self.max_lag,
             min_period=self.min_period,
+            notch_period=self._notch_period,
             return_spectra=True,
             first_group_scale=first_group_time_ratio(result),
             even_odd_columns=self.even_odd_columns,
             column_offsets=self.column_offsets,
             anchor_mean=self.anchor_mean,
         )
+
+    def _fit_reference(self, model, background_mask, flat):
+        """Scale the background reference once to this exposure and make it the scene model.
+
+        The scale is the median ratio of the ramp's own least-squares slope
+        image (raw DN/s, so no flat is needed) to the reference over the
+        background mask, through `reference_scale`.  One number for the
+        whole exposure: each group difference then gets the same scaled
+        reference, scaled only by its time, so nothing is fitted per
+        difference and nothing random-walks along the ramp.
+
+        Parameters
+        ----------
+        model : `~stdatamodels.jwst.datamodels.RampModel`
+            The ramp; ``data``, ``groupdq`` and ``meta.exposure.group_time``
+            are read.
+        background_mask : ndarray of bool, shape (nrows, ncols)
+            True for background pixels.
+        flat : ndarray or None, shape (nrows, ncols)
+            Flat field in use, or None.  A flat-fielded reference (the
+            NIRCam ones) is multiplied by it first, through
+            `reference_in_raw_units`, and the scaled reference is divided by
+            it for the flat-fielded paths.
+        """
+        draft = mean_slope_per_group(np.asarray(model.data), np.asarray(model.groupdq))
+        draft = draft / (model.meta.exposure.group_time or 1.0)
+        mask = np.asarray(background_mask, dtype=bool)
+        if mask.ndim == 3:
+            mask = mask.all(axis=0)
+        reference, carries_flat = reference_in_raw_units(self._reference, flat, self.reference_units)
+        if flat is not None:
+            if self.reference_units == "auto":
+                correlation = reference_flat_correlation(self._reference, flat)
+                log.debug(f"Pixel-scale structure of the background reference against the flat's: correlation {correlation:.2f}")
+                log.info(
+                    "The background reference carries the detector's pixel response and is used as it is" if carries_flat
+                    else "The background reference is flat-fielded; it is multiplied by the flat before scaling"
+                )
+                if not np.isfinite(correlation) or 0.3 <= correlation <= 0.7:
+                    log.warning(
+                        "That correlation does not settle whether the background reference is flat-fielded (the NIRISS "
+                        "files give 0.8 to 0.97 against their own flats, the NIRCam files 0); set reference_units to "
+                        "'raw' or 'flat_fielded' to decide"
+                    )
+            else:
+                log.info(f"The background reference is taken as {self.reference_units.replace('_', '-')} (reference_units)")
+        scale = reference_scale(draft, reference, mask)
+        self._reference_scale = scale
+        self._scene = (scale * reference).astype(np.float64)
+        self._scene_flat = self._scene
+        if flat is not None:
+            with np.errstate(invalid="ignore", divide="ignore"):
+                self._scene_flat = np.where(np.isfinite(flat) & (flat > 0), self._scene / flat, np.nan)
+        log.info(f"Background reference scaled to this exposure by {scale:.4g} (one scale for every group difference)")
 
     def _chisel_scene_mask(self, rate, scene=None):
         """The chisel scene mask of a rate image, with the scene model and the spike mask applied.
@@ -326,13 +447,14 @@ class StreamCleanStep(Step):
         rate = np.array(rate, dtype=np.float64)
         if scene is not None:
             rate = rate - scene
-        background_mask = chisel_mask(rate)
+        background_mask = chisel_mask(rate, stripe_axes=getattr(self, "_stripe_axes", (1, 0)))
         if scene is not None:
             background_mask &= np.isfinite(scene)
-        log.info(f"Scene mask (chisel): {100 * (~background_mask).mean():.2f} percent of pixels masked")
+        log.debug(f"Scene mask (chisel): {100 * (~background_mask).mean():.2f} percent of pixels masked")
         if self.mask_spikes:
             background_mask, nstars = spike_mask(rate, background_mask)
-            log.info(f"Spike mask: {nstars} bright stars, {100 * (~background_mask).mean():.2f} percent of pixels masked")
+            log.debug(f"Spike mask: {nstars} bright stars, {100 * (~background_mask).mean():.2f} percent of pixels masked")
+            self._spike_stars = nstars
         return background_mask
 
     def _scene_mask(self, model, flat):
@@ -376,6 +498,9 @@ class StreamCleanStep(Step):
             if hasattr(image_model, "dq") and image_model.dq is not None:
                 rate[(image_model.dq & dqflags.pixel["DO_NOT_USE"]) > 0] = np.nan
             background_mask = self._chisel_scene_mask(rate, self._scene_flat)
+            if self._reference is not None:
+                self._fit_reference(model, background_mask, flat)
+                background_mask = self._chisel_scene_mask(rate, self._scene_flat)
             if self.background_method == "median" and self._scene is None:
                 low, high = background_structure(rate, background_mask)
                 if high - low > 0.5:
@@ -383,12 +508,20 @@ class StreamCleanStep(Step):
                     log.warning(
                         f"The unmasked background has large-scale structure: its 32-pixel tiled sky runs from {low:.2f} to "
                         f"{high:.2f} times the median.  A scalar median background hands that structure to the noise "
-                        "estimate, which removes it; for extended emission use background_method='integration_model'"
+                        "estimate, which removes it; for extended emission use background_method='integration_model', "
+                        "for a dispersed exposure 'crds_background'"
                     )
+            stars = getattr(self, "_spike_stars", 0)
+            log.info(
+                f"Background mask: {100 * (~background_mask).mean():.1f} percent of pixels are sources"
+                + (f", the diffraction spikes of {stars} bright star{'s' if stars != 1 else ''} among them" if stars else "")
+            )
             mask_model = make_intermediate_model(image_model, background_mask) if self.save_mask else None
         else:
             # the jwst helper reads the user's mask file; the sigma-clip arguments do not apply to a given mask
             background_mask, mask_model = make_scene_mask(self.user_mask, image_model, False, 2.0, False, True, self.save_mask)
+            if self._reference is not None:
+                self._fit_reference(model, background_mask, flat)
         if image_model is not model:
             image_model.close()
         return background_mask, mask_model
@@ -422,6 +555,154 @@ def unusable_in_flat(model, flat_filename):
         data = np.asarray(flat_model.data, dtype=np.float64)
         dq = np.asarray(flat_model.dq)
     return ((dq & dqflags.pixel["DO_NOT_USE"]) > 0) | ~np.isfinite(data) | (data <= 0)
+
+
+def reference_flat_correlation(reference, flat, size=15):
+    """Correlation of the pixel-scale structure of a background reference image with the flat field's.
+
+    The CRDS WFSS background references are not all in the same units:
+    the NIRISS ones are stacks of rate images and carry the detector's
+    pixel response, the NIRCam ones are flat-fielded and smooth, and
+    neither the files nor their documentation say which.  The pixel-scale
+    structure of each image (the image over its local mean on ``size``
+    pixels, minus one) tells them apart: its correlation with the flat's
+    is 0.8 to 0.97 for the NIRISS files against the flats CRDS selects for
+    them and within 0.03 of zero for the NIRCam files.
+
+    Parameters
+    ----------
+    reference : ndarray, shape (nrows, ncols)
+        Background reference image.
+    flat : ndarray, shape (nrows, ncols)
+        Flat field for the same detector and filter.
+    size : int
+        Side of the local mean, in pixels.
+
+    Returns
+    -------
+    float
+        Pearson correlation of the two structure images over the usable
+        pixels, or NaN when fewer than 10000 pixels are usable or either
+        image has no structure.
+    """
+    reference = np.asarray(reference, dtype=np.float64)
+    flat = np.asarray(flat, dtype=np.float64)
+    usable = np.isfinite(reference) & np.isfinite(flat) & (flat > 0.5)
+    usable &= reference > 0.2 * np.nanmedian(reference[usable]) if usable.any() else False
+    if usable.sum() < 10000:
+        return float("nan")
+    filled_ref = np.where(usable, reference, np.nanmedian(reference[usable]))
+    filled_flat = np.where(usable, flat, 1.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ref_structure = filled_ref / ndimage.uniform_filter(filled_ref, size) - 1.0
+        flat_structure = filled_flat / ndimage.uniform_filter(filled_flat, size) - 1.0
+    x, y = ref_structure[usable], flat_structure[usable]
+    if x.std() == 0 or y.std() == 0:
+        return float("nan")
+    return float(np.corrcoef(x, y)[0, 1])
+
+
+def reference_carries_flat(reference, flat, size=15, threshold=0.5):
+    """Whether a background reference image carries the flat field's pixel-to-pixel pattern.
+
+    Parameters
+    ----------
+    reference : ndarray, shape (nrows, ncols)
+        Background reference image.
+    flat : ndarray, shape (nrows, ncols)
+        Flat field for the same detector and filter.
+    size : int
+        Side of the local mean of `reference_flat_correlation`, in pixels.
+    threshold : float
+        Correlation above which the reference is taken to carry the flat.
+
+    Returns
+    -------
+    bool
+        True when `reference_flat_correlation` exceeds ``threshold``.
+    """
+    correlation = reference_flat_correlation(reference, flat, size)
+    return bool(np.isfinite(correlation) and correlation > threshold)
+
+
+def reference_in_raw_units(reference, flat, units="auto"):
+    """A background reference in the raw detector units of a group difference.
+
+    A reference that already carries the flat's pixel pattern is returned
+    as it is; a flat-fielded one is multiplied by the flat, so that the
+    sky it models has the response the raw differences have (where the
+    flat is not finite or not positive the reference is left as it is).
+
+    Parameters
+    ----------
+    reference : ndarray, shape (nrows, ncols)
+        Background reference image.
+    flat : ndarray or None, shape (nrows, ncols)
+        Flat field in use, or None, in which case the reference is
+        returned unchanged.
+    units : {'auto', 'raw', 'flat_fielded'}
+        What the reference is in: ``raw`` leaves it alone, ``flat_fielded``
+        multiplies it by the flat, ``auto`` decides with
+        `reference_carries_flat`.
+
+    Returns
+    -------
+    raw : ndarray of float64, shape (nrows, ncols)
+        The reference in raw units.
+    carries_flat : bool
+        Whether the reference carried the flat already (True also when no
+        flat is given, since nothing was done).
+    """
+    reference = np.asarray(reference, dtype=np.float64)
+    if flat is None or units == "raw":
+        return reference, True
+    if units == "auto" and reference_carries_flat(reference, flat):
+        return reference, True
+    flat = np.asarray(flat, dtype=np.float64)
+    gain = np.where(np.isfinite(flat) & (flat > 0), flat, 1.0)
+    return reference * gain, False
+
+
+def reference_scale(rate, reference, background_mask, floor=0.2, min_pixels=1000):
+    """The factor that scales a background reference image to a rate image, from the masked background pixels.
+
+    The median of the ratio ``rate / reference`` over the background pixels
+    where the reference is above ``floor`` times its median, which keeps
+    the ratio away from the reference's dark regions.  The jwst WFSS
+    background step uses an error-weighted mean with percentile clipping
+    for the same purpose; the median needs no error array and is as
+    robust.
+
+    Parameters
+    ----------
+    rate : ndarray, shape (nrows, ncols)
+        Rate image in the units the scale is wanted in (raw DN/s here).
+    reference : ndarray, shape (nrows, ncols)
+        Background reference image, normalised or not.
+    background_mask : ndarray of bool, shape (nrows, ncols)
+        True for background pixels.
+    floor : float
+        Fraction of the reference's median below which a pixel is left out.
+    min_pixels : int
+        Fewest usable pixels for a scale.
+
+    Returns
+    -------
+    float
+        The scale.
+
+    Raises
+    ------
+    ValueError
+        If fewer than ``min_pixels`` pixels are usable.
+    """
+    reference = np.asarray(reference, dtype=np.float64)
+    usable = np.asarray(background_mask, dtype=bool) & np.isfinite(rate) & np.isfinite(reference)
+    level = np.nanmedian(reference[usable]) if usable.any() else np.nan
+    usable &= reference > floor * level
+    if usable.sum() < min_pixels:
+        raise ValueError(f"Only {int(usable.sum())} background pixels to scale the background reference on; {min_pixels} needed")
+    return float(np.median(rate[usable] / reference[usable]))
 
 
 def background_structure(rate, background_mask, box=32, percentiles=(1.0, 99.0)):
@@ -581,6 +862,41 @@ def first_group_time_ratio(model):
     return float(frame_time * (nframes + 1) / 2.0 / group_time)
 
 
+WFSS_EXPOSURE_TYPES = ("NIS_WFSS", "NRC_WFSS")
+
+
+def dispersion_along_stream(model):
+    """The grism of a NIRISS or NIRCam WFSS exposure whose dispersion runs along the readout stream, or None.
+
+    Each instrument has one grism of each orientation.  NIRISS reads along
+    science columns and its GR150R disperses along the detector rows,
+    which is that axis; NIRCam reads along rows and its GRISMR disperses
+    along rows.  On those exposures a trace lies along the stream, where
+    the Wiener filter reads structure on 30 to 300 pixel scales as noise.
+    NIRISS GR150C and NIRCam GRISMC traces cross the stream in a few
+    clocks and are safe.  Decided from the filter (NIRISS) and pupil
+    (NIRCam) keywords, so it works at the Detector1 stage, before any WCS.
+
+    Parameters
+    ----------
+    model : `~stdatamodels.jwst.datamodels.RampModel`
+        The input; ``meta.instrument.name``, ``filter`` and ``pupil`` are read.
+
+    Returns
+    -------
+    str or None
+        The grism name when the dispersion runs along the stream, else None.
+    """
+    instrument = str(model.meta.instrument.name).upper()
+    filter_name = str(model.meta.instrument.filter or "").upper()
+    pupil = str(model.meta.instrument.pupil or "").upper()
+    if instrument == "NIRISS" and filter_name.startswith("GR150R"):
+        return f"NIRISS {filter_name}"
+    if instrument == "NIRCAM" and pupil.startswith("GRISMR"):
+        return f"NIRCam {pupil}"
+    return None
+
+
 def _unsupported_reason(model):
     """Return why the model cannot be cleaned, or None if it can.
 
@@ -684,6 +1000,7 @@ def clean_ramp(
     return_spectra=False,
     first_group_scale=1.0,
     min_period=None,
+    notch_period=None,
     even_odd_columns=False,
     column_offsets=False,
     anchor_mean=False,
@@ -713,7 +1030,7 @@ def clean_ramp(
         science-frame axis and direction of the slow readout.
     fit_method : str
         Key into `snowblind.stream_filters.FILTERS`.
-    background_method : {'median', 'integration_model', 'exposure_model', None}
+    background_method : {'median', 'integration_model', 'exposure_model', 'crds_background', None}
         Background removed from each difference before the noise fit (see
         `clean_difference`).  ``integration_model`` and ``exposure_model``
         fit one model per integration or per exposure with
@@ -739,6 +1056,10 @@ def clean_ramp(
         ``wiener`` only: the gain is cut to zero for periods shorter than
         this many clocks, so that compact sources missed by the scene mask
         are not filtered.
+    notch_period : float or None
+        ``wiener`` only: period in clocks at which the gain is notched, the
+        readout row length on a dispersed exposure, where unmasked traces
+        along the columns repeat in every row; None for no notch.
     even_odd_columns : bool
         Remove each channel's even-odd column offset per difference (see
         `estimate_noise`).
@@ -810,6 +1131,7 @@ def clean_ramp(
             first_group_reference=first_group_reference,
             first_group_scale=first_group_scale,
             min_period=min_period,
+            notch_period=notch_period,
         )
         gains = [[(ch["freq"], ch["gain"]) for ch in integration] for integration in spectra]
         for i in range(nints):
@@ -817,8 +1139,10 @@ def clean_ramp(
                 f"ch{k}: alpha={ch['alpha']:.2f} W={ch['white']:.3g} corner={ch['corner_period']:.0f} clocks"
                 for k, ch in enumerate(spectra[i])
             )
-            log.info(f"Integration {i + 1} noise spectra: {summary}")
+            log.debug(f"Integration {i + 1} noise spectra: {summary}")
 
+    removed_power = [0.0] * nints
+    removed_count = [0] * nints
     for i, j, image, mask in iterate_differences(data, groupdq, background_mask, clean_first_group, first_group_reference):
         if j == 0:
             previous = np.zeros_like(image) if first_group_reference is None else first_group_reference
@@ -844,7 +1168,17 @@ def clean_ramp(
         if cleaned_image is None:
             log.warning(f"No usable data in integration {i + 1}, group {j + 1}; difference left as is")
             cleaned_image = image
+        else:
+            removed = (image - cleaned_image)[mask & np.isfinite(image) & np.isfinite(cleaned_image)]
+            removed_power[i] += float(np.sum(removed.astype(np.float64) ** 2))
+            removed_count[i] += removed.size
         cleaned[i, j] = previous + cleaned_image
+    for i in range(nints):
+        if removed_count[i]:
+            log.info(
+                f"Integration {i + 1}: removed 1/f noise with an rms of "
+                f"{np.sqrt(removed_power[i] / removed_count[i]):.2f} DN per group difference over the background pixels"
+            )
 
     if zeroframe is not None and clean_first_group:
         reference = 0.0 if first_group_reference is None else first_group_reference
@@ -943,7 +1277,7 @@ def prepare_difference(
         Background mask, True for usable pixels.  Updated in place: NaN
         pixels, pixels without a valid flat and clipped pixels are set to
         False.
-    background_method : {'median', 'integration_model', None}
+    background_method : {'median', 'integration_model', 'crds_background', None}
         How the background is found: ``median`` or ``model`` are passed to
         the jwst ``background_level`` helper, ``integration_model``
         requires ``fixed_background``, and None (or ``'none'``) removes no
@@ -982,8 +1316,8 @@ def prepare_difference(
         return None, None, nan_pix
 
     no_background = background_method is None or str(background_method).lower() == "none"
-    if background_method == "integration_model" and fixed_background is None:
-        raise ValueError("background_method='integration_model' needs the per-integration background (fixed_background)")
+    if background_method in ("integration_model", "crds_background") and fixed_background is None:
+        raise ValueError(f"background_method={background_method!r} needs its background as fixed_background")
     if fixed_background is not None:
         background = fixed_background
     elif no_background:
@@ -998,6 +1332,30 @@ def prepare_difference(
         background = np.asarray(background, dtype=np.float32) * np.where(flat_ok, flat, 0.0)
     bkg_sub = image - background
     return bkg_sub, background, nan_pix
+
+
+def mean_slope_per_group(data, groupdq):
+    """Mean over the integrations of `slope_per_group`, NaN where no integration has a slope.
+
+    Parameters
+    ----------
+    data : ndarray, shape (nints, ngroups, nrows, ncols)
+        Group data, in DN.
+    groupdq : ndarray of int, same shape as ``data``
+        Group DQ flags.
+
+    Returns
+    -------
+    ndarray of float32, shape (nrows, ncols)
+        Slope per pixel in DN per group, averaged over the integrations
+        that have one; NaN where none has, without a warning.
+    """
+    slopes = np.array([slope_per_group(data[i], groupdq[i]) for i in range(data.shape[0])])
+    valid = np.isfinite(slopes)
+    count = valid.sum(axis=0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = np.where(valid, slopes, 0.0).sum(axis=0) / count
+    return np.where(count > 0, mean, np.nan).astype(np.float32)
 
 
 def slope_per_group(data_int, groupdq_int):
@@ -1178,6 +1536,7 @@ def estimate_channel_gains(
     first_group_reference=None,
     first_group_scale=1.0,
     min_period=None,
+    notch_period=None,
 ):
     """First pass of the ``wiener`` method: the noise spectrum and gain of every channel.
 
@@ -1202,7 +1561,7 @@ def estimate_channel_gains(
     slowaxis : int
         Detector readout axis keyword ``meta.subarray.slowaxis``: the
         science-frame axis and direction of the slow readout.
-    background_method : {'median', 'integration_model', None}
+    background_method : {'median', 'integration_model', 'crds_background', None}
         Background removed from each difference (see `prepare_difference`).
     background_box_size : tuple of int or None
         Box size of the box-spline background of ``integration_model`` and
@@ -1228,6 +1587,8 @@ def estimate_channel_gains(
     min_period : int or None
         Period in clocks below which the gain is tapered to zero (see
         `channel_gain`).
+    notch_period : float or None
+        Period in clocks at which the gain is notched (see `channel_gain`).
 
     Returns
     -------
@@ -1271,7 +1632,7 @@ def estimate_channel_gains(
                 channels.append(zero_gain(lag_default))
                 continue
             median = np.median(per_integration[i][k], axis=0)
-            channels.append(channel_gain(freq, median, min_period=min_period))
+            channels.append(channel_gain(freq, median, min_period=min_period, notch_period=notch_period))
         results.append(channels)
     return results
 
@@ -1306,7 +1667,7 @@ def zero_gain(max_lag):
     }
 
 
-def channel_gain(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, min_period=None):
+def channel_gain(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, min_period=None, notch_period=None):
     """Turn a channel's median spectrum into a Wiener gain.
 
     A power law plus white floor is fitted to the log-binned spectrum.  The
@@ -1329,6 +1690,10 @@ def channel_gain(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, min_
     min_period : int or None
         Period in clocks below which the gain is ramped to zero
         (`taper_high_frequencies`); None keeps all frequencies.
+    notch_period : float or None
+        Period in clocks at which the gain is notched
+        (`snowblind.noise_spectrum.notch_period`), the readout row length
+        on a dispersed exposure; None for no notch.
 
     Returns
     -------
@@ -1352,6 +1717,8 @@ def channel_gain(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, min_
     gain = wiener_gain(combined, white)
     if min_period is not None:
         gain = taper_high_frequencies(freq, gain, min_period)
+    if notch_period is not None:
+        gain = notch_gain_period(freq, gain, notch_period)
     gain[0] = 1.0
     with np.errstate(divide="ignore"):
         corner_period = float((white / amplitude) ** (1.0 / alpha)) if amplitude > 0 else float("inf")
@@ -1454,7 +1821,7 @@ def clean_difference(
         science-frame axis and direction of the slow readout.
     fit_method : str
         Key into `snowblind.stream_filters.FILTERS`.
-    background_method : {'median', 'integration_model', None}
+    background_method : {'median', 'integration_model', 'crds_background', None}
         Passed to `prepare_difference`; ``median`` and ``model`` go to the
         jwst ``background_level`` helper.
     background_box_size : tuple of int or None

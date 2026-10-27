@@ -15,9 +15,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      CRDS_PATH: /tmp/crds_cache
-      CRDS_SERVER_URL: https://jwst-crds.stsci.edu
+    # no CRDS environment: the unit tests stub the parameter and context lookups and give every reference as an override
     strategy:
       fail-fast: false
       matrix:

@@ -49,7 +49,18 @@ def _set_card(model, keyword, value, comment):
 
 
 def _history(model):
-    """The descriptions of the history entries of ``model``, as a list of str."""
+    """The descriptions of the history entries of ``model``.
+
+    Parameters
+    ----------
+    model : DataModel
+        Model whose ASDF history is read.
+
+    Returns
+    -------
+    list of str
+        One description per history entry, in order.
+    """
     return [entry["description"] for entry in model._asdf.get_history_entries()]
 
 

@@ -31,6 +31,7 @@ from jwst.ramp_fitting import RampFitStep
 
 from snowblind import ResetRampFitStep, StreamCleanStep
 from snowblind.reset_calib import run_detector1_to_jump
+from snowblind.stream_clean import reference_in_raw_units, reference_scale
 
 
 def save(out_dir, name, model):
@@ -62,7 +63,7 @@ def main():
     parser.add_argument("--out", default=None)
     parser.add_argument(
         "--background", default="median",
-        help="comma-separated background settings for stream_clean: none, median, box32, box256, ... "
+        help="comma-separated background settings for stream_clean: none, median, crds_background, box32, box256, ... "
         "(boxN is the fitted model with an N-pixel box); the first one also gets the reset fit and the "
         "unsuffixed sirs_stream_clean_* files the figures read",
     )
@@ -126,9 +127,35 @@ def main():
             rate.close()
         cleaned.close()
 
+    background_reference, background_scale = None, None
+    if "crds_background" in settings:
+        # the dispersed background the step scaled out, for the figures to subtract before display and statistics
+        import crds
+        from stdatamodels.jwst import datamodels as sdm
+
+        refs = crds.getreferences(sirs.get_crds_parameters(), reftypes=["bkg", "flat"], observatory="jwst")
+        bkg_path = refs["bkg"]
+        with sdm.open(bkg_path) as bkg_model:
+            bkg = np.array(bkg_model.data, dtype=np.float64)
+        with sdm.FlatModel(refs["flat"]) as flat_model:
+            flat = np.array(flat_model.data, dtype=np.float64)
+            flat[(flat_model.dq & 1) > 0] = np.nan
+        # the step's convention: a flat-fielded reference (NIRCam) goes into raw units before scaling
+        bkg, carries_flat = reference_in_raw_units(bkg, flat)
+        with sdm.open(os.path.join(out_dir, "stream_clean_mask.fits")) as mask_model:
+            mask = mask_model.data.astype(bool)
+        rate_sirs = np.load(os.path.join(out_dir, "sirs_ols.npz"))["rate"].astype(np.float64)
+        background_scale = reference_scale(rate_sirs, bkg, mask)
+        background_reference = os.path.basename(bkg_path)
+        np.savez_compressed(
+            os.path.join(out_dir, "scaled_background.npz"), scene=(background_scale * bkg).astype(np.float32),
+            scale=background_scale, reference=background_reference, reference_carries_flat=carries_flat,
+        )
+
     with open(os.path.join(out_dir, "panels.json"), "w") as handle:
         json.dump(
             {
+                "background_reference": background_reference, "background_scale": background_scale,
                 "file": os.path.basename(args.file), "detector": detector, "calib": args.calib,
                 "ngroups": int(sirs.data.shape[1]), "filter": sirs.meta.instrument.filter,
                 "readpatt": sirs.meta.exposure.readpatt,

@@ -27,6 +27,7 @@ __all__ = [
     "wiener_gain",
     "taper_low_frequencies",
     "taper_high_frequencies",
+    "notch_period",
     "interpolate_gain",
     "synthetic_stream",
 ]
@@ -414,6 +415,36 @@ def taper_high_frequencies(freq, gain, min_period):
     ramp = np.clip((cutoff - freq) / (0.5 * cutoff), 0.0, 1.0)
     ramp = 0.5 * (1.0 - np.cos(np.pi * ramp))
     return gain * ramp
+
+
+def notch_period(freq, gain, period, relative_width=0.02):
+    """Cut the gain in a narrow Gaussian notch at the frequency of ``period`` clocks.
+
+    A scene pattern that repeats every readout row, such as the unmasked
+    wings and faint traces of a dispersed exposure, which run along
+    columns and so sit at the same clock in every row, puts a spectral
+    line at the row frequency; the Wiener gain would pass it as noise.
+    The notch removes that line at the cost of a sliver of 1/f power.
+
+    Parameters
+    ----------
+    freq : ndarray
+        Cycles per clock.
+    gain : ndarray
+        Gain at each frequency of ``freq``.
+    period : float
+        Period of the pattern in clocks (the row length including the
+        line overhead).
+    relative_width : float
+        Gaussian sigma of the notch as a fraction of its frequency.
+
+    Returns
+    -------
+    ndarray
+        ``gain`` multiplied by ``1 - exp(-0.5 ((f - f0) / (w f0))**2)``.
+    """
+    f0 = 1.0 / period
+    return gain * (1.0 - np.exp(-0.5 * ((freq - f0) / (relative_width * f0)) ** 2))
 
 
 def interpolate_gain(freq, gain, nfft):

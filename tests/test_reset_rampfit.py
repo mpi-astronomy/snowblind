@@ -55,17 +55,20 @@ def make_ramp(ngroups=5):
 
 
 def reference_files(tmp_path):
-    """Save a readnoise and a gain reference model and return their paths."""
+    """Save a readnoise, a gain and a superbias reference model and return their paths."""
     readnoise = datamodels.ReadnoiseModel((NY, NX))
     readnoise.data[:] = 7.0
     set_subarray(readnoise)
     gain = datamodels.GainModel((NY, NX))
     gain.data[:] = 2.0
     set_subarray(gain)
-    rn_path, gain_path = tmp_path / "readnoise.fits", tmp_path / "gain.fits"
+    superbias = datamodels.SuperBiasModel((NY, NX))
+    set_subarray(superbias)
+    rn_path, gain_path, bias_path = tmp_path / "readnoise.fits", tmp_path / "gain.fits", tmp_path / "superbias.fits"
     readnoise.save(rn_path)
     gain.save(gain_path)
-    return str(rn_path), str(gain_path)
+    superbias.save(bias_path)
+    return str(rn_path), str(gain_path), str(bias_path)
 
 
 def test_init():
@@ -77,10 +80,12 @@ def test_init():
 
 def test_call_scalar_sigma_b_recovers_rate(tmp_path):
     """ResetRampFitStep.call with sigma_b 15 on a clean linear ramp returns the rate everywhere and marks COMPLETE."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
 
-    rate, rateints = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain)
+    rate, rateints = ResetRampFitStep.call(
+        model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias
+    )
 
     np.testing.assert_allclose(rate.data, RATE, rtol=1e-5)
     assert rate.meta.cal_step.reset_rampfit == "COMPLETE"
@@ -90,11 +95,11 @@ def test_call_scalar_sigma_b_recovers_rate(tmp_path):
 
 def test_call_one_good_group_pixel_gets_rate(tmp_path):
     """ResetRampFitStep.call gives a pixel saturated from group 2 on the rate R1 / t1."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
     model.groupdq[0, 1:, 3, 3] = SAT
 
-    rate, _ = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain)
+    rate, _ = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
 
     assert rate.data[3, 3] == pytest.approx(model.data[0, 0, 3, 3] / FRAME_TIME, rel=1e-5)
     assert np.isfinite(rate.err[3, 3])
@@ -102,32 +107,34 @@ def test_call_one_good_group_pixel_gets_rate(tmp_path):
 
 def test_call_rejects_calibration_for_other_detector(tmp_path):
     """ResetRampFitStep.call raises ValueError when the calibration file names a different detector."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
     calib = tmp_path / "nrcb1_reset_calib.asdf"
     sigma_b = np.full((NY, NX), 12.0, dtype=np.float32)
     write_calibration(calib, sigma_b, np.zeros_like(sigma_b), np.full((NY, NX), 10, dtype=np.int32), "NRCB1", [])
 
     with pytest.raises(ValueError, match="NRCB1"):
-        ResetRampFitStep.call(model, reset_calib=str(calib), override_readnoise=rn, override_gain=gain)
+        ResetRampFitStep.call(model, reset_calib=str(calib), override_readnoise=rn, override_gain=gain, override_superbias=bias)
 
 
 def test_call_requires_sigma_b_for_a_detector_without_packaged_calibration(tmp_path):
     """ResetRampFitStep.call without reset_calib or sigma_b on a detector the packaged table lacks raises ValueError."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
     model.meta.instrument.detector = "NRS1"
 
     with pytest.raises(ValueError, match="No packaged reset calibration"):
-        ResetRampFitStep.call(model, override_readnoise=rn, override_gain=gain)
+        ResetRampFitStep.call(model, override_readnoise=rn, override_gain=gain, override_superbias=bias)
 
 
 def test_call_skips_two_groups(tmp_path):
     """ResetRampFitStep.call on a two-group ramp returns (None, None), as the jwst step does when it cannot fit."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp(ngroups=2)
 
-    rate, rateints = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain)
+    rate, rateints = ResetRampFitStep.call(
+        model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias
+    )
 
     assert rate is None
     assert rateints is None
@@ -135,19 +142,19 @@ def test_call_skips_two_groups(tmp_path):
 
 def test_call_rejects_zero_sigma_b(tmp_path):
     """ResetRampFitStep.call with sigma_b=0 raises ValueError instead of dividing by zero."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
 
     with pytest.raises(ValueError, match="positive"):
-        ResetRampFitStep.call(model, sigma_b=0.0, override_readnoise=rn, override_gain=gain)
+        ResetRampFitStep.call(model, sigma_b=0.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
 
 
 def test_save_opt_writes_resetfit(tmp_path, tmp_cwd):
     """ResetRampFitStep.call with save_opt writes a _resetfit.asdf holding used_reset and d0_resid planes."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
 
-    ResetRampFitStep.call(model, sigma_b=15.0, save_opt=True, override_readnoise=rn, override_gain=gain)
+    ResetRampFitStep.call(model, sigma_b=15.0, save_opt=True, override_readnoise=rn, override_gain=gain, override_superbias=bias)
 
     files = list(tmp_cwd.glob("*_resetfit.asdf"))
     assert len(files) == 1
@@ -159,7 +166,7 @@ def test_save_opt_writes_resetfit(tmp_path, tmp_cwd):
 
 def test_call_with_pedestal_mean_and_offset(tmp_path):
     """ResetRampFitStep.call with use_pedestal_mean and reset_offset -2 subtracts mean plus offset from the one-group pixel."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
     model.groupdq[0, 1:, 4, 4] = SAT
     sigma_b = np.full((NY, NX), 12.0, dtype=np.float32)
@@ -170,7 +177,7 @@ def test_call_with_pedestal_mean_and_offset(tmp_path):
 
     rate, _ = ResetRampFitStep.call(
         model, reset_calib=str(calib), use_pedestal_mean=True, reset_offset=-2.0, prior_highpass=False,
-        override_readnoise=rn, override_gain=gain,
+        override_readnoise=rn, override_gain=gain, override_superbias=bias
     )
 
     assert rate.data[4, 4] == pytest.approx((model.data[0, 0, 4, 4] - 4.0) / FRAME_TIME, rel=1e-5)
@@ -178,16 +185,19 @@ def test_call_with_pedestal_mean_and_offset(tmp_path):
 
 def test_call_use_pedestal_mean_requires_calibration(tmp_path):
     """ResetRampFitStep.call with use_pedestal_mean but no reset_calib raises ValueError."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
 
     with pytest.raises(ValueError, match="use_pedestal_mean"):
-        ResetRampFitStep.call(model, sigma_b=15.0, use_pedestal_mean=True, override_readnoise=rn, override_gain=gain)
+        ResetRampFitStep.call(
+            model, sigma_b=15.0, use_pedestal_mean=True, override_readnoise=rn, override_gain=gain,
+            override_superbias=bias
+        )
 
 
 def test_call_uses_per_channel_timing_from_file(tmp_path):
     """ResetRampFitStep.call with per-channel t1_scale in the file gives a one-group pixel its own channel's scale."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
     blocks = readout.channel_blocks((NY, NX), -1, 2)
     y, x = 3, blocks[2][1].start
@@ -197,14 +207,16 @@ def test_call_uses_per_channel_timing_from_file(tmp_path):
     write_calibration(calib, sigma_b, np.zeros_like(sigma_b), np.full((NY, NX), 10, dtype=np.int32), "NRCA1", [])
     update_timing(calib, 0.9, -1.0, t1_scale_channels=[1.0, 1.0, 0.8, 1.0], reset_offset_channels=[0.0, 0.0, -2.0, 0.0])
 
-    rate, _ = ResetRampFitStep.call(model, reset_calib=str(calib), override_readnoise=rn, override_gain=gain)
+    rate, _ = ResetRampFitStep.call(
+        model, reset_calib=str(calib), override_readnoise=rn, override_gain=gain, override_superbias=bias
+    )
 
     assert rate.data[y, x] == pytest.approx((model.data[0, 0, y, x] + 2.0) / (0.8 * FRAME_TIME), rel=1e-5)
 
 
 def test_call_t1_scale_override_disables_per_channel_timing(tmp_path):
     """ResetRampFitStep.call with an explicit t1_scale ignores the file's per-channel scales."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
     model.groupdq[0, 1:, 2, 2] = SAT
     sigma_b = np.full((NY, NX), 12.0, dtype=np.float32)
@@ -212,7 +224,10 @@ def test_call_t1_scale_override_disables_per_channel_timing(tmp_path):
     write_calibration(calib, sigma_b, np.zeros_like(sigma_b), np.full((NY, NX), 10, dtype=np.int32), "NRCA1", [])
     update_timing(calib, 0.9, 0.0, t1_scale_channels=[0.5, 0.5, 0.5, 0.5])
 
-    rate, _ = ResetRampFitStep.call(model, reset_calib=str(calib), t1_scale=1.0, override_readnoise=rn, override_gain=gain)
+    rate, _ = ResetRampFitStep.call(
+        model, reset_calib=str(calib), t1_scale=1.0, override_readnoise=rn, override_gain=gain,
+        override_superbias=bias
+    )
 
     assert rate.data[2, 2] == pytest.approx(model.data[0, 0, 2, 2] / FRAME_TIME, rel=1e-5)
 
@@ -303,7 +318,7 @@ def superbias_warnings(caplog):
 
 def test_call_warns_when_data_superbias_differs_from_best_reference(tmp_path, caplog):
     """ResetRampFitStep.call on data recorded with superbias 0001 and override_superbias naming 0002 warns naming both."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
     model.meta.ref_file.superbias.name = "crds://jwst_nircam_superbias_0001.fits"
     other = tmp_path / "jwst_nircam_superbias_0002.fits"
@@ -321,7 +336,7 @@ def test_call_warns_when_data_superbias_differs_from_best_reference(tmp_path, ca
 
 def test_call_no_warning_when_data_superbias_matches_best_reference(tmp_path, caplog):
     """ResetRampFitStep.call on data recorded with superbias 0002 and override_superbias naming 0002 logs no warning."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
     model.meta.ref_file.superbias.name = "crds://jwst_nircam_superbias_0002.fits"
     same = tmp_path / "jwst_nircam_superbias_0002.fits"
@@ -357,7 +372,7 @@ def test_rescale_t1_keeps_the_delay_in_seconds():
 
 def test_call_anchors_the_reset_offset_to_the_sky(tmp_path):
     """ResetRampFitStep.call with anchor_offset_to_sky on a ramp whose reset level is 7 DN above the file's gives RATE."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
     model.data[0] += 7.0
     model.groupdq[0, 1:, 4, 4] = SAT
@@ -370,6 +385,7 @@ def test_call_anchors_the_reset_offset_to_the_sky(tmp_path):
     rate, _ = ResetRampFitStep.call(
         model, reset_calib=str(calib), use_pedestal_mean=True, prior_highpass=False, anchor_offset_to_sky=True,
         anchor_max_signal=1e9, anchor_min_pixels=10, override_readnoise=rn, override_gain=gain,
+        override_superbias=bias
     )
 
     assert rate.data[4, 4] == pytest.approx(RATE, rel=1e-4)
@@ -377,7 +393,7 @@ def test_call_anchors_the_reset_offset_to_the_sky(tmp_path):
 
 def test_call_without_anchoring_is_biased_by_a_wrong_offset(tmp_path):
     """ResetRampFitStep.call without anchoring, reset 7 DN above the file's prior: the one-group pixel is 7/t1 too high."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
     model.data[0] += 7.0
     model.groupdq[0, 1:, 4, 4] = SAT
@@ -389,7 +405,7 @@ def test_call_without_anchoring_is_biased_by_a_wrong_offset(tmp_path):
 
     rate, _ = ResetRampFitStep.call(
         model, reset_calib=str(calib), use_pedestal_mean=True, prior_highpass=False, anchor_offset_to_sky=False,
-        override_readnoise=rn, override_gain=gain,
+        override_readnoise=rn, override_gain=gain, override_superbias=bias
     )
 
     assert rate.data[4, 4] == pytest.approx(RATE + 7.0 / FRAME_TIME, rel=1e-4)
@@ -427,10 +443,10 @@ def test_default_calibration_unknown_detector_raises():
 
 def test_call_without_calibration_uses_the_packaged_defaults(tmp_path):
     """ResetRampFitStep.call on an NRCA1 ramp with neither reset_calib nor sigma_b completes with a finite rate."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
 
-    out, _ints = ResetRampFitStep.call(model, override_readnoise=rn, override_gain=gain)
+    out, _ints = ResetRampFitStep.call(model, override_readnoise=rn, override_gain=gain, override_superbias=bias)
 
     assert out.meta.cal_step.reset_rampfit == "COMPLETE"
     assert np.isfinite(out.data).all()
@@ -438,11 +454,12 @@ def test_call_without_calibration_uses_the_packaged_defaults(tmp_path):
 
 def test_call_with_save_results_writes_rate_and_rateints(tmp_path):
     """ResetRampFitStep.call with save_results and an output_dir writes a _rate.fits and a _rateints.fits there."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
 
     ResetRampFitStep.call(
-        model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, save_results=True, output_dir=str(tmp_path)
+        model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias, save_results=True,
+        output_dir=str(tmp_path)
     )
 
     assert len(list(tmp_path.glob("*_rate.fits"))) == 1
@@ -451,11 +468,11 @@ def test_call_with_save_results_writes_rate_and_rateints(tmp_path):
 
 def test_call_carries_the_stream_clean_record_into_the_rate_products(tmp_path):
     """ResetRampFitStep.call on a ramp whose cal_step says stream_clean COMPLETE returns rate and rateints saying so too."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
     model.meta.cal_step.stream_clean = "COMPLETE"
 
-    out, ints = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain)
+    out, ints = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
 
     assert out.meta.cal_step.stream_clean == "COMPLETE"
     assert ints.meta.cal_step.stream_clean == "COMPLETE"
@@ -463,11 +480,12 @@ def test_call_carries_the_stream_clean_record_into_the_rate_products(tmp_path):
 
 def test_call_as_hook_returns_the_rate_image_alone(tmp_path):
     """ResetRampFitStep.call with as_hook=True returns one ImageModel marked ramp_fit COMPLETE and writes the rateints."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
 
     out = ResetRampFitStep.call(
-        model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, as_hook=True, output_dir=str(tmp_path)
+        model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias, as_hook=True,
+        output_dir=str(tmp_path)
     )
 
     assert isinstance(out, datamodels.ImageModel)
@@ -477,11 +495,12 @@ def test_call_as_hook_returns_the_rate_image_alone(tmp_path):
 
 def test_call_accepts_the_jwst_ramp_fit_slot_parameters(tmp_path):
     """ResetRampFitStep.call with suppress_one_group=False and maximum_cores='all', as CRDS sets for the slot, completes."""
-    rn, gain = reference_files(tmp_path)
+    rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
 
     out, _ints = ResetRampFitStep.call(
-        model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, suppress_one_group=False, maximum_cores="all"
+        model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias,
+        suppress_one_group=False, maximum_cores="all"
     )
 
     assert out.meta.cal_step.reset_rampfit == "COMPLETE"

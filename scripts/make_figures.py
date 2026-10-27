@@ -366,6 +366,12 @@ FIELD_PANEL_SETS = [
      "median, flat applied", True),
     ("results/2026-10-26_workshop_ngc1566/jw02107025001_02101_00001_nrcb2", "NRCB2", "NGC 1566 extended emission",
      "ngc1566_nrcb2", "median, flat applied", True),
+    ("results/2026-10-27_wfss_panels_v5/jw03383014001_04201_00001_nis", "NIS", "NIRISS WFSS GR150C", "wfss_gr150c",
+     "median, flat applied", True),
+    ("results/2026-10-27_nircam_wfss_panels_v5/jw05398466001_06201_00002_nrcalong", "NRCALONG", "NIRCam WFSS GRISMC",
+     "wfss_grismc", "median, flat applied", True),
+    ("results/2026-10-26_wfss_panels/jw04681316001_07201_00007_nis", "NIS", "NIRISS WFSS GR150R", "wfss_gr150r",
+     "median, flat applied", True),
 ]
 
 
@@ -376,7 +382,12 @@ def _field_panels(root, detector, jwst_label, flat_fielded=False):
         info = json.load(handle)
     # the unsuffixed stream clean files hold the first background setting of the run
     setting = (info.get("stream_clean_backgrounds") or ["median"])[0]
-    background_label = f"box background, {setting[3:]} px" if setting.startswith("box") else f"{setting} background"
+    if setting.startswith("box"):
+        background_label = f"box background, {setting[3:]} px"
+    elif setting in ("crds_background", "reference"):
+        background_label = "scaled CRDS background"
+    else:
+        background_label = f"{setting} background"
     panels = [
         ("sirs_ols.npz", "SIRS refpix, no cleaning,\nOLS_C (pipeline default)"),
         ("sirs_jwst_usage_ols.npz", f"SIRS + jwst clean_flicker_noise\n({jwst_label}), OLS_C"),
@@ -402,15 +413,23 @@ def _field_panels(root, detector, jwst_label, flat_fielded=False):
             flat = np.array(flat_model.data, dtype=np.float32)
             flat[(flat_model.dq & 1) > 0] = np.nan
         info["flat"] = os.path.basename(flat_path)
+    subtract = 0.0
+    scaled_path = os.path.join(folder, "scaled_background.npz")
+    if os.path.exists(scaled_path):
+        # a dispersed exposure: the panel script saved the scaled background reference the step used; the
+        # row and column means of the rate itself would measure the dispersed background, so it comes off
+        # every panel before display and statistics
+        subtract = np.load(scaled_path)["scene"].astype(np.float32)
+        info["background_subtracted"] = True
     reference = np.load(os.path.join(folder, "sirs_ols.npz"))
-    ref_rate = reference["rate"] / flat
+    ref_rate = (reference["rate"] - subtract) / flat
     good = background & np.isfinite(ref_rate) & (reference["dq"] == 0)
     good[:4] = good[-4:] = False
     good[:, :4] = good[:, -4:] = False
     sky = np.nanmedian(ref_rate[good])
     sigma = robust_sigma(ref_rate[good])
     stats = good & (np.abs(ref_rate - sky) < 5 * sigma)
-    return folder, panels, info, sky, 2.5 * sigma, stats, flat
+    return folder, panels, info, sky, 2.5 * sigma, stats, flat, subtract
 
 
 def field_rate_images(root, detector, field, suffix, jwst_label, flat_fielded=False):
@@ -418,13 +437,13 @@ def field_rate_images(root, detector, field, suffix, jwst_label, flat_fielded=Fa
     found = _field_panels(root, detector, jwst_label, flat_fielded)
     if found is None:
         return
-    folder, panels, info, sky, width, stats, flat = found
+    folder, panels, info, sky, width, stats, flat, subtract = found
     region = (slice(768, 1280), slice(768, 1280))
     scale = 14.5 / 8.0
     base = plt.rcParams["font.size"]
     fig, axes = plt.subplots(1, 4, figsize=(14.5, 5.3), dpi=150, constrained_layout=True)
     for ax, (name, title) in zip(axes, panels):
-        rate = np.load(os.path.join(folder, name))["rate"] / flat
+        rate = (np.load(os.path.join(folder, name))["rate"] - subtract) / flat
         shown = np.where(np.isfinite(rate), rate, sky)[region]
         image = ax.imshow(shown, origin="lower", cmap="viridis", vmin=sky - width, vmax=sky + width, interpolation="nearest")
         cut = np.where(stats, rate, np.nan)[region]
@@ -441,6 +460,7 @@ def field_rate_images(root, detector, field, suffix, jwst_label, flat_fielded=Fa
     colorbar.ax.tick_params(labelsize=base * scale * 0.6)
     fig.suptitle(
         f"{field}, {detector} {info['filter']} {info.get('readpatt', '')}, {info['ngroups']} groups"
+        + (", dispersed background subtracted" if info.get("background_subtracted") else "")
         + (", flat-fielded" if flat_fielded else "") + ", 512 x 512 cutout, "
         f"sky {sky:.2f} DN/s, stretch +- {width:.3f} DN/s\n",
         fontsize=base * scale * 0.75,
@@ -454,13 +474,13 @@ def field_rate_images_full(root, detector, field, suffix, jwst_label, flat_field
     found = _field_panels(root, detector, jwst_label, flat_fielded)
     if found is None:
         return
-    folder, panels, info, sky, width, stats, flat = found
+    folder, panels, info, sky, width, stats, flat, subtract = found
     binning = 2
     scale = 14.5 / 8.0
     base = plt.rcParams["font.size"]
     fig, axes = plt.subplots(2, 2, figsize=(14.5, 15.3), dpi=150, constrained_layout=True)
     for ax, (name, title) in zip(axes.ravel(), panels):
-        rate = np.load(os.path.join(folder, name))["rate"] / flat
+        rate = (np.load(os.path.join(folder, name))["rate"] - subtract) / flat
         shown = np.where(np.isfinite(rate), rate, sky)
         nrows, ncols = (shown.shape[0] // binning) * binning, (shown.shape[1] // binning) * binning
         binned = shown[:nrows, :ncols].reshape(nrows // binning, binning, ncols // binning, binning).mean(axis=(1, 3))
@@ -480,6 +500,7 @@ def field_rate_images_full(root, detector, field, suffix, jwst_label, flat_field
     colorbar.ax.tick_params(labelsize=base * scale * 0.6)
     fig.suptitle(
         f"{field}, {detector} {info['filter']} {info.get('readpatt', '')}, {info['ngroups']} groups"
+        + (", dispersed background subtracted" if info.get("background_subtracted") else "")
         + (", flat-fielded" if flat_fielded else "") + f", full frame binned {binning} x {binning} "
         f"for display, stretch +- {width:.3f} DN/s\n",
         fontsize=base * scale * 0.75,

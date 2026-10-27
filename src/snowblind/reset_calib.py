@@ -449,7 +449,7 @@ def superbias_difference(calibration_superbias, science_superbias, shape, locate
     for image in images:
         if image.shape != tuple(shape):
             raise ValueError(f"Superbias shape {image.shape} does not match data {tuple(shape)}")
-    log.info(f"Prior corrected from superbias {cal} (calibration) to {sci} (data)")
+    log.info(f"The reset level is moved from the calibration's superbias {cal} to the data's {sci}")
     return images[0] - images[1]
 
 

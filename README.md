@@ -189,12 +189,42 @@ The file also carries the detector's mean reset-level map, which
 file to `stream_clean --reset_calib=...` so that the first read is cleaned
 against the same prior.  On dark exposures set
 `--steps.stream_clean.background_method=None`; for fields with extended
-emission larger than a few hundred pixels, `integration_model` (a box
-model) keeps that structure out of the noise estimate at the cost of the
-1/f slower than its box, and the step warns when the unmasked background
-under the median has that much structure.  In one exposure, extended
-emission and slow 1/f cannot be told apart; a scene model from the other
-dithers (`scene_model`) is the way to do better.
+emission larger than a few hundred pixels, `integration_model` (a
+box-spline background) keeps that structure out of the noise estimate at
+the cost of the 1/f slower than its box, and the step warns when the
+unmasked background under the median has that much structure.  In one
+exposure, extended emission and slow 1/f cannot be told apart; a scene
+model from the other dithers (`scene_model`) is the way to do better.
+
+Dispersed (WFSS) exposures have a smooth dispersed background that no
+scalar or box background can model.  On a WFSS exposure the step
+therefore defaults to `background_method='crds_background'`: it takes the
+CRDS background reference for the grism and filter, scales it once to the
+exposure on the masked background pixels, and subtracts it from every
+group difference before the noise fit, so the same fixed background
+applies to every difference and nothing random-walks along the ramp.  The
+NIRCam references are flat-fielded while the NIRISS ones carry the
+detector's pixel response, and neither the files nor their documentation
+say which; the step tells them apart from the pixel pattern (logged, with
+a warning when it is unclear, and `reference_units` to decide by hand) and
+multiplies a flat-fielded one by the flat first, so that the flat's
+large-scale structure is not read as noise.  It
+also turns the per-column offset correction (`column_offsets`) off, since
+on a dispersed exposure the traces run along the columns and their
+outskirts would bias each column's masked mean, a flux loss of a few to
+30 percent on faint traces when it was left on; and it notches the Wiener
+gain at the readout row period, where the unmasked wings of traces along
+the columns, at the same clock in every row, would otherwise pass as
+noise.  The ordinary pipeline recipe applies unchanged:
+
+    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.clean_flicker_noise.skip=True
+
+This is for grisms that disperse across the readout stream, NIRISS GR150C
+and NIRCam GRISMC.  NIRISS GR150R and NIRCam GRISMR disperse along the
+stream, where a trace's continuum shape and emission lines sit at the
+scales the filter treats as noise, so the step skips those exposures with
+a warning; `allow_dispersion_along_stream=True` overrides that, at the
+cost of the spectral shape of faint traces.
 
 Both steps build on published work:
 - the SIRS reference-pixel correction ([Rauscher, Fixsen and Mosby 2022, JATIS 8, 028002](https://arxiv.org/abs/2602.02253))

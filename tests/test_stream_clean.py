@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 from astropy.io import fits
@@ -12,6 +14,7 @@ from snowblind.stream_clean import (
     clean_ramp,
     column_offset_pattern,
     dilate_sources,
+    dispersion_along_stream,
     estimate_noise,
     even_odd_pattern,
     exclude_reference_border,
@@ -20,6 +23,11 @@ from snowblind.stream_clean import (
     masked_mean_background,
     prepare_difference,
     read_scene_model,
+    reference_carries_flat,
+    reference_flat_correlation,
+    reference_in_raw_units,
+    mean_slope_per_group,
+    reference_scale,
     slope_per_group,
     unusable_in_flat,
 )
@@ -829,3 +837,260 @@ def test_background_structure_sees_a_gradient():
 
     assert low < 0.75
     assert high > 1.25
+
+
+def test_reference_scale_recovers_the_factor():
+    """reference_scale on a rate that is 2.5 times a smooth reference plus noise returns 2.5 within one percent."""
+    rng = np.random.default_rng(31)
+    yy, xx = np.mgrid[0:128, 0:128]
+    reference = 1.0 + 0.3 * np.sin(xx / 20.0) + 0.1 * np.cos(yy / 15.0)
+    rate = 2.5 * reference + rng.normal(0.0, 0.05, reference.shape)
+
+    scale = reference_scale(rate, reference, np.ones(reference.shape, dtype=bool))
+
+    assert abs(scale - 2.5) < 0.025
+
+
+def test_step_reference_background_scales_the_reference_once_and_removes_nothing_from_a_clean_ramp(tmp_path):
+    """StreamCleanStep with crds_background on a noiseless ramp of 3 times a reference fits a scale of 3 and keeps the data."""
+    model = make_ramp_model()
+    yy, xx = np.mgrid[0:NY, 0:NX]
+    reference = (1.0 + 0.5 * xx / NX).astype(np.float32)
+    group_time = model.meta.exposure.group_time
+    for g in range(model.data.shape[1]):
+        model.data[0, g] = 3.0 * reference * group_time * (g + 1)
+    datamodels.ImageModel(reference).save(tmp_path / "bkg.fits")
+    datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
+    original = model.data.copy()
+    step = StreamCleanStep(
+        background_method="crds_background", override_bkg=str(tmp_path / "bkg.fits"), user_mask=str(tmp_path / "mask.fits"),
+        apply_flat_field=False, fit_method="row_median",
+    )
+
+    out = step.run(model)
+
+    assert abs(step._reference_scale - 3.0) < 0.01
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+    np.testing.assert_allclose(out.data[:, :, 4:-4, 4:-4], original[:, :, 4:-4, 4:-4], atol=1e-3)
+
+
+def test_dispersion_along_stream_names_the_stream_parallel_grisms():
+    """dispersion_along_stream names NIRISS GR150R and NIRCam GRISMR and returns None for GR150C, GRISMC and imaging."""
+    model = make_ramp_model()
+    model.meta.instrument.name = "NIRISS"
+    model.meta.instrument.filter = "GR150R"
+    model.meta.instrument.pupil = "F200W"
+    assert dispersion_along_stream(model) == "NIRISS GR150R"
+    model.meta.instrument.filter = "GR150C"
+    assert dispersion_along_stream(model) is None
+    model.meta.instrument.name = "NIRCAM"
+    model.meta.instrument.filter = "F322W2"
+    model.meta.instrument.pupil = "GRISMR"
+    assert dispersion_along_stream(model) == "NIRCam GRISMR"
+    model.meta.instrument.pupil = "GRISMC"
+    assert dispersion_along_stream(model) is None
+    model.meta.instrument.pupil = "CLEAR"
+    assert dispersion_along_stream(model) is None
+
+
+def test_step_skips_a_grism_dispersing_along_the_stream(tmp_path):
+    """StreamCleanStep.call on a NIRISS GR150R ramp sets SKIPPED and leaves the data alone."""
+    model = make_ramp_model()
+    model.meta.instrument.name = "NIRISS"
+    model.meta.instrument.detector = "NIS"
+    model.meta.instrument.filter = "GR150R"
+    model.meta.instrument.pupil = "F200W"
+    model.data[:] = 5.0
+
+    result = StreamCleanStep.call(model, apply_flat_field=False, fit_method="row_median")
+
+    assert result.meta.cal_step.stream_clean == "SKIPPED"
+    np.testing.assert_array_equal(result.data, 5.0)
+
+
+def test_step_cleans_a_stream_parallel_grism_when_allowed(tmp_path):
+    """StreamCleanStep.call on a GR150R ramp with allow_dispersion_along_stream=True and a user mask completes."""
+    model = make_ramp_model()
+    model.meta.instrument.name = "NIRISS"
+    model.meta.instrument.detector = "NIS"
+    model.meta.instrument.filter = "GR150R"
+    model.meta.instrument.pupil = "F200W"
+    datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
+
+    result = StreamCleanStep.call(
+        model, apply_flat_field=False, fit_method="row_median", user_mask=str(tmp_path / "mask.fits"),
+        background_method="median", allow_dispersion_along_stream=True,
+    )
+
+    assert result.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def test_step_selects_the_crds_background_on_a_wfss_exposure(tmp_path):
+    """StreamCleanStep on a NIS_WFSS GR150C ramp with the default background switches to crds_background and fits its scale."""
+    model = make_ramp_model()
+    model.meta.instrument.name = "NIRISS"
+    model.meta.instrument.detector = "NIS"
+    model.meta.instrument.filter = "GR150C"
+    model.meta.instrument.pupil = "F200W"
+    model.meta.exposure.type = "NIS_WFSS"
+    reference = np.ones((NY, NX), dtype=np.float32)
+    for g in range(model.data.shape[1]):
+        model.data[0, g] = 2.0 * model.meta.exposure.group_time * (g + 1)
+    datamodels.ImageModel(reference).save(tmp_path / "bkg.fits")
+    datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
+    step = StreamCleanStep(
+        override_bkg=str(tmp_path / "bkg.fits"), user_mask=str(tmp_path / "mask.fits"), apply_flat_field=False,
+        fit_method="row_median",
+    )
+
+    out = step.run(model)
+
+    assert step.background_method == "crds_background"
+    assert abs(step._reference_scale - 2.0) < 0.01
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def test_step_turns_off_column_offsets_on_a_wfss_exposure(tmp_path):
+    """StreamCleanStep on a NIS_WFSS GR150C ramp with the default column_offsets ends with column_offsets False."""
+    model = make_ramp_model()
+    model.meta.instrument.name = "NIRISS"
+    model.meta.instrument.detector = "NIS"
+    model.meta.instrument.filter = "GR150C"
+    model.meta.instrument.pupil = "F200W"
+    model.meta.exposure.type = "NIS_WFSS"
+    datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "bkg.fits")
+    datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
+    step = StreamCleanStep(
+        override_bkg=str(tmp_path / "bkg.fits"), user_mask=str(tmp_path / "mask.fits"), apply_flat_field=False,
+        fit_method="row_median",
+    )
+
+    out = step.run(model)
+
+    assert step.column_offsets is False
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def test_step_keeps_column_offsets_on_an_imaging_exposure(tmp_path):
+    """StreamCleanStep on a NRC_IMAGE ramp with the default column_offsets ends with column_offsets True."""
+    model = make_ramp_model()
+    datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
+    step = StreamCleanStep(user_mask=str(tmp_path / "mask.fits"), apply_flat_field=False, fit_method="row_median")
+
+    out = step.run(model)
+
+    assert step.column_offsets is True
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def make_patterned_flat(seed=0):
+    """A 256 by 256 flat with 5 percent pixel-to-pixel structure."""
+    rng = np.random.default_rng(seed)
+    return (1.0 + 0.05 * rng.standard_normal((256, 256))).astype(np.float64)
+
+
+def test_reference_carries_flat_for_a_reference_with_the_flat_pattern():
+    """reference_carries_flat on a smooth sky times the flat, against that flat, returns True."""
+    flat = make_patterned_flat()
+    yy = np.arange(256)[:, None] * np.ones((1, 256))
+    reference = (0.5 + yy / 256) * flat
+
+    assert reference_carries_flat(reference, flat) is True
+
+
+def test_reference_carries_flat_for_a_smooth_reference():
+    """reference_carries_flat on a smooth sky without the flat pattern, against a flat, returns False."""
+    flat = make_patterned_flat()
+    yy = np.arange(256)[:, None] * np.ones((1, 256))
+    reference = 0.5 + yy / 256
+
+    assert reference_carries_flat(reference, flat) is False
+
+
+def test_reference_in_raw_units_multiplies_a_smooth_reference_by_the_flat():
+    """reference_in_raw_units on a smooth reference and a patterned flat returns reference times flat and False."""
+    flat = make_patterned_flat()
+    reference = np.full((256, 256), 2.0)
+
+    raw, carries = reference_in_raw_units(reference, flat)
+
+    assert carries is False
+    assert np.allclose(raw, 2.0 * flat)
+
+
+def test_reference_in_raw_units_keeps_a_reference_that_carries_the_flat():
+    """reference_in_raw_units on a reference that is 2 times the flat returns it unchanged and True."""
+    flat = make_patterned_flat()
+    reference = 2.0 * flat
+
+    raw, carries = reference_in_raw_units(reference, flat)
+
+    assert carries is True
+    assert np.array_equal(raw, reference)
+
+
+def test_reference_in_raw_units_without_a_flat_returns_the_reference():
+    """reference_in_raw_units with flat=None returns the reference unchanged and True."""
+    reference = np.full((8, 8), 2.0)
+
+    raw, carries = reference_in_raw_units(reference, None)
+
+    assert carries is True
+    assert np.array_equal(raw, reference)
+
+
+def test_reference_flat_correlation_is_near_one_for_a_reference_with_the_flat_pattern():
+    """reference_flat_correlation on a smooth sky times the flat, against that flat, returns above 0.9."""
+    flat = make_patterned_flat()
+    yy = np.arange(256)[:, None] * np.ones((1, 256))
+
+    assert reference_flat_correlation((0.5 + yy / 256) * flat, flat) > 0.9
+
+
+def test_reference_flat_correlation_is_near_zero_for_a_smooth_reference():
+    """reference_flat_correlation on a smooth sky without the pattern, against a flat, returns within 0.1 of zero."""
+    flat = make_patterned_flat()
+    yy = np.arange(256)[:, None] * np.ones((1, 256))
+
+    assert abs(reference_flat_correlation(0.5 + yy / 256, flat)) < 0.1
+
+
+def test_reference_flat_correlation_is_nan_for_too_few_pixels():
+    """reference_flat_correlation on 8 by 8 images returns NaN."""
+    assert np.isnan(reference_flat_correlation(np.ones((8, 8)), np.ones((8, 8))))
+
+
+def test_reference_in_raw_units_raw_leaves_a_smooth_reference_alone():
+    """reference_in_raw_units with units='raw' on a smooth reference and a patterned flat returns it unchanged and True."""
+    flat = make_patterned_flat()
+    reference = np.full((256, 256), 2.0)
+
+    raw, carries = reference_in_raw_units(reference, flat, units="raw")
+
+    assert carries is True
+    assert np.array_equal(raw, reference)
+
+
+def test_reference_in_raw_units_flat_fielded_multiplies_even_a_patterned_reference():
+    """reference_in_raw_units with units='flat_fielded' on a reference that is 2 times the flat returns 2 flat squared."""
+    flat = make_patterned_flat()
+    reference = 2.0 * flat
+
+    raw, carries = reference_in_raw_units(reference, flat, units="flat_fielded")
+
+    assert carries is False
+    assert np.allclose(raw, 2.0 * flat * flat)
+
+
+def test_mean_slope_per_group_is_nan_without_a_warning_where_no_group_is_usable():
+    """mean_slope_per_group on a ramp with pixel (0, 0) flagged in every group returns NaN there, 1 elsewhere, no warning."""
+    data = np.arange(4, dtype=np.float32)[None, :, None, None] * np.ones((2, 4, 3, 3), dtype=np.float32)
+    groupdq = np.zeros((2, 4, 3, 3), dtype=np.uint8)
+    groupdq[:, :, 0, 0] = 1
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        slope = mean_slope_per_group(data, groupdq)
+
+    assert np.isnan(slope[0, 0])
+    assert abs(slope[1, 1] - 1.0) < 1e-6

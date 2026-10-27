@@ -3128,6 +3128,104 @@ with a measurement behind them: `exposure_model`, `scene_model`,
 `use_pedestal_mean` and `prior_highpass`, `anchor_timing_to_stars`,
 `reset_offset`, `rejection_threshold`, and the defaults.
 
+### 2026-10-26 (night): the WFSS background reference as the background model
+
+James: subtract a scaled CRDS background from each difference before the
+1/f removal, fit once for all differences so that nothing random-walks.
+The reftype is ``bkg`` (`jwst_niriss_bkg_0027.fits` for GR150C F200W,
+`_0029` for GR150R), a normalised image (median 1.00, range 0.07-1.55)
+in raw detector units, which the pipeline's WFSS background step scales
+to the data with an error-weighted mean ratio and 1 percent clipping
+behind a catalog-based source mask. Here: one scale per exposure, the
+median of the ratio of the ramp's least-squares slope image to the
+reference over the chisel mask where the reference is above 0.2 of its
+median (0.758 DN/s on GR150C, 0.535 on GR150R); the scaled reference
+then goes through the fixed-background path like a scene model, scaled
+to each difference by its time only.
+
+Trial through the `scene_model` option (`results/2026-10-26_wfss_reference/`),
+GR150C jw03383014 (NIS, 8 groups) and GR150R jw04681316 (NIS, 19 groups).
+Direct check first: the 64 px smoothed sky over the mask runs from 0.35
+to 1.06 of the median before and -0.02 to +0.04 after subtracting the
+scaled reference. A trap in the metrics: on a dispersed exposure the
+row- and column-mean scatter of the rate is the dispersed background
+itself (it varies along the dispersion), so the median background's
+"0.0008" column scatter on GR150C is the background flattened away and
+the reference run's "0.024" is the background kept. Measured properly,
+on the background-subtracted flat-fielded rate (rate minus scale x bkg)
+over the mask:
+
+| grism | chain | rows | cols | residual median | 5 / 95 pct |
+|---|---|---|---|---|---|
+| GR150C | SIRS | 0.0059 | 0.0063 | -0.0007 | -0.101 / +0.107 |
+| GR150C | jwst median | 0.0065 | 0.0172 | +0.0027 | -0.107 / +0.130 |
+| GR150C | stream, median bkg | 0.0071 | 0.0239 | -0.0087 | -0.121 / +0.261 |
+| GR150C | stream, box 256 | 0.0050 | 0.0060 | +0.0024 | -0.107 / +0.208 |
+| GR150C | stream, reference | 0.0004 | 0.0005 | -0.0013 | -0.099 / +0.103 |
+| GR150R | SIRS | 0.0021 | 0.0067 | -0.0008 | -0.079 / +0.093 |
+| GR150R | jwst median | 0.0021 | 0.0041 | +0.0011 | -0.077 / +0.089 |
+| GR150R | stream, median bkg | 0.0250 | 0.0077 | -0.0208 | -0.119 / +0.396 |
+| GR150R | stream, box 256 | 0.0053 | 0.0078 | -0.0009 | -0.096 / +0.282 |
+| GR150R | stream, reference | 0.0004 | 0.0003 | -0.0014 | -0.076 / +0.080 |
+
+(rows and cols in DN/s, the rest in units of the sky; sky 0.749 and
+0.529 DN/s.) With the reference the banding drops 12-15x on GR150C and
+5-20x on GR150R, the residual median is within 0.14 percent of the sky
+and the 5/95 percentiles are SIRS's own, i.e. nothing at large scales
+is touched; the median background flattens the dispersed sky (the
+warning fires, 0.38 and 0.32 to 1.05), the box model gains little, and
+the jwst median imprints column structure on GR150C. Implemented as
+`background_method='crds_background'` (first named `reference`; James:
+that is anodyne for a per-filter, per-grism background, and it should be
+the default on WFSS, where it now is): ``bkg`` joins the step's reference
+types, fetched in `process`; the scale is fitted on the step's own
+least-squares slope image in raw DN/s (no flat needed, and CRDS-free in
+the tests) over the mask, the scaled reference becomes the scene model
+(divided by the flat where one is in use), the chisel mask is rebuilt
+on the residual, and the structure warning names the option for
+dispersed exposures. `make_field_panels` takes `crds_background` as a
+background setting.
+
+Through the step itself (`results/2026-10-26_wfss_panels/`, median and
+reference backgrounds, flat applied, with the reset fit on the reference
+chain): scales 0.7584 (GR150C) and 0.5342 DN/s (GR150R), masks 12.1 and
+17.6 percent; banding of the background-subtracted rate, rows / cols in
+DN/s: GR150C SIRS 0.0059 / 0.0064, stream reference 0.0004 / 0.0005,
+reference + reset fit 0.0006 / 0.0007, stream median 0.0071 / 0.0240;
+GR150R SIRS 0.0021 / 0.0067, reference 0.0004 / 0.0003, with the reset
+fit 0.0005 / 0.0003, median 0.0250 / 0.0077. Residual medians within
+0.2 percent of the sky for the reference chains. The two multi-integration
+WFSS files (5 and 6 integrations) are the next check, for one scale per
+exposure against integrations. Figures `field_rate_images_wfss_gr150c`
+and `_gr150r` added to the set. Environment note: a non-editable
+snowblind 1.0.1 was installed into site-packages at 17:03 (not by this
+session), shadowing the editable tree; tests and scripts run with
+`PYTHONPATH=src` until the editable install is restored.
+
+### 2026-10-27: skip the grisms that disperse along the stream
+
+James: GR150R causes real problems for the Wiener filter, dispersed
+spectra sit right in its frequency range and pile up with the real
+spectral variations on the same spatial scales; refuse to run on NIRISS
+GRxxxR, or at least warn loudly. The geometry: NIRISS reads along science
+columns and GR150R disperses along detector rows, the same axis, so a
+trace is a 100-200 clock feature in the stream with continuum shape and
+lines at the 30-300 px scales the gain passes; masked traces are bridged,
+faint traces and wings under the chisel threshold lose spectral shape to
+the noise estimate. No sky statistic sees it, which is why the GR150R
+numbers looked as good as GR150C's. GR150C crosses the stream in a few
+clocks (safe). NIRCam reads along rows: GRISMR is the stream-parallel
+case there, GRISMC safe. Implemented as `dispersion_along_stream(model)`
+from the filter and pupil keywords (works before any WCS) and a skip in
+`StreamCleanStep.process` with a warning that explains why, overridden
+by `allow_dispersion_along_stream=True`. The pipeline class inherits it
+through the hook. Three tests. The GR150R rows and figure stay as the
+record; an injection test of faint traces along the stream (synthetic
+traces of known shape in the GR150R ramp, recovered flux and shape
+along the trace, against the same traces across the stream in GR150C)
+is the way to size the bias and to decide whether a longer cutoff
+period could make those exposures safe.
+
 Citation: README gets a "Citing snowblind" section at the top with the
 concept DOI and a BibTeX entry; CITATION.cff's author becomes a
 family-names/given-names person entry (GitHub's own examples use that
@@ -3149,3 +3247,233 @@ sees sources (the dispersed traces, extended along the dispersion
 axis) against a flat residual. Needs a dispersed exposure to test; the
 six files on disk are the direct images. The same mechanism serves
 NIRCam WFSS (``wfssbkg`` exists for it too).
+
+### 2026-10-27: NIRCam WFSS, and the per-column offsets on dispersed exposures
+
+James: no injection test (it will fail for NIRISS and worse for NIRCam,
+whose traces are longer); we just do not correct when the dispersion is
+parallel to the stream. Check NIRCam WFSS, and verify that the
+column-level correction orthogonal to the stream is safe for all the WFSS
+data even when it aligns with the dispersion.
+
+Data (~/data/nircam_wfss/): program 5398 F444W GRISMC (NRCALONG,
+SHALLOW2, 5 groups, a deep field, 11 percent masked) and GRISMR (MEDIUM8,
+7 groups), program 1076 F444W GRISMC of P330-E (BRIGHT1, 5 groups). CRDS
+has `bkg` references for both long-wavelength detectors and both grisms.
+The GRISMR exposure is skipped (SKIPPED, data untouched).
+
+The column-level correction is not safe as it was. Metric: per stream
+(row), the median correction in trace pixels minus that in the sky pixels
+of the same row; and the summed flux of the longest traces (object pixels
+of the mask, local sky from a box around) before and after. On 5398
+GRISMC with `column_offsets` on: excess -0.019 DN/s (a third of a pixel's
+noise, 0.061), the eight longest traces lose 3 to 29 percent; on P330-E
+-0.011 and 4 to 13 percent on the fainter traces. Variants (all with the
+CRDS background): row_median fit -0.018 (so not the Wiener filter),
+clean_first_group off -0.019, mask_dilation 6 -0.015, column_offsets off
++0.003. The cause: each column's masked mean carries the outskirts of its
+detected traces and the whole of its undetected ones, 1000-plus pixels
+long, and the offset removed takes that out of every trace in the column.
+Emulated estimators on the rate image (the correction is linear, so the
+column means of the rate reproduce it) with a hold-out (offsets from even
+rows, banding on odd rows): masked median -0.005, dilation 12/24/48
+across the dispersion -0.007/-0.007/-0.006 (plateau: undetected traces),
+high-pass of the offsets across 17 columns 0.000 but the removable
+column structure is largely at scales above 17 columns (0.0071 of 0.0109
+left), so the high-pass gives the banding back. Nothing separates a
+smooth per-column pattern from dispersed outskirts; the choice is off.
+What it costs on 5398: column-median scatter 0.0128 instead of 0.0027
+(SIRS 0.0225), the trace excess +0.003 (0.08 of a pixel's noise), the
+longest traces -4 to +4 percent (jwst median -5 to +6: the measurement's
+own scatter). Implemented: `column_offsets` forced False on WFSS
+exposures in `process`, logged, spec comment, two tests.
+
+NIRISS GR150C with the same metric: -0.0045 with the offsets on (the
+per-row offsets there), -0.0036 off; 21 long traces change by a median
+-0.1 percent (quartiles -2.5, +0.4). Dilation on this field: masked
+fraction 0.12 -> 0.32 (4) -> 0.61 (8) -> 0.95 (16), excess -0.0029,
+-0.0019, -0.0004; not a route. The GR150C row banding with the offsets
+off is 0.0035 (0.0010 on; SIRS 0.0059), columns 0.0010.
+
+P330-E also shows a 0.2 DN/s square over the top 400 rows (scattered
+light the reference lacks); the mask catches a tenth of it, the stream
+clean removes 0.06 DN/s of it, the jwst median adds 0.16. Extended
+emission beyond the reference is the `scene_model` case.
+
+Figures: FIELD_PANEL_SETS gains NIRCam GRISMC
+(results/2026-10-27_nircam_wfss_panels_v2) and GR150C moves to the rerun
+(results/2026-10-27_wfss_panels_v2). Write-up, README, CHANGES updated;
+the 1.0.0 changelog entry no longer claims the WFSS work (released
+2026-10-26 without it); the skip warning quotes the NIRCam trace length;
+the remaining in-body imports in the tests moved to the module tops.
+
+Also seen on 5398 GRISMC: the reference spans 0.26 to 1.01 along the
+dispersion (rows) and the single scale leaves a residual whose row
+medians run -0.04 to +0.14 DN/s (sky 0.58); the filter removes that
+gradient as slow noise (per-pixel change p5 -0.145 DN/s). A scale plus
+offset fit (a 0.41, b +0.15 DN/s) halves the residual span, so part of
+the sky is an undispersed additive component; not implemented, since the
+filter takes the residual either way and the trace excess (+0.003) shows
+extraction is unaffected. P330-E's residual is a shape mismatch (the
+offset fit does not change it). NIRISS GR150C: reference 0.70 to 1.06,
+residual 0.01 DN/s.
+
+### 2026-10-27 (later): the residuals James saw in the GRISMC figure
+
+James: odd residuals aligned in the cross-dispersion direction, the
+correction lowers the background there; does not look like the Wiener
+filter. Also: the figure is not flat-fielded, cross-hatching visible.
+Three more causes, all fixed:
+
+1. The CRDS `bkg` references differ in units. NIRCam's (bkg_0032) has no
+   pixel pattern (correlation of its pixel-scale structure with the
+   flat's 0.000); NIRISS's (bkg_0031) carries the flat (0.956). The step
+   took both as raw. On NIRCam that left sky x (flat - 1) in the residual
+   and the flat's large-scale structure went out as slow noise: the dark
+   patches correlate 0.72 with -scene x (flat - 1), and the largest one
+   (rows 1463-1542, cols 0-345, -0.04 DN/s) sits where the flat is 1.05
+   against a row median of 0.99. jwst's spec2 subtracts the bkg before
+   flat_field with no flat handling either. New: `reference_carries_flat`
+   (correlation > 0.5) and `reference_in_raw_units` (multiply by the flat
+   otherwise), used in `_fit_reference` and by the panel script for the
+   saved scene; five tests. The cross-hatching was the same thing: the
+   figure divides (rate - scene) by the flat.
+2. The scene mask lost the brightest trace. `remove_stripes` took
+   per-column medians of the draft rate; the trace at col 1516 covers
+   1190 of 2048 rows, median 6.5 DN/s, so it vanished from the detection
+   image except where brighter than that: masked 55 percent of its
+   length, one-sided (the mask started at the peak). Its unmasked flux at
+   a fixed clock every row gave a sinusoid at the row period in the
+   Wiener estimate: a bowl of -0.05 to +0.02 DN/s across channel 2 in
+   rows 1321-1392 (the row_median variant shows the same channel offset,
+   so not the Wiener filter as such). New: `remove_stripes(axes, clip)`
+   clips |x| > 3 MAD before the medians; `chisel_mask(stripe_axes)`;
+   the step uses only the stream axis on WFSS (from fastaxis). Trace now
+   fully masked; mask 10.2 -> 17.5 percent of the deep field; imaging
+   masks change by 0.5 percent of pixels (NEXUS, NIRISS F200W), NGC 1566
+   by 3.7 (more disk masked; the right-third banding and bias numbers
+   are unchanged to the last digit: box32 rows 0.054, cols 0.067, +0.1
+   percent). Four tests; the noise-free stripe test gets clip=None.
+3. The residual pattern at the row frequency. Mean correction against
+   clock phase within a channel row, over the frame: fundamental 0.002-
+   0.005 DN/s on GRISMC against 0.0002-0.0005 on NEXUS imaging. The
+   unmasked wings and faint traces along columns repeat every row. New:
+   `notch_period` (Gaussian notch, relative sigma 0.02) applied in
+   `channel_gain` at `channel_width + LINE_OVERHEAD` (524 clocks) on WFSS
+   exposures; fundamental -> 0.0001-0.0009, per-stream trace excess
+   -0.0014 -> -0.0008, column banding 0.0093 -> 0.0104 (the notch leaves
+   that sliver). Per-object within-row scatter (0.08 of the objects'
+   brightness) is unchanged by the notch: it is the real within-row 1/f
+   that the row median cannot see, not a bias.
+
+Final runs (results/2026-10-27_nircam_wfss_panels_v5,
+2026-10-27_wfss_panels_v5): 5398 trace excess -0.0008 +- 0.0033 DN/s,
+P330-E -0.0037 +- 0.0105, NIRISS GR150C -0.0012 +- 0.0038 (was -0.0036);
+banding rows/cols 5398 0.0146/0.0145 -> 0.0011/0.0104, P330-E
+0.0275/0.0153 -> 0.0022/0.0067, NIRISS 0.0055/0.0060 -> 0.0040/0.0010.
+The P330-E square at the top of the frame persists after the flat fix
+(real scattered light); the dispersion-direction gradient of the
+one-scale reference (-0.03..+0.13 DN/s) too. Figures regenerated;
+write-up, README, CHANGES updated.
+
+James asked how the convention is detected and whether it is defined
+somewhere. It is not: no BUNIT in either SCI extension, the NIRCam
+history says "stack of many science observations ... scaled such that
+level is unity in a fiducial region", the NIRISS one "CV3 data ...
+normalized_background" files; the jwst background_subtraction docs and
+the BKG reference page describe format and scaling only; JDox (NIRCam
+WFSS backgrounds) says "individually normalized, resulting in
+dimensionless images" and defers to Ryan et al. 2025 (in review, not
+public); Pirzkal, Boyer & Ryan 2026 (AJ 171, 232, arXiv 2602.13918)
+does not describe the sky images at all. calwebb_spec2 runs bkg_subtract
+before flat_field for WFSS and background_sub_wfss has no flat handling,
+so the pipeline assumes raw units for both and the NIRCam cal products
+keep the flat's pattern times the sky. Against the CRDS flats the
+correlation is 0.82-0.97 for the four NIRISS files and -0.02..+0.01 for
+the six NIRCam files (2018 Hilbert and 2025 Ryan alike); against an
+unrelated ground flat NIRISS drops to 0.3, so the test needs the
+matching flat, which the step uses. Added: `reference_flat_correlation`,
+the value logged, a warning for 0.3-0.7 or NaN, and the spec option
+`reference_units = auto | raw | flat_fielded`. Issue text for jwst
+drafted for James to post.
+
+James asked for a two-panel figure of the units mismatch made with the
+standard pipeline. `scripts/make_wfss_bkg_units_figure.py`: Detector1
+defaults, assign_wcs, then `subtract_wfss_bkg` (the background step's
+own WFSS function; the step itself refuses to run without a source
+catalog even with a user mask) with the stream clean's mask, once with
+jwst_nircam_bkg_0032 as delivered and once with it multiplied by
+flat_0761, both divided by the flat afterwards as flat_field does.
+Factors 0.5764 and 0.5786; sky residual row/column-mean scatter
+0.0199/0.0201 -> 0.0147/0.0145 DN/s, pixel 0.071 -> 0.064. Figure
+docs/figures/wfss_bkg_units.jpg, in the write-up and for the issue.
+
+James: the figure does not look right, why a big top-to-bottom gradient
+after the pipeline's scaled subtraction? Measured: the ratio of the
+sky to the scaled reference along rows is 2.36 at row 16, 1.61 at 128,
+1.30 at 256, 0.94 at 512 and 0.98-1.02 above 1024 (reference 0032 falls
+to 0.20 of its plateau at the bottom edge, the sky only to 0.48); the
+P330-E exposure (2022) gives 1.99, 1.29, 1.25, 0.90, 0.98-1.04; CEERS
+F444W imaging has a flat sky in every row (0.68 DN/s), so it is not the
+detector. 93 percent of the smoothed residual variance is a function of
+row; a*ref + b leaves p5/p95 -0.046/+0.038, adding a linear ramp does
+not help. So the reference's falloff along the dispersion is too steep
+in the bottom quarter, in every exposure in hand, independent of the
+flat question. JDox NIRCam WFSS known issues: single master background
+per detector/filter/grism, assumed constant in time and spectrum,
+"can be a limiting factor", NC-WFSS02 over-subtraction, workaround a
+local background subtraction on the extracted 2-D spectra. The figure
+now removes the row profile from both panels (the same in both) and
+quotes the 2-D structure on 33 px (0.0200 -> 0.0126), the column-mean
+scatter (0.0159 -> 0.0113) and the pixel scatter (0.055 -> 0.048);
+stretch +-0.06. Write-up and issue text carry both findings.
+
+James: the default INFO log (noise spectra alpha/W/corner, sigma_b and
+t1_scale arrays per channel) is not useful to an end user. Reworded: the
+WFSS switches are one sentence; the mask is one line with the source
+fraction and the spike-masked stars; "Cleaning <file> with the Wiener
+filter along the readout stream"; a new line per integration with the
+rms of the removed 1/f noise in DN per group difference over the
+background pixels; the reference units as a sentence; the reset fit as
+"the reset level enters as an extra resultant with a scatter of X DN,
+and the first read weighs k of its nominal time", the anchoring as
+ranges across channels against the calibration's. Spectra, correlation,
+per-channel arrays, flat DQ fraction, chisel passes all at DEBUG.
+
+### 2026-10-27 (afternoon): the flattened NIRISS sky, and reset_fit=False
+
+Found that Detector1Pipeline.call(..., reset_fit=False) raised
+"Extra value 'reset_calib' in root": Step.call builds the steps.ramp_fit
+section from the class spec (ResetRampFitStep's), and the jwst RampFitStep
+rejects the extra keys. Fixed in __init__ by dropping the reset-only
+parameters (own spec minus the jwst spec minus the generic Step spec)
+from the section when the jwst step takes the slot; test added.
+
+There's a "RuntimeWarning: Mean of empty slice" at stream_clean.py:398
+on every snowblind_detector1 run of the WFSS file.  Check whether it
+matters. It is ours (the draft slope image that scales the CRDS
+reference, np.nanmean over integrations), harmless: pixels with no
+usable group in any integration became NaN, which the scale fit already
+skips. Replaced by `mean_slope_per_group`, which sums the finite slopes
+and divides by their count under errstate, NaN where the count is zero;
+test with the warning turned into an error.
+
+### 2026-10-27 (afternoon): CI failed on CRDS
+
+Run 40515705526 on the fork: 18 tests died with "CRDS server connection
+and cache load FAILED" (crds calls sys.exit when the server is
+unreachable and the cache has no config). The workflow did set
+CRDS_PATH and CRDS_SERVER_URL; the STScI server was simply unreachable
+from the runner at 13:52 UTC. Reproduced locally with
+CRDS_SERVER_URL=https://127.0.0.1:9 and an empty cache: 50 tests fail,
+every one that goes through Step.call (the step-parameter reference
+lookup) and every jwst step that used a reference file, override or not
+(finalize_result asks for the CRDS context). Fix, keeping the rule that
+unit tests are CRDS-free: conftest.py has an autouse fixture that makes
+get_config_from_reference return an empty ConfigObj on every class of
+the snowblind Step's MRO and stubs stpipe.crds_client.get_context_used;
+the reset-fit tests' reference_files helper also writes a SuperBiasModel
+and every call passes override_superbias, since the step looks the
+superbias up for its warning. 286 pass with the server unreachable
+(and 12 s instead of 17). ci.yml no longer sets the CRDS environment,
+so a test that touches CRDS fails deterministically there.

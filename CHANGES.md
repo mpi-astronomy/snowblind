@@ -2,7 +2,43 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-27
+
+### Added
+
+- `StreamCleanStep` now cleans grism WFSS exposures:
+  `background_method='crds_background'` (whic is the default for WFSS)
+  subtracts the scaled CRDS background from every difference, grisms that
+  disperse along the readout stream (NIRISS GR150R, NIRCam GRISMR) are
+  skipped unless `allow_dispersion_along_stream` is set, and the per-column
+  offsets, the scene mask's destriping and the Wiener gain are adjusted so
+  that traces along the columns are not read as noise. A flat-fielded
+  background reference (the NIRCam CRDS reffiles) is multiplied by the flat
+  before scaling; `reference_units` overrides the automatic choice.
+
+### Changed
+
+- The INFO log of `StreamCleanStep` and `ResetRampFitStep` now says in plain
+  words what each step did (the background mask, the rms of the 1/f noise
+  removed, how the reset level was anchored); the spectral fits and
+  per-channel numbers moved to DEBUG.
+
+### Fixed
+
+- `snowblind_detector1 --reset_fit=False` failed with "Extra value
+  'reset_calib'": the ramp_fit parameters built from the snowblind spec were
+  handed to the jwst ramp fit step. The reset-fit parameters are now dropped
+  from that section when the jwst step takes the slot.
+- The "Mean of empty slice" warning the stream clean raised on dispersed
+  exposures, from pixels with no usable group in any integration, is gone.
+
 ## [1.0.1] - 2026-10-26
+
+### Added
+
+- `SnowblindStep` on a ramp now fills `meta.exposure.extended_emission_events`
+  (FITS keyword `EXTNCRS`) with the number of large events it found per
+  million pixels per second, replacing the value written by the jump step.
 
 ### Fixed
 
@@ -19,12 +55,6 @@
 - Each step also adds a HISTORY entry such as `snowblind 1.0.0 SnowblindStep:
   COMPLETE`, which records the snowblind version in both the FITS header and
   the ASDF extension.
-
-### Added
-
-- `SnowblindStep` on a ramp now fills `meta.exposure.extended_emission_events`
-  (FITS keyword `EXTNCRS`) with the number of large events it found per
-  million pixels per second, replacing the value written by the jump step.
 
 ## [1.0.0] - 2026-10-26
 
@@ -134,7 +164,8 @@ First release.
 - Steps register as stpipe plugins and run with `strun` or as pipeline
   hooks.
 
-[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.0.1...HEAD
+[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.1.0...HEAD
+[1.1.0]: https://github.com/mpi-astronomy/snowblind/compare/1.0.1...1.1.0
 [1.0.1]: https://github.com/mpi-astronomy/snowblind/compare/1.0.0...1.0.1
 [1.0.0]: https://github.com/mpi-astronomy/snowblind/compare/0.2.0...1.0.0
 [0.2.1]: https://github.com/mpi-astronomy/snowblind/compare/0.2.0...0.2.1

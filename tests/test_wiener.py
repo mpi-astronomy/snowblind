@@ -2,7 +2,7 @@ import numpy as np
 from stdatamodels.jwst import datamodels
 
 from snowblind import StreamCleanStep, readout
-from snowblind.noise_spectrum import synthetic_stream
+from snowblind.noise_spectrum import notch_period, synthetic_stream
 from snowblind.stream_clean import (
     channel_gain,
     clean_ramp,
@@ -211,3 +211,27 @@ def test_channel_gain_min_period_zeroes_high_frequencies():
     assert result["gain"][0] == 1.0
     np.testing.assert_array_equal(result["gain"][freq > 0.0101], 0.0)
     assert result["gain"][(freq > 0.001) & (freq < 0.004)].min() > 0.5
+
+
+def test_notch_period_is_zero_at_the_period_and_one_far_from_it():
+    """notch_period on a unit gain with period 524 returns 0 at 1/524 cycles per clock and 1 at half that frequency."""
+    freq = np.linspace(0.0, 0.5, 100001)
+    gain = np.ones_like(freq)
+
+    out = notch_period(freq, gain, 524.0)
+
+    assert out[np.argmin(np.abs(freq - 1.0 / 524.0))] < 0.01
+    assert abs(out[np.argmin(np.abs(freq - 0.5 / 524.0))] - 1.0) < 1e-6
+
+
+def test_channel_gain_with_notch_period_cuts_the_gain_at_that_period():
+    """channel_gain on a 1/f spectrum with notch_period=524 gives a gain below 0.05 at 1/524 cycles per clock."""
+    freq = np.fft.rfftfreq(65536)
+    spectrum = 1.0 + 1000.0 / np.maximum(freq, freq[1])
+
+    with_notch = channel_gain(freq, spectrum, notch_period=524.0)
+    without = channel_gain(freq, spectrum)
+
+    index = np.argmin(np.abs(freq - 1.0 / 524.0))
+    assert with_notch["gain"][index] < 0.05
+    assert without["gain"][index] > 0.5
