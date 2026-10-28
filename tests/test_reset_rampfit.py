@@ -105,6 +105,18 @@ def test_call_one_good_group_pixel_gets_rate(tmp_path):
     assert np.isfinite(rate.err[3, 3])
 
 
+def test_call_logs_the_pixels_its_jump_search_flags(tmp_path, caplog):
+    """ResetRampFitStep.call on a ramp with one unflagged 500 DN jump logs one pixel found by its jump search."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp()
+    model.data[0, 3:, 2, 2] += 500.0
+
+    with caplog.at_level(logging.INFO, logger="snowblind.reset_rampfit"):
+        ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
+
+    assert any("found jumps in 1 pixel " in record.getMessage() for record in caplog.records)
+
+
 def test_call_rejects_calibration_for_other_detector(tmp_path):
     """ResetRampFitStep.call raises ValueError when the calibration file names a different detector."""
     rn, gain, bias = reference_files(tmp_path)

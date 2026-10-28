@@ -179,6 +179,39 @@ def test_dropped_reset_is_not_a_jump_but_real_jump_is():
     assert image_info["slope"][0, 0] == pytest.approx(20.0, rel=1e-6)
 
 
+def test_new_jumps_counts_a_jump_the_search_finds():
+    """likely_ramp_fit_reset on a ramp with an unflagged 500 DN jump at group 5 sets new_jumps to 1 for that pixel."""
+    ramp_data, readnoise, gain = blank_ramp_data(10)
+    linear_ramp(ramp_data, 20.0)
+    ramp_data.data[0, 5:, 0, 0] += 500.0
+
+    _image_info, integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert integ_info["new_jumps"][0, 0, 0] == 1
+
+
+def test_new_jumps_leaves_out_a_jump_flagged_on_input():
+    """likely_ramp_fit_reset on a 500 DN jump at group 5 already flagged JUMP_DET leaves new_jumps at 0."""
+    ramp_data, readnoise, gain = blank_ramp_data(10)
+    linear_ramp(ramp_data, 20.0)
+    ramp_data.data[0, 5:, 0, 0] += 500.0
+    ramp_data.groupdq[0, 5, 0, 0] = JUMP
+
+    _image_info, integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert integ_info["new_jumps"][0, 0, 0] == 0
+
+
+def test_new_jumps_leaves_out_a_dropped_reset():
+    """likely_ramp_fit_reset on a ramp whose reset is 10 sigma_b off drops d_0 and leaves new_jumps at 0."""
+    ramp_data, readnoise, gain = blank_ramp_data(10)
+    linear_ramp(ramp_data, 20.0, reset=10.0 * SIGMA_B)
+
+    _image_info, integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert integ_info["new_jumps"][0, 0, 0] == 0
+
+
 def test_scalar_and_uniform_per_pixel_sigma_b_agree():
     """likely_ramp_fit_reset gives the same rate and variance for scalar sigma_b and a uniform sigma_b image."""
     ramp_data, readnoise, gain = blank_ramp_data(6, ncols=3)

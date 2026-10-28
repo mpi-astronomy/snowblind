@@ -26,6 +26,8 @@ from stcal.  Changes, all inside the forked functions (plan section B.2):
 5. A dropped first difference is recorded in a ``used_reset`` plane rather
    than as a JUMP_DET flag on the first group, and the normalized residual
    of the first difference is returned as ``d0_resid``.
+6. The number of differences of each pixel that the jump search flags, on
+   top of those already flagged on input, is returned as ``new_jumps``.
 
 Snowball expansion (``flag_large_events``) is not carried over.
 """
@@ -71,10 +73,10 @@ MIN_NGROUPS = 3
 
 
 class ResetIntegInfo(IntegInfo):
-    """IntegInfo with two extra planes: whether the reset difference was used, and its residual."""
+    """IntegInfo with three extra planes: whether the reset difference was used, its residual, and new jumps."""
 
     def __init__(self, nints, nrows, ncols):
-        """Allocate stcal's per-integration output arrays plus the two reset planes.
+        """Allocate stcal's per-integration output arrays plus the two reset planes and the new-jump counts.
 
         Parameters
         ----------
@@ -88,20 +90,23 @@ class ResetIntegInfo(IntegInfo):
         super().__init__(nints, nrows, ncols)
         self.used_reset = np.zeros((nints, nrows, ncols), dtype=bool)
         self.d0_resid = np.full((nints, nrows, ncols), np.nan, dtype=np.float32)
+        self.new_jumps = np.zeros((nints, nrows, ncols), dtype=np.uint16)
 
     def prepare_info(self):
-        """Arrange output arrays as a dict, as the ramp fit step expects, plus the two extra planes.
+        """Arrange output arrays as a dict, as the ramp fit step expects, plus the three extra planes.
 
         Returns
         -------
         dict
             stcal's ``integ_info`` dictionary with the added keys
-            ``used_reset`` (bool, shape (nints, nrows, ncols)) and
-            ``d0_resid`` (float32, same shape).
+            ``used_reset`` (bool, shape (nints, nrows, ncols)),
+            ``d0_resid`` (float32, same shape) and ``new_jumps`` (uint16,
+            same shape: the differences the jump search flagged).
         """
         info = super().prepare_info()
         info["used_reset"] = self.used_reset
         info["d0_resid"] = self.d0_resid
+        info["new_jumps"] = self.new_jumps
         return info
 
     def get_results(self, result, integ, row, used_reset=None):
@@ -160,7 +165,9 @@ def likely_ramp_fit_reset(
     image_info : dict
         As stcal's ``likely_ramp_fit``.
     integ_info : dict
-        As stcal's, plus ``used_reset`` (bool) and ``d0_resid`` (float32).
+        As stcal's, plus ``used_reset`` (bool), ``d0_resid`` (float32) and
+        ``new_jumps`` (uint16): per pixel, the ordinary differences the jump
+        search flagged that were not already excluded by the input DQ.
     opt_info : None
     """
     nints, ngroups, nrows, ncols = ramp_data.data.shape
@@ -266,6 +273,8 @@ def likely_ramp_fit_reset(
             jump_locs = d2use_copy ^ d2use
             jump_locs[jump_locs > 0] = ramp_data.flags_jump_det
             gdq[2:, row, :] |= jump_locs[1:]
+            # Change 6
+            integ_class.new_jumps[integ, row, :] = np.count_nonzero(jump_locs[1:], axis=0)
 
             alldiffs2use[:, row] = d2use
             allrateguesses[row] = countrates * (countrates > 0) + ramp_data.average_dark_current[row, :]

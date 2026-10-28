@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- `ResetRampFitStep` logs how many pixels its own likelihood jump search
+  flagged beyond the jump step's flags (the count of flagged differences is
+  at DEBUG). The fitter returns the per-pixel count as a `new_jumps` plane
+  of its per-integration results.
+
 ## [1.1.0] - 2026-10-27
 
 ### Added
