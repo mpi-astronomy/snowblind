@@ -11,6 +11,7 @@ from snowblind.reset_calib import default_calibration, update_timing, write_cali
 from snowblind.reset_rampfit import (
     calibrated_pedestal_map,
     highpass_prior,
+    log_new_jumps,
     rescale_t1,
     reset_prior_map,
     star_anchored_scales,
@@ -20,6 +21,7 @@ from snowblind.reset_rampfit import (
 
 
 SAT = datamodels.dqflags.group["SATURATED"]
+JUMP = datamodels.dqflags.group["JUMP_DET"]
 NY, NX = 8, 8
 FRAME_TIME = 10.73677
 RATE = 20.0
@@ -114,7 +116,40 @@ def test_call_logs_the_pixels_its_jump_search_flags(tmp_path, caplog):
     with caplog.at_level(logging.INFO, logger="snowblind.reset_rampfit"):
         ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
 
-    assert any("found jumps in 1 pixel " in record.getMessage() for record in caplog.records)
+    assert any("found jumps in 1 pixel the jump step had not flagged" in record.getMessage() for record in caplog.records)
+
+
+def test_call_logs_a_pixel_the_jump_step_had_flagged_apart(tmp_path, caplog):
+    """ResetRampFitStep.call on a pixel flagged JUMP at group 2 and with a 500 DN jump at group 6 logs more groups to exclude."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp(ngroups=8)
+    model.groupdq[0, 1, 2, 2] = JUMP
+    model.data[0, 5:, 2, 2] += 500.0
+
+    with caplog.at_level(logging.INFO, logger="snowblind.reset_rampfit"):
+        ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
+
+    assert any(
+        "found jumps in 0 pixels the jump step had not flagged" in record.getMessage()
+        and "more groups to exclude in 1 pixel it had flagged" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_log_new_jumps_counts_a_pixel_the_jump_step_had_not_flagged():
+    """log_new_jumps with a new jump in a pixel without an input jump returns one unflagged and no flagged pixel."""
+    new_jumps = np.array([[[1, 0]]])
+    input_jumps = np.array([[[False, False]]])
+
+    assert log_new_jumps(new_jumps, input_jumps, None) == (1, 0)
+
+
+def test_log_new_jumps_counts_a_pixel_the_jump_step_had_flagged_apart():
+    """log_new_jumps with a new jump in a pixel with an input jump returns no unflagged and one flagged pixel."""
+    new_jumps = np.array([[[1, 0]]])
+    input_jumps = np.array([[[True, False]]])
+
+    assert log_new_jumps(new_jumps, input_jumps, None) == (0, 1)
 
 
 def test_call_rejects_calibration_for_other_detector(tmp_path):

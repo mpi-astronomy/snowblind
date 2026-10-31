@@ -4,10 +4,23 @@
 
 ### Added
 
-- `ResetRampFitStep` logs how many pixels its own likelihood jump search
-  flagged beyond the jump step's flags (the count of flagged differences is
-  at DEBUG). The fitter returns the per-pixel count as a `new_jumps` plane
-  of its per-integration results.
+- `ResetRampFitStep` logs the pixels in which its own likelihood jump
+  search found jumps: those the jump step had not flagged, and those it had
+  flagged where the search found more groups to exclude (the count of
+  flagged differences is at DEBUG). The fitter returns the per-pixel count
+  as a `new_jumps` plane of its per-integration results.
+
+### Changed
+
+- `snowblind_detector1` sets up the jump step for the stream clean and the
+  reset fit: 7 sigma (three- and four-group thresholds too), neighbours
+  flagged above 20 sigma, no large-event expansion or after-jump flagging,
+  and `SnowblindStep(min_radius=3, after_jumps=5)` and `JumpPlusStep` as
+  its first post-hooks. These take precedence over the CRDS parameter
+  references; the caller's jump parameters still win, and
+  `expand_large_events=True` gives back the jwst snowball flagging instead
+  of the two hooks. With `--reset_fit=False` it warns that the jump step is
+  still at 7 sigma.
 
 ## [1.1.0] - 2026-10-27
 

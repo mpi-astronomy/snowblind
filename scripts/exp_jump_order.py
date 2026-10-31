@@ -38,9 +38,14 @@ channel and of column means about the background median.  With
 ``--reset-fit`` the ``user`` and ``high`` chains are fitted with
 ``ResetRampFitStep`` at its default jump-search threshold and at 4 sigma:
 its log line of new jumps, the flagged fraction and the upward and
-downward rate outliers are recorded.
+downward rate outliers are recorded.  The outliers are also counted on
+the same pixels and with the same noise scale for every run (the
+``high_default`` run's unflagged background pixels and err), with the
+pixels each run flagged kept in, and pixel by pixel between pairs of runs
+(``reset_fit_common`` in the summary).
 
-Output: ``summary.json``, ``cutouts.npz`` (with the three rates) and, with
+Output: ``summary.json``, ``cutouts.npz`` (with the three rates, and the
+reset fits' rates, errs and flagged pixels) and, with
 the sweep, ``flags.npz`` (every second-pass flag, for
 ``exp_jump_order_pixels.py``) in ``results/<date>_jump_order/<detector>/``.
 """
@@ -357,7 +362,11 @@ def reset_fit(raw, cube, zeroframe, groupdq, fit_params, background, blocks, fas
     ``fit_params`` are passed to the step.  Outliers are background pixels
     without an input flag whose (flat-fielded) rate is more than 5 of its own
     err away from the median of a 5x5 neighbourhood; unflagged jumps make the
-    upward ones outnumber the downward ones.
+    upward ones outnumber the downward ones.  This count leaves out the
+    pixels the fit flagged, which favours a run that flags more; see
+    `common_outliers` for the count that does not.  The rate, its err (both
+    flat-fielded) and the pixels with JUMP_DET in the rate DQ are returned
+    as well, for `common_outliers`.
     """
     model = with_groupdq(raw, groupdq)
     model.data = cube
@@ -389,7 +398,79 @@ def reset_fit(raw, cube, zeroframe, groupdq, fit_params, background, blocks, fas
         "outliers_down": int(np.count_nonzero(good & ~fit_jump & (z < -5))),
         "quality": rate_quality(data, background, groupdq, blocks, fastaxis),
         "rate": data.astype(np.float32),
+        "err": err.astype(np.float32),
+        "flagged": (dq & dqflags.pixel["JUMP_DET"]) > 0,
     }
+
+
+# pairs of runs compared pixel by pixel in common_outliers: (run, against)
+OUTLIER_PAIRS = (
+    ("high_default", "high_off"),
+    ("high_5", "high_off"),
+    ("high_4", "high_default"),
+    ("high_twopoint4_default", "high_default"),
+    ("user_default", "high_default"),
+    ("user_4", "high_4"),
+    ("user_default_nozeroframe", "user_default"),
+)
+
+
+def common_outliers(rates, errs, flagged, reference, background, reference_groupdq):
+    """Rate outliers of every run on the same pixels and with the same noise scale.
+
+    The pixels are the background pixels away from the border that
+    ``reference``'s input DQ leaves without any flag, with a finite rate in
+    every run; the noise scale is ``reference``'s err.  z is a run's rate
+    minus the median of its 5x5 neighbourhood over that err.  Pixels a run
+    flagged stay in, so a pixel flagged but not fixed counts as a failure,
+    and the extra noise of dropped differences shows as extra outliers
+    rather than as a larger err.
+
+    For each pair of `OUTLIER_PAIRS` the pixels one run fixes and the other
+    does not: an outlier (|z| > 5) in the second run with |z| < 3 in the
+    first is fixed by the first, the reverse is new in the first; the gap
+    keeps pixels near 5 that move by a little from counting.
+
+    Returns
+    -------
+    per_run : dict
+        Per run: pixels, up (z > 5), down (z < -5), the same among pixels
+        the run flagged (up_flagged, down_flagged), and the robust sigma of z.
+    pairs : dict
+        Per pair: fixed_up, fixed_down, new_up, new_down.
+    """
+    scale = errs[reference]
+    usable = background & interior(scale.shape) & ~np.any(reference_groupdq != 0, axis=(0, 1)) & (scale > 0)
+    for rate in rates.values():
+        usable &= np.isfinite(rate)
+    z = {}
+    per_run = {}
+    for name, rate in rates.items():
+        local = ndimage.median_filter(np.where(np.isfinite(rate), rate, 0.0), size=5)
+        z[name] = np.where(usable, (rate - local) / np.where(scale > 0, scale, 1.0), 0.0)
+        values = z[name][usable]
+        up, down = usable & (z[name] > 5), usable & (z[name] < -5)
+        per_run[name] = {
+            "pixels": int(usable.sum()),
+            "up": int(up.sum()),
+            "down": int(down.sum()),
+            "up_flagged": int((up & flagged[name]).sum()),
+            "down_flagged": int((down & flagged[name]).sum()),
+            "z_sigma": float(1.4826 * np.median(np.abs(values - np.median(values)))),
+        }
+    pairs = {}
+    for a, b in OUTLIER_PAIRS:
+        if a not in z or b not in z:
+            continue
+        fixed = usable & (np.abs(z[b]) > 5) & (np.abs(z[a]) < 3)
+        new = usable & (np.abs(z[a]) > 5) & (np.abs(z[b]) < 3)
+        pairs[f"{a}_vs_{b}"] = {
+            "fixed_up": int((fixed & (z[b] > 0)).sum()),
+            "fixed_down": int((fixed & (z[b] < 0)).sum()),
+            "new_up": int((new & (z[a] > 0)).sum()),
+            "new_down": int((new & (z[a] < 0)).sum()),
+        }
+    return per_run, pairs
 
 
 def summarise(values):
@@ -530,6 +611,10 @@ def main():
         help="with --reset-fit, also a chain with a second jump step at this threshold on the cleaned high ramp",
     )
     parser.add_argument("--reset-chains", default=None, help="with --reset-fit, comma-separated chain names to run (default all)")
+    parser.add_argument(
+        "--fits-only", action="store_true",
+        help="only what --reset-fit needs: no clean without flags, no clean comparisons or OLS rates, no sweep (less memory)",
+    )
     args = parser.parse_args()
     thresholds = [float(t) for t in args.thresholds.split(",")]
     rng = np.random.default_rng(20261028)
@@ -563,19 +648,21 @@ def main():
     t0 = time.time()
     clean_high, zf_high, background = clean(raw, dq_high, dark, out_dir, save_mask=True)
     clean_user, zf_user, _ = clean(raw, dq_user, dark, out_dir, save_mask=False)
-    clean_none, _zf_none, _ = clean(raw, dq_none, dark, out_dir, save_mask=False)
+    clean_none = None if args.fits_only else clean(raw, dq_none, dark, out_dir, save_mask=False)[0]
     print(f"cleans done in {time.time() - t0:.0f} s", flush=True)
 
-    events = large_events(dq_user, args.event_area)
-    summary["large_events"] = len(events)
     summary["background_fraction"] = float(background.mean())
-    summary["none_vs_high"], rate_none_high = compare_cleans(
-        clean_none, clean_high, dq_user, background, events, blocks, fastaxis, group_time, rng
-    )
-    summary["user_vs_high"], rate_user_high = compare_cleans(
-        clean_user, clean_high, dq_user, background, events, blocks, fastaxis, group_time, rng
-    )
-    print(json.dumps({k: summary[k] for k in ("large_events", "none_vs_high", "user_vs_high")}, indent=1), flush=True)
+    events = []
+    if not args.fits_only:
+        events = large_events(dq_user, args.event_area)
+        summary["large_events"] = len(events)
+        summary["none_vs_high"], rate_none_high = compare_cleans(
+            clean_none, clean_high, dq_user, background, events, blocks, fastaxis, group_time, rng
+        )
+        summary["user_vs_high"], rate_user_high = compare_cleans(
+            clean_user, clean_high, dq_user, background, events, blocks, fastaxis, group_time, rng
+        )
+        print(json.dumps({k: summary[k] for k in ("large_events", "none_vs_high", "user_vs_high")}, indent=1), flush=True)
 
     # each cleaned rate on its own, all with the user DQ: on a dark the truth is zero, on a sky field flat once
     # flat-fielded
@@ -585,33 +672,54 @@ def main():
             flat = np.array(flat_model.data, dtype=np.float32)
     rates = {}
     summary["rate_quality"] = {}
-    for name, cube in (("high", clean_high), ("user", clean_user), ("none", clean_none)):
+    for name, cube in () if args.fits_only else (("high", clean_high), ("user", clean_user), ("none", clean_none)):
         rates[name] = np.mean([slope_per_group(cube[i], dq_user[i]) for i in range(cube.shape[0])], axis=0) / group_time
         summary["rate_quality"][name] = rate_quality(rates[name], background, dq_user, blocks, fastaxis, flat)
     print(json.dumps(summary["rate_quality"], indent=1), flush=True)
 
-    fit_rates = {}
+    fit_rates, fit_errs, fit_flagged, fit_dq = {}, {}, {}, {}
     if args.reset_fit:
         summary["reset_fit"] = {}
-        chains = []
-        for chain, cube, zf, dq in (("user", clean_user, zf_user, dq_user), ("high", clean_high, zf_high, dq_high)):
-            chains.append((f"{chain}_default", cube, zf, dq, {}))
-            chains.append((f"{chain}_4", cube, zf, dq, {"rejection_threshold": 4.0}))
-        chains.append(("user_default_nozeroframe", clean_user, zf_user, dq_user, {"use_zeroframe": False}))
+        # the user chains first, so that their cleaned cube can go before the high ones run
+        chains = [
+            ("user_default", clean_user, zf_user, dq_user, {}),
+            ("user_4", clean_user, zf_user, dq_user, {"rejection_threshold": 4.0}),
+            ("user_default_nozeroframe", clean_user, zf_user, dq_user, {"use_zeroframe": False}),
+            ("high_default", clean_high, zf_high, dq_high, {}),
+            ("high_4", clean_high, zf_high, dq_high, {"rejection_threshold": 4.0}),
+        ]
+        # the fit's own search higher, and in effect off (no jump the 7 sigma pass missed is that large)
+        chains.append(("high_5", clean_high, zf_high, dq_high, {"rejection_threshold": 5.0}))
+        chains.append(("high_off", clean_high, zf_high, dq_high, {"rejection_threshold": 1000.0}))
         for k in args.second_pass:
             dq_second = second_jump_pass(raw, clean_high, dq_high, k)
             chains.append((f"high_twopoint{k:g}_default", clean_high, zf_high, dq_second, {}))
         wanted = None if args.reset_chains is None else set(args.reset_chains.split(","))
-        for name, cube, zf, dq, fit_params in chains:
+        if args.fits_only:
+            del clean_user, zf_user
+        while chains:
+            name, cube, zf, dq, fit_params = chains.pop(0)
             if wanted is not None and name not in wanted:
                 continue
             record = reset_fit(raw, cube, zf, dq, fit_params, background, blocks, fastaxis, flat)
+            del cube, zf
             fit_rates[name] = record.pop("rate")
+            fit_errs[name] = record.pop("err")
+            fit_flagged[name] = record.pop("flagged")
+            fit_dq[name] = dq
             summary["reset_fit"][name] = record
             print(name, json.dumps(record), flush=True)
+        if "high_default" in fit_rates:
+            per_run, pairs = common_outliers(
+                fit_rates, fit_errs, fit_flagged, "high_default", background, fit_dq["high_default"]
+            )
+            summary["reset_fit_common"] = {"reference": "high_default", "per_run": per_run, "pairs": pairs}
+            print(json.dumps(summary["reset_fit_common"], indent=1), flush=True)
 
     cutouts = {f"rate_{name}": rate.astype(np.float32) for name, rate in rates.items()}
     cutouts.update({f"fit_rate_{name}": rate for name, rate in fit_rates.items()})
+    cutouts.update({f"fit_err_{name}": err for name, err in fit_errs.items()})
+    cutouts.update({f"fit_flagged_{name}": np.packbits(flags) for name, flags in fit_flagged.items()})
     biggest = sorted(events, key=lambda e: -int(e[3].sum()))[:3]
     for n, (i, j, box, _mask) in enumerate(biggest):
         cy = (box[0].start + box[0].stop) // 2
@@ -623,12 +731,13 @@ def main():
         cutouts[f"event{n}_raw"] = difference(np.asarray(raw.data[i]), j)[cut].astype(np.float32)
         cutouts[f"event{n}_flags"] = dq_user[i, j][cut]
         cutouts[f"event{n}_origin"] = np.array([i, j, y0, x0])
-    cutouts["rate_none_minus_high"] = rate_none_high.astype(np.float32)
-    cutouts["rate_user_minus_high"] = rate_user_high.astype(np.float32)
+    if not args.fits_only:
+        cutouts["rate_none_minus_high"] = rate_none_high.astype(np.float32)
+        cutouts["rate_user_minus_high"] = rate_user_high.astype(np.float32)
     np.savez_compressed(os.path.join(out_dir, "cutouts.npz"), **cutouts)
-    del clean_user, clean_none
+    clean_user = clean_none = None
 
-    if not args.skip_sweep:
+    if not (args.skip_sweep or args.fits_only):
         with datamodels.ReadnoiseModel(JumpStep().get_reference_file(raw, "readnoise")) as rn_model, \
                 datamodels.GainModel(JumpStep().get_reference_file(raw, "gain")) as gain_model:
             readnoise_2d, gain_2d = get_reference_file_subarrays(raw, rn_model, gain_model)

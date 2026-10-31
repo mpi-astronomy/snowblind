@@ -3477,3 +3477,352 @@ and every call passes override_superbias, since the step looks the
 superbias up for its warning. 286 pass with the server unreachable
 (and 12 s instead of 17). ci.yml no longer sets the CRDS environment,
 so a test that touches CRDS fails deterministically there.
+
+### 2026-10-28: jump detection before and after the stream clean
+
+James: the stream clean runs after the jump step and the reset fit
+replaces ramp_fit; cleaning the 1/f first should let jumps be found at a
+lower threshold without flagging real data. Three questions. (1) Can the
+clean run before the jump step, how sensitive is it to jumps and to
+snowballs, and would a jump step both before and after make sense? (2)
+After cleaning, how low can the jump threshold go? Today 5-6 sigma is
+needed so that rows of 1/f noise are not flagged. (3) Does the iterative
+likelihood jump search of fitramp (Brandt) find jumps better than
+JumpStep? His jump settings: JumpStep at 5 sigma, flag_4_neighbors with
+min_jump_to_flag_neighbors 20, after_jump_flag_time1 0,
+expand_large_events False, and post_hooks
+SnowblindStep(min_radius=3, after_jumps=5) and JumpPlusStep, which take
+over the large-event expansion and the after-jump flagging.
+
+Facts from the code. fitramp's search is in stcal already
+(likely_fit.mask_jumps, nearly line for line: leave out one difference
+at 4.5 sigma, or two adjacent ones at the same chance probability), runs
+in every LIKELY fit and in our fork (mask_jumps_reset), so
+ResetRampFitStep already searches the cleaned ramp; jwst passes no
+threshold. stcal drops both differences next to any flagged group. With
+fewer than 10 usable differences (min_diffs_single_pass) JumpStep's test
+works on the absolute values of the differences (iterative_jump), which
+raises its effective threshold by about 0.7 sigma on faint pixels and
+makes its flags lopsided (below). JumpStep.call(skip=True) does not skip:
+stpipe sets skip to False for a step run on its own. flag_large_events
+rebuilds its regions from all JUMP pixels, so a second JumpStep with the
+expansion on would grow the first one's discs again.
+
+The experiment: scripts/exp_jump_order.py and
+scripts/exp_jump_order_pixels.py, results in
+results/2026-10-28_jump_order{,_rates,_second_pass,_wide}. Each exposure
+goes through Detector1 up to the dark step (SIRS refpix, no jump step)
+and gets one of three sets of jump flags before the clean: James's
+settings at 5 sigma, the same at 7 sigma (three- and four-group
+thresholds at 7 too), or none. Exposures: CEERS F444W NRCALONG (MEDIUM8,
+9 groups) and NRCA3 (MEDIUM8, 5 groups); program 1074 NRCA1 (BRIGHT1, 5
+groups; crowded, few cosmic rays, uninformative); NIRISS program 3383 (NIS,
+8 groups) and 4681 (NISRAPID, 20 groups); the darks 8758 NRCA1 and
+NRCALONG (RAPID) and 9279 NIS (NISRAPID), first 30 groups. Four
+measurements:
+
+- Striping left in the rate: the cleaned ramp fitted by plain least
+  squares; on background pixels (flat-fielded on sky) the mean of each
+  readout line within each channel; the rms of those means in DN/s.
+- Row crowding of jump flags: per group difference and readout line
+  within a channel, the flags on background pixels not next to a
+  first-pass flag; a line with 5 or more is crowded (chance alone gives
+  about 0.03 per line at 4 sigma). Reported as the share of flags that
+  sit in crowded lines.
+- The sign test: cosmic rays only add charge, so a real jump is an upward
+  difference while noise goes both ways. Downward flags on background
+  count a search's false flags, upward minus downward its real jumps.
+  Valid only where the false flags are symmetric, which JumpStep's are not
+  on ramps of fewer than 10 differences (below).
+- Rate outliers: in ResetRampFitStep's rate, (rate - median of the 5x5
+  box) / ERR above +5 (up) or below -5 (down), on background pixels with
+  no flag, with the flagged fraction (pixels with JUMP_DET in the rate DQ)
+  as the cost. It has a flaw, found later (below).
+
+(1) The clean without jump flags. Line-mean rms in DN/s:
+
+| exposure | 7 sigma | 5 sigma | no flags |
+|---|---|---|---|
+| CEERS NRCALONG | 0.00056 | 0.00056 | 0.00078 |
+| CEERS NRCA3 | 0.00032 | 0.00033 | 0.00041 |
+| 1074 NRCA1 | 0.00334 | 0.00335 | 0.00363 |
+| NIRISS 3383 | 0.00164 | 0.00168 | 0.00245 |
+| NIRISS 4681 | 0.00368 | 0.00370 | 0.00411 |
+| dark NRCA1 | 0.00032 | 0.00032 | 0.00488 |
+| dark NIS | 0.00076 | 0.00080 | 0.00972 |
+| dark NRCALONG | 0.00050 | 0.00051 | 0.00827 |
+
+Without flags the clean is worse everywhere, by 9 to 49 percent on sky
+and 13 to 17 times on the darks: small cosmic rays outside the scene mask
+leak into the linear estimators (the draft-rate mask catches only the
+bright ones). Column means behave the same way. 7 sigma cleans as well
+as 5. A comparison of the readout lines through large events against
+other lines of the same channel showed no effect either way, so it is
+the many small hits that matter, not the snowballs. So the clean needs a
+jump step first, and 7 sigma is enough for it.
+
+(2) How low after cleaning. Row crowding of JumpStep's flags on the raw
+ramps: CEERS NRCA3 59 percent of flags in crowded lines at 3.5 sigma, 29
+at 4, 9 at 4.5, 2.6 at 5; NIRISS 4681 2 percent even at 5 sigma; the
+NRCALONG dark 16 percent at 3.5. After cleaning 0.1 percent or less at
+4.5 sigma and above everywhere (CEERS NRCA3 3.8 percent at 4, 32 at 3.5).
+The clean removes the row flagging James sees. What limits the
+threshold then is the plain false-flag rate. Downward JumpStep flags on
+the cleaned darks at 4.5 sigma against the Gaussian count: NRCA1 698 vs
+397, NIS 646 vs 391, NRCALONG 5835 vs 394. The NRCALONG tail is on
+ordinary pixels (one event each, normal read noise; TELEGRAPH pixels are
+enriched 58 times but are only 14 percent of them), so the floor is
+each detector's own tail, not 1/f. Cleaning halves to quarters the false
+flags at 3.5-4.5 sigma on the SW and NIRISS darks.
+
+Faint jumps left after a 7 sigma first pass (sign test, away from the
+first-pass flags): none on the NRCA1 and NIS darks (up within the noise
+of down at every threshold from 3.5 to 5 sigma). On the NRCALONG dark
+JumpStep has about 950 more up than down at 4-4.5 sigma and the
+likelihood search 3600 more down than up: non-Gaussian both ways,
+unresolved. On sky a few hundred to a thousand at 4.5 sigma (CEERS
+NRCALONG 1113 with JumpStep, 998 with the likelihood search; NIRISS 3383
+787 and 159). Many more are gained next to first-pass flags (CEERS
+NRCALONG 1953-2595 at 4.5).
+
+(3) JumpStep's test against the likelihood search on the same cleaned
+ramps. The likelihood search makes more false flags at the same nominal
+threshold (NRCA1 dark at 4.5 sigma 1588 down vs 698; NRCALONG 26134 vs
+5835), and on the darks more down than up late in the ramp (curvature?).
+JumpStep on short ramps cannot be scored by the sign test: on CEERS NRCA3
+(4 differences) at 3.5 sigma it flags 56768 up and 61 down, against 3457
+down expected from Gaussian noise, while the likelihood search flags
+6463 up and 3728 down. On a pixel with sky signal the absolute value
+folds downward excursions back up, so few are flagged; and its upward
+flags far outnumber the faint real jumps the likelihood search sees (net
+2735), so most of them are noise. An earlier reading on CEERS NRCALONG,
+that JumpStep found 3-4 times more real jumps per flag, came from this
+and is withdrawn.
+
+End to end with ResetRampFitStep. Runs: the jump step at 5 sigma
+(James's) or 7, then the clean, then ResetRampFitStep at its default 4.5
+sigma or at 4; also 5 sigma with use_zeroframe False, and 7 sigma with a
+second JumpStep at 4 sigma after the clean (James's settings, new flags
+carried one group as JumpPlusStep does). Up/down rate outliers and
+percent of pixels flagged:
+
+| exposure | 5, fit 4.5 | 5, fit 4 | 7, fit 4.5 | 7, fit 4 | 7, JumpStep 4, fit 4.5 |
+|---|---|---|---|---|---|
+| CEERS NRCALONG | 764/106, 13.94 | 700/100, 14.19 | 766/106, 13.81 | 701/100, 14.06 | 757/104, 13.85 |
+| CEERS NRCA3 | 582/278, 6.65 | 517/243, 6.71 | 631/281, 6.36 | 535/246, 6.44 | 488/271, 6.99 |
+| NIRISS 3383 | 2341/392, 3.78 | 2323/391, 3.85 | 2342/391, 3.64 | 2322/390, 3.72 | 2336/391, 3.72 |
+| NIRISS 4681 | 1900/370, 2.10 | 1890/364, 2.18 | 1900/370, 2.06 | 1889/365, 2.14 | 1896/371, 2.11 |
+| dark NRCA1 | 62/480, 2.45 | 43/398, 2.58 | 63/479, 2.39 | 43/397, 2.52 | 61/470, 2.54 |
+| dark NIS | 368/906, 3.65 | 266/732, 3.75 | 373/906, 3.53 | 265/731, 3.63 | 366/899, 3.59 |
+| dark NRCALONG | 902/12435, 4.28 | 623/9751, 5.06 | 923/12576, 4.16 | 632/9847, 4.96 | 873/12176, 4.74 |
+
+The flaw in the outlier count: it leaves out the pixels the fit flagged,
+so a run that flags more has fewer pixels counted, and a pixel flagged
+but not fixed drops out instead of counting as a failure. That favours
+the runs that flag more: the fit at 4 sigma (CEERS NRCALONG up 764 ->
+700; NRCALONG dark 902 -> 623 with down 12435 -> 9751, which cosmic rays
+do not explain) and the second JumpStep at 4 sigma (CEERS NRCA3 631 ->
+488 with 0.63 percent more pixels flagged, where JumpStep's upward flags
+on 4 differences are mostly noise). Both are withdrawn as
+recommendations until the count is redone over all pixels the jump step
+left unflagged, compared at matched flagged fractions. On the darks down
+outliers outnumber up, so most outliers there are not cosmic rays at
+all. What stands: 7 sigma before the clean matches 5 sigma, with 0.06-0.29
+percent fewer pixels flagged and the same outliers to a few percent;
+the exception is CEERS NRCA3 (631 vs 582), which this count cannot
+settle.
+
+The zeroframe. With use_zeroframe (the default) the fit's log reported
+many more pixels with new jumps on the MEDIUM8 exposures (CEERS NRCALONG
+35540 vs 8887 without the zeroframe, NRCA3 16896 vs 2809), while the rate
+hardly changes (up outliers 764 vs 787, 582 vs 567; the same scatter)
+and the pixels newly flagged that the jump step had left clean are
+about the same (9585 vs 7721, 2108 vs 2629). So the extra pixels are
+ones the jump step had flagged in another group. Likely, not checked: a
+cosmic ray during group 1, which the jump step can only flag at group 2,
+and which the fit also sees between the zeroframe and the rest of
+group 1. The exposures without a zeroframe (RAPID, one-frame NIRISS) are
+identical with and without.
+
+Decision (James): JumpStep at 7 sigma with his other settings, then the
+stream clean, then ResetRampFitStep at its default 4.5 sigma.
+snowblind_detector1 now sets this up. JUMP_DEFAULTS in pipeline.py (the
+rejection, three- and four-group thresholds 7; flag_4_neighbors;
+min_jump_to_flag_neighbors 20; after_jump_flag_time1 0;
+expand_large_events False) go over the CRDS parameter references in
+Detector1Pipeline.get_config_from_reference, and into the steps mapping
+in __init__ for runs without CRDS; stpipe merges the caller's parameters
+on top, so --steps.jump.rejection_threshold=5 still wins. Checked with
+real CRDS on NIRISS 3383, whose pars-jumpstep has 4 sigma, the expansion
+on, flag_4_neighbors off and 90 s of after-jump flagging. While
+expand_large_events is off, SnowblindStep(min_radius=3, after_jumps=5)
+and JumpPlusStep go into post_hooks unless listed, ahead of the stream
+clean (so a caller's stream clean hook string gets them put in front);
+expand_large_events=True gives back the jwst snowball flagging without
+them. reset_fit=False warns that the jump step is still at 7 sigma. Ten
+tests, three updated. Not covered by the data: ramps of 3 and 4 groups,
+where the three- and four-group thresholds apply.
+
+The log line. It said "pixels that the jump step had not flagged" but
+counted every pixel with a newly dropped difference. James: give both.
+It now reads "found jumps in N pixels the jump step had not flagged (x
+percent), and more groups to exclude in M pixels it had flagged";
+log_new_jumps takes the input JUMP mask. Four tests.
+
+### 2026-10-28: bimodal snowball rates on the 8758 NRCA1 dark (a step at group 59)
+
+James ran the standard pipeline on jw08758003001_05201_00001_nrca1 (2
+integrations of 150 groups; SIRS, jump at 7 sigma, expand_factor 3). In
+the rate the flagged snowball circles are bimodal: those flagged in
+integration 1 come out high, those in integration 2 low
+(~/data/jwst_darks/snowballs.reg), each flat across its circle, so not
+persistence. Also: a snowball at (y, x) (1862, 1966) seems to persist
+into integration 2, and (702, 1984) and (414, 1973) through all groups
+and integrations.
+
+Cause: a common-mode step of -8.9 DN in every active pixel during the
+readout of group 59 of integration 1. The top half of the frame steps in
+the difference of groups 58-59, the bottom half in 59-60, the same in all
+channels. The reference pixels do not show it, so SIRS cannot remove it;
+it is not in the dark reference (0617), since integration 2 has no step.
+Integration 1's dark rate is -0.0062 DN/s, integration 2's +0.0033. A
+snowball flag splits a pixel's ramp, the split drops the step from that
+pixel's fit, and split segments get less weight in the exposure rate
+(least-squares weights go as n(n^2 - 1)). A pixel split in integration
+1 loses the step and comes out high. One split in integration 2 has no
+step to lose, but its integration 2 gets less weight, so its rate leans
+toward integration 1's lower one. Predicted offsets of a split pixel
+against an unsplit one, from the median ramps of the two integrations:
++0.0009 to +0.0044 DN/s for a split in integration 1, -0.0010 to -0.0028
+in integration 2. Observed in James's circles: +0.0019 to +0.0041 and
+-0.0013 to -0.0032. So it is neither the non-linearity nor the fit's
+weighting as such, but the step.
+
+The persistent snowballs: (702, 1984) and (414, 1973) are static clusters
+of about 400 pixels flagged WARM and DO_NOT_USE in the mask reference,
+with no JUMP or SATURATED flag in any group. (1862, 1966) is a warm
+patch, high in both integrations (+0.0039 and +0.0034 DN/s) and partly
+WARM in the mask.
+
+Does the stream clean repair the step? First 75 groups of integration 1,
+James's jump settings at 7 sigma with SnowblindStep and JumpPlusStep,
+then the clean. Measured: the median group-to-group change of unflagged
+pixels at 58-59 and 59-60, and the slope of ramps split at group 60
+minus the unsplit slope (the snowball bias):
+
+| clean | step at 58-59 / 59-60 (DN) | split minus unsplit (DN/s) |
+|---|---|---|
+| none | -3.45 / -5.06 | +0.00865 |
+| background None (darks) | +0.02 / +0.01 | -0.00001 |
+| integration_model (sky imaging) | -0.11 / -0.13 | -0.00001 |
+| median background | -3.50 / -4.97 | +0.00857 |
+
+The clean removes what differs between readout lines and keeps, as
+background, whatever its background model holds. With no background
+the step goes entirely. With integration_model the model is one box
+model per integration made from the least-squares slope, so it cannot
+follow a sudden change: the step lands in what the filter removes, and
+every difference comes out at the model's level (about -0.13 DN per
+group, all differences alike). The bias between split and unsplit pixels
+is gone; what is left is the step's share of the least-squares slope,
+the same in every pixel, so a uniform rate offset of about -0.012 DN/s
+for this 75-group integration that the sky subtraction takes later. With
+the median background (not used now) each difference's median takes in
+its share of the step as sky, so the full step stays in every pixel and
+the snowball bias with it. An offset confined to part of the frame (some
+channels or rows) would be removed except for the share the median takes
+in. Scripts: scratchpad step_test.py, step_test_median.py and
+step_test_intmodel.py of the session (not kept in the repo).
+
+How common such steps are is unknown. A scan of other darks for the
+median group-to-group change of unflagged pixels, ordered by readout
+time, would show them cheaply.
+
+### 2026-10-28 (evening): the outlier count redone
+
+The count of the first 2026-10-28 entry left out the pixels each run
+flagged and judged each pixel by its own ERR, so a run that flags more
+had fewer pixels counted and could hide a pixel it flagged but did not
+fix. Redone (`common_outliers` in scripts/exp_jump_order.py, results in
+results/2026-10-28_jump_order_recount): every run is judged on the same
+pixels, the background pixels the 7 sigma jump step left without any
+flag (3.2 to 3.9 million per exposure), with the same noise scale, the
+ERR of the run with the 7 sigma jump step and the fit at 4.5. Pixels a
+run flagged stay in. z is the rate minus the median of its 5x5
+neighbourhood over that scale. Pixel by pixel between two runs: an
+outlier (|z| > 5) in one run with |z| < 3 in the other is fixed by the
+other; the gap keeps pixels near 5 that move by a little from counting.
+Two runs added: the fit's search at 5 sigma, and in effect off (1000
+sigma). New `--fits-only` option: no clean without flags, no clean
+comparisons, no sweep. It was needed because the machine was paging (8.7
+GB of swap used, mostly by other apps). NIRISS 4681 took 81 minutes
+instead of 10, and the NRCA1 dark was stopped after 41 minutes and rerun
+in 9 with the option.
+
+Outliers fixed / new, each comparison against the run named second
+(the run with a 5 sigma jump step fits at 4.5; the second JumpStep at 4
+sigma runs after the 7 sigma one and the clean):
+
+| exposure | search 4.5 vs off | search 5 vs off | search 4 vs 4.5 | jump step 5 vs 7 | second jump step 4 vs none | zeroframe off vs on |
+|---|---|---|---|---|---|---|
+| CEERS NRCALONG, 9 groups | 548 / 11 | 543 / 8 | 1 / 7 | 3 / 9 | 7 / 18 | 3 / 5 |
+| CEERS NRCA3, 5 groups | 703 / 215 | 673 / 140 | 89 / 411 | 84 / 1888 | 152 / 5621 | 101 / 108 |
+| 1074 NRCA1, 5 groups | 779 / 3 | 777 / 3 | 20 / 96 | 13 / 31 | 38 / 6 | 0 / 0 |
+| NIRISS 3383, 8 groups | 744 / 61 | 737 / 54 | 13 / 63 | 4 / 10 | 11 / 66 | 0 / 0 |
+| NIRISS 4681, 20 groups | 1229 / 29 | 1225 / 23 | 12 / 71 | 2 / 2 | 4 / 7 | 0 / 0 |
+| dark NRCA1, 30 groups | 889 / 128 | 875 / 92 | 102 / 1805 | 1 / 13 | 6 / 147 | 0 / 0 |
+| dark NIS, 30 groups | 5400 / 389 | 5356 / 324 | 314 / 1013 | 12 / 19 | 8 / 43 | 0 / 0 |
+| dark NRCALONG, 30 groups | 6264 / 1371 | 5922 / 902 | 2722 / 7918 | 122 / 228 | 215 / 1111 | 0 / 0 |
+
+Up / down outliers per run, all after the 7 sigma jump step and the
+clean unless named:
+
+| exposure | fit search off | 5 | 4.5 | 4 | jump step 5, fit 4.5 | second jump step 4, fit 4.5 |
+|---|---|---|---|---|---|---|
+| CEERS NRCALONG | 2001 / 157 | 990 / 143 | 955 / 147 | 924 / 154 | 941 / 150 | 924 / 157 |
+| CEERS NRCA3 | 1413 / 337 | 754 / 417 | 744 / 480 | 762 / 811 | 855 / 2190 | 806 / 5978 |
+| 1074 NRCA1 | 7886 / 45 | 7125 / 13 | 7120 / 13 | 7133 / 74 | 7124 / 29 | 7071 / 18 |
+| NIRISS 3383 | 3153 / 438 | 2428 / 427 | 2418 / 435 | 2429 / 477 | 2410 / 445 | 2400 / 518 |
+| NIRISS 4681 | 3156 / 395 | 1920 / 395 | 1918 / 400 | 1950 / 441 | 1917 / 402 | 1918 / 406 |
+| dark NRCA1 | 732 / 708 | 87 / 573 | 87 / 605 | 902 / 1550 | 91 / 615 | 158 / 676 |
+| dark NIS | 5689 / 1117 | 537 / 1201 | 523 / 1241 | 913 / 1631 | 521 / 1249 | 549 / 1250 |
+| dark NRCALONG | 4093 / 15806 | 1316 / 13797 | 1276 / 14171 | 5519 / 16016 | 1410 / 14149 | 1993 / 14661 |
+
+What it shows:
+
+1. The fit's own search is the main gain after a 7 sigma jump step: it
+   fixes 550 to 1230 outliers per sky exposure and 900 to 6300 per dark
+   (cosmic rays the jump step left), and makes new ones: a third as many
+   on CEERS NRCA3, a fifth on the NRCALONG dark, a few percent elsewhere.
+2. The search at 5 sigma does as well as at 4.5: it fixes slightly fewer
+   and makes fewer new ones. Net (fixed minus new) it is within 2 on the
+   four other sky exposures, about 20 ahead on the NRCA1 and NIS darks,
+   and ahead on CEERS NRCA3 (533 vs 488) and the NRCALONG dark (5020 vs
+   4893).
+3. The search at 4 sigma is worse on every exposure: more new outliers
+   than fixed, up to 102 / 1805 on the NRCA1 dark. A false jump splits a
+   ramp into two segments with one slope, and where read noise dominates
+   (darks, faint sky) a split in the middle nearly doubles the pixel's
+   noise: on the dark pixels the 4 sigma fit newly flags, its ERR is 1.5
+   to 1.9 times larger (median 1.54 on NRCA1) and the rate moves by a
+   median 4.5 of the reference ERR. The pixel's own ERR grows with it,
+   which is why the first count could not see this. A combination
+   weighted by ERR would soften the cost, but those pixels are noisier.
+4. The 7 sigma jump step is as good as 5 sigma or better everywhere. On
+   CEERS NRCA3 (4 differences), 5 sigma makes 1888 new outliers, almost
+   all downward in pixels it flagged: on short frame-averaged ramps the
+   extra flags are upward noise, and dropping an upward difference pulls
+   the rate down.
+5. A second JumpStep at 4 sigma after the clean is worse everywhere but
+   1074 (bright stars, 38 / 6): 152 / 5621 on CEERS NRCA3, 215 / 1111 on
+   the NRCALONG dark.
+6. Leaving out the zeroframe makes no difference (101 / 108 on CEERS
+   NRCA3, 3 / 5 on CEERS NRCALONG).
+
+So the snowblind_detector1 defaults stand: JumpStep at 7 sigma, the
+stream clean, the fit's search at 4.5. Raising the search to 5 would be
+at least as good on this set. It is not changed: the gain is small and
+higher values (5.5, 6) are untested. Caveats: the count compares
+neighbours on the final rate, so a pixel the 7 sigma jump step flagged is
+not judged at all. It also charges extra noise as failure at the fixed
+scale, which is the cost a single-exposure user sees.

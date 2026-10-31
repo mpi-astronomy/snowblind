@@ -58,37 +58,47 @@ def _span(values, fmt):
     return f"{low:{fmt}} to {high:{fmt}}"
 
 
-def log_new_jumps(new_jumps, rejection_threshold):
-    """Log how many pixels the fit's own jump search flagged beyond the input DQ.
+def log_new_jumps(new_jumps, input_jumps, rejection_threshold):
+    """Log the pixels in which the fit's own jump search found jumps, apart from those the jump step had flagged.
 
     Parameters
     ----------
     new_jumps : ndarray of int, shape (nints, nrows, ncols)
         Per pixel and integration, the differences the likelihood jump
-        search flagged (``integ_info["new_jumps"]``).
+        search flagged on top of the input DQ (``integ_info["new_jumps"]``).
+    input_jumps : ndarray of bool, shape (nints, nrows, ncols)
+        Per pixel and integration, whether the input DQ has JUMP_DET in any
+        group.
     rejection_threshold : float or None
         The search threshold in sigma; None is stcal's default of 4.5.
 
     Returns
     -------
-    int
-        The number of pixels with a new jump, counted once per integration.
+    unflagged : int
+        The pixels with a new jump that the jump step had not flagged,
+        counted once per integration.
+    flagged : int
+        The pixels with a new jump that the jump step had flagged in other
+        groups, counted once per integration.
     """
     new_jumps = np.asarray(new_jumps)
-    pixels = int(np.count_nonzero(new_jumps))
+    input_jumps = np.asarray(input_jumps, dtype=bool)
+    found = new_jumps > 0
+    unflagged = int(np.count_nonzero(found & ~input_jumps))
+    flagged = int(np.count_nonzero(found & input_jumps))
     nints = new_jumps.shape[0]
     over = f" over the {nints} integrations" if nints > 1 else ""
     log.info(
-        f"The fit's jump search found jumps in {pixels} pixel{'s' if pixels != 1 else ''}{over} "
-        f"({100 * pixels / new_jumps.size:.2g} percent) "
-        "that the jump step had not flagged"
+        f"The fit's jump search found jumps in {unflagged} pixel{'s' if unflagged != 1 else ''} the jump step had "
+        f"not flagged ({100 * unflagged / new_jumps.size:.2g} percent){over}, and more groups to exclude in "
+        f"{flagged} pixel{'s' if flagged != 1 else ''} it had flagged"
     )
     threshold = 4.5 if rejection_threshold is None else rejection_threshold
     log.debug(
-        f"Likelihood jump search at {threshold:g} sigma: {int(new_jumps.sum())} differences flagged in {pixels} "
-        f"pixel-integrations, {int(np.count_nonzero(new_jumps > 1))} of them with more than one"
+        f"Likelihood jump search at {threshold:g} sigma: {int(new_jumps.sum())} differences flagged in "
+        f"{unflagged + flagged} pixel-integrations, {int(np.count_nonzero(new_jumps > 1))} of them with more than one"
     )
-    return pixels
+    return unflagged, flagged
 
 
 class ResetRampFitStep(Step):
@@ -268,7 +278,8 @@ class ResetRampFitStep(Step):
                 use_zeroframe=self.use_zeroframe,
                 reset_level=reset_level,
             )
-        log_new_jumps(integ_info["new_jumps"], self.rejection_threshold)
+        input_jumps = np.any((ramp_data.groupdq & ramp_data.flags_jump_det) > 0, axis=1)
+        log_new_jumps(integ_info["new_jumps"], input_jumps, self.rejection_threshold)
 
         if self.save_opt:
             path = self.make_output_path(basepath=result.meta.filename, suffix="resetfit", ext="asdf")

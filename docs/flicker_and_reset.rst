@@ -70,6 +70,21 @@ fit::
 
     strun snowblind_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs
 
+The jump step runs at 7 sigma (the three- and four-group thresholds
+too), flags the four neighbours of jumps above 20 sigma, and leaves the
+snowball expansion and the flagging after jumps to
+``SnowblindStep(min_radius=3, after_jumps=5)`` and ``JumpPlusStep`` as its
+first post-hooks: at 7 sigma it flags what would disturb the stream
+clean, and the reset fit's own jump search (4.5 sigma) finds the fainter
+jumps on the cleaned ramp. A clean with no jump flags leaves more
+striping in the readout-line means of the rate than one after a 7 sigma
+jump step (10 to 50 percent more on sky fields, 13 to 17 times on darks),
+and 7 sigma cleans as well as 5 sigma. These
+settings take precedence over the CRDS parameter references and give way
+to the caller's (``--steps.jump.rejection_threshold=5``);
+``--steps.jump.expand_large_events=True`` gives back the jwst snowball
+flagging in place of the two hooks.
+
 Either substitution switches off (``--stream_clean=False``,
 ``--reset_fit=False``). The stock pipeline does the same with hooks
 alone: the stream clean as a post-hook of the jump step
