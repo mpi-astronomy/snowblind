@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `PersistenceFlagStep`'s `time` defaults to None: each detector then gets
+  the persistence time measured for it and packaged with snowblind
+  (`snowblind/data/persistence_<detector>.asdf`), the start-to-start delay
+  at which the persistence of saturated stars falls to 0.005 DN/s, and
+  2500 s, the former default, when it has none. A `time` given still
+  applies to every detector. `scripts/measure_persistence.py` measures the
+  persistence of saturated stars against the delay in a series of `_rate`
+  files, and `scripts/package_persistence_defaults.py` fits it and writes
+  the files.
+
 ## [1.2.0] - 2026-11-01
 
 ### Added

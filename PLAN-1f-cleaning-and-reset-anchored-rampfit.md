@@ -4927,3 +4927,144 @@ are against methods that do most of the work.
   crowded field would need a PSF-based star model instead.
 - Extended-source photometry has not been tested; the injection used
   compact Gaussians only.
+
+### 2026-11-01: the NRCB1 pedestal map on a field
+
+The 2026-10-22 calibration left NRCB1 as the outlier (sigma_b 20.8 DN
+against 15 to 18 on the other detectors, pedestal row scatter 6 DN
+against about 3) and its map prior unchecked on a field. Checked on two
+program 6154 exposures not used for the timing calibration
+(jw06154001001_02101_00001 and jw06154001002_02101_00001, BRIGHT1, 5
+groups, March 2025, a year before the 9022 darks), with NRCA1 and NRCB2
+on the same exposures for comparison. Script `scripts/exp_map_prior.py`,
+results in `results/2026-11-01_map_prior/` (run by `run.sh` there).
+Detector1 to jump with SIRS, no stream clean; the data and the
+calibration had the same superbias on every detector.
+
+Two measurements:
+
+- Transfer. On sky pixels (no flag in any group, first difference -20
+  to 50 DN) the field's own reset level is group 1 minus the rate of
+  groups 2 to 5 times the calibrated first-read time (k per channel
+  times t1), with each channel's median taken out. "Field scatter" is
+  its robust scatter, "after the map" the robust scatter of it minus
+  the high-passed pedestal map the step uses, "map scatter" the map's
+  own robust scatter, "slope" the least-squares slope of the field level
+  on the map, and "variance removed" the field scatter squared minus the
+  after-the-map scatter squared.
+- Effect on the fit. ResetRampFitStep with the scalar prior and with
+  `use_pedestal_mean`, both with the file's per-channel timing and the
+  sky-anchored offsets. Chi-square of the reset difference (the mean
+  squared normalized residual, over the pixels where it was used) over
+  all clean pixels and over the bright ones (first difference 50 to 2000
+  DN); and the rate difference map minus scalar on sky pixels, its
+  robust per-pixel scatter and the robust scatter of its row means,
+  against the per-pixel scatter of the OLS_C sky rate for scale.
+
+| detector | observation | field scatter (DN) | after the map (DN) | map scatter (DN) | slope | variance removed (DN^2) | chi-square all, scalar / map | chi-square bright, scalar / map | rate difference per pixel (DN/s) | rate difference row means (DN/s) | OLS_C sky per pixel (DN/s) | field row-mean scatter (DN) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| NRCA1 | 001 | 22.7 | 21.4 | 13.2 | 0.63 | 58 | 1.63 / 1.45 | 1.72 / 1.60 | 0.0143 | 0.0003 | 0.145 | 5.9 |
+| NRCA1 | 002 | 22.6 | 21.3 | 13.2 | 0.63 | 56 | 1.62 / 1.45 | 1.72 / 1.58 | 0.0141 | 0.0003 | 0.126 | 5.2 |
+| NRCB1 | 001 | 24.3 | 23.7 | 12.9 | 0.56 | 27 | 1.58 / 1.53 | 1.66 / 1.62 | 0.0106 | 0.0004 | 0.114 | 10.1 |
+| NRCB1 | 002 | 24.5 | 23.9 | 12.9 | 0.57 | 29 | 1.60 / 1.55 | 1.65 / 1.63 | 0.0106 | 0.0004 | 0.110 | 10.2 |
+| NRCB2 | 001 | 20.9 | 19.7 | 10.9 | 0.67 | 49 | 1.48 / 1.32 | 1.66 / 1.54 | 0.0114 | 0.0002 | 0.107 | 5.8 |
+| NRCB2 | 002 | 20.8 | 19.6 | 10.9 | 0.67 | 49 | 1.47 / 1.31 | 1.66 / 1.54 | 0.0113 | 0.0002 | 0.097 | 5.5 |
+
+Reading. The NRCB1 map transfers to the field, but it explains about
+half as much of the field's per-pixel reset level as the NRCA1 and NRCB2
+maps do (27 to 29 DN^2 of variance against 49 to 58), and it lowers the
+chi-square of the reset difference by 0.05 against 0.16 to 0.17 on the
+other two. A map that held only noise would give a slope near 0; a
+perfect one, a slope of about 0.7 to 0.8 here, since part of each map's
+scatter is the noise of its ten-integration mean; NRCB1's 0.56 sits
+between. The map does no harm on NRCB1: the chi-square still goes down
+on both exposures, the rate changes by a tenth of the per-pixel sky
+noise, its row means by 0.0004 DN/s (0.3 percent of that noise, as on
+the other two), and the sky level by 0.1 percent with either prior. The
+two exposures agree to the last digit, so this is a property of the
+detector and not of one exposure. Separately, NRCB1's first read has
+twice the row structure of the others on this chain (10 DN of row-mean
+scatter against 5 to 6); the high-passed map leaves rows alone by design,
+and the stream clean removes them when it cleans the first read against
+the prior. Conclusion: `use_pedestal_mean` is safe on NRCB1 but buys
+about a third of what it buys on the other detectors; the scalar prior
+loses little there.
+
+### 2026-11-01: persistence after saturation on the program 6154 field
+
+Goal: a `time` for PersistenceFlagStep per detector, packaged like the
+reset calibration. First pass on the data on disk: the program 6154
+`_rate` files from MAST (jwst 1.17.1), eight F115W BRIGHT1 exposures of
+107 s per detector over 3000 s, so start-to-start delays of 193 to 2916
+s; the pointing moves 800 to 6000 pixels between any two, so the stars of
+one exposure fall on unrelated pixels of the next. Script
+`scripts/measure_persistence.py` (the 2026-10-31 script, generalised),
+results in `results/2026-11-01_persistence_6154/` with `pool.py` and
+`fit_decay.py`, which made the tables below.
+
+Method. Each exposure is a source: its pixels go in classes by signal
+(rate times integration time); a pixel is saturated when it has
+SATURATED or more than 60000 DN, since before jwst 2.0 ramp fitting set
+SATURATED only where every group saturated. Each later exposure is a
+target: its background (64-pixel boxes, the bright pixels of it and of
+the recent exposures masked) is subtracted, and for each class of the
+source the excess is the median, over the class's connected groups of
+pixels (one group is about one star), of the group's mean residual,
+minus the median residual of the target's other pixels. Neighbouring
+pixels of one star land on one patch of the target, so the error comes
+from the scatter of the group means, not of the pixels. The same
+statistic with the groups moved to unrelated places in the target (two
+fixed shifts) is the null, and persistence is excess minus null. Below,
+the saturated classes of each detector are pooled per bin of
+start-to-start delay with weights of one over the error squared (DN/s):
+
+| detector | 0-300 s | 300-700 s | 700-1100 s | 1100-2100 s | 2100-2500 s | 2500-3100 s |
+|---|---|---|---|---|---|---|
+| NRCA1 | +0.066 +- 0.009 | +0.026 +- 0.005 | -0.005 +- 0.004 | +0.004 +- 0.003 | -0.008 +- 0.004 | -0.006 +- 0.004 |
+| NRCA2 | +0.083 +- 0.009 | +0.011 +- 0.005 | -0.007 +- 0.005 | -0.008 +- 0.003 | -0.002 +- 0.004 | -0.013 +- 0.004 |
+| NRCA3 | +0.260 +- 0.015 | +0.079 +- 0.005 | +0.032 +- 0.005 | +0.016 +- 0.003 | +0.016 +- 0.004 | +0.002 +- 0.004 |
+| NRCA4 | +0.094 +- 0.008 | +0.023 +- 0.004 | +0.007 +- 0.004 | -0.002 +- 0.003 | -0.002 +- 0.004 | +0.003 +- 0.004 |
+| NRCALONG | +0.126 +- 0.015 | +0.045 +- 0.009 | +0.001 +- 0.010 | +0.013 +- 0.006 | +0.011 +- 0.007 | -0.014 +- 0.007 |
+| NRCB1 | +0.076 +- 0.009 | +0.015 +- 0.005 | +0.008 +- 0.005 | +0.008 +- 0.004 | -0.006 +- 0.004 | -0.000 +- 0.005 |
+| NRCB2 | +0.142 +- 0.007 | +0.042 +- 0.005 | +0.029 +- 0.005 | -0.008 +- 0.003 | +0.003 +- 0.004 | +0.000 +- 0.004 |
+| NRCB3 | +0.163 +- 0.014 | +0.022 +- 0.005 | +0.015 +- 0.004 | +0.002 +- 0.003 | +0.009 +- 0.004 | +0.010 +- 0.004 |
+| NRCB4 | +0.221 +- 0.016 | +0.070 +- 0.006 | +0.032 +- 0.005 | +0.014 +- 0.003 | +0.017 +- 0.004 | +0.013 +- 0.004 |
+| NRCBLONG | +0.038 +- 0.012 | +0.019 +- 0.008 | -0.002 +- 0.008 | -0.012 +- 0.005 | -0.012 +- 0.006 | -0.022 +- 0.006 |
+
+The per-pixel noise of these short exposures is 0.10 to 0.15 DN/s (SW)
+and 0.2 to 0.4 DN/s (LW). Persistence is clear on every detector
+within 700 s, and NRCA3 and NRCB4 are three to four times stronger than
+the others, still at 0.013 to 0.017 DN/s after 2000 s. But values down
+to -0.022 at long delays, which persistence cannot give, and nulls that
+scatter by about 0.01 beyond their errors show what this crowded field
+allows: a floor of 0.01 to 0.015 DN/s from the scene itself.
+
+A power law, persistence = A (delay / 1000 s)^-alpha, fitted to the
+pairs of each detector (reduced chi-square 1.7 to 2.8, so the errors
+below are about 1.5 times too small), and the start-to-start delay at
+which it reaches three levels:
+
+| detector | A (DN/s) | alpha | 0.02 DN/s | 0.01 DN/s | 0.005 DN/s |
+|---|---|---|---|---|---|
+| NRCA1 | 0.0035 +- 0.0018 | 1.81 +- 0.33 | 383 s | 562 s | 824 s |
+| NRCA2 | 0.0006 +- 0.0008 | 2.96 +- 0.74 | 313 s | 396 s | 500 s |
+| NRCA3 | 0.0274 +- 0.0023 | 1.35 +- 0.06 | 1262 s | 2107 s | 3519 s |
+| NRCA4 | 0.0038 +- 0.0015 | 1.95 +- 0.26 | 425 s | 606 s | 864 s |
+| NRCALONG | 0.0110 +- 0.0042 | 1.46 +- 0.26 | 666 s | 1069 s | 1717 s |
+| NRCB1 | 0.0021 +- 0.0014 | 2.18 +- 0.43 | 355 s | 488 s | 671 s |
+| NRCB2 | 0.0103 +- 0.0020 | 1.60 +- 0.13 | 661 s | 1021 s | 1576 s |
+| NRCB3 | 0.0058 +- 0.0018 | 2.03 +- 0.21 | 541 s | 761 s | 1071 s |
+| NRCB4 | 0.0268 +- 0.0022 | 1.18 +- 0.07 | 1283 s | 2313 s | 4169 s |
+| NRCBLONG | no fit | | | | |
+
+Reading. Only NRCA3 and NRCB4 are measured well enough for a time:
+their decay is slow (alpha 1.2 to 1.35) and reaches 0.01 DN/s after
+2100 to 2300 s and 0.005 DN/s after 3500 to 4200 s, longer than the
+current 2500 s default. On the other eight the fit is set by the first
+two bins, since the later ones sit at the floor, so their steep alphas
+(1.5 to 3) and short times are not trustworthy below 0.015 DN/s; a
+deep exposure, with about 0.01 DN/s of per-pixel noise, needs the
+times at 0.005 to 0.01 DN/s. So these data rank the detectors but do
+not set the times. That needs a sparser field, longer sequences and
+deeper targets: the NEXUS rate files (700 exposures per short-wave
+detector, delays of hours) run through the same script on an astronode.

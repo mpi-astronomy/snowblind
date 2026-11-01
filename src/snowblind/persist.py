@@ -1,7 +1,9 @@
 import logging
 import os
 from collections import defaultdict, deque
+from importlib.resources import files
 
+import asdf
 from astropy.io import fits
 import numpy as np
 from jwst import datamodels
@@ -17,6 +19,10 @@ DO_NOT_USE = datamodels.dqflags.pixel["DO_NOT_USE"]
 SATURATED = datamodels.dqflags.pixel["SATURATED"]
 PERSISTENCE = datamodels.dqflags.pixel["PERSISTENCE"]
 SECONDS_PER_DAY = 86400.0
+DEFAULT_TIME = 2500.0  # seconds, for a detector without a packaged time
+PACKAGED_TIME_PATTERN = "persistence_{detector}.asdf"
+# the folder of the packaged times; tests point it elsewhere
+PACKAGED_DIR = files("snowblind").joinpath("data")
 
 
 class PersistenceFlagStep(Step):
@@ -24,10 +30,13 @@ class PersistenceFlagStep(Step):
     Given a series of exposures, for any pixel flagged as SATURATED in one exposure,
     flag the pixel as DO_NOT_USE | PERSISTENCE in the later exposures of the same
     detector that start less than ``time`` seconds after it, start time to start time.
+
+    Without ``time``, each detector gets the time measured for it and packaged with
+    snowblind (`packaged_time`), and `DEFAULT_TIME` (2500 s) when it has none.
     """
 
     spec = """
-        time = float(default=2500.0)  # amount of time after exposure to flag [seconds]
+        time = float(default=None)  # seconds, start to start, to flag; None for the detector's packaged time, 2500 without one
         save_mask = boolean(default=False)  # write out persistence mask for each exposure
         output_use_model = boolean(default=True)
         output_use_index = boolean(default=False)
@@ -57,7 +66,7 @@ class PersistenceFlagStep(Step):
             a subarray is flagged where a full-frame exposure saturated, and the
             other way round.  When file names are given and ``save_results`` is set,
             each exposure is opened, flagged, saved and closed in turn, so only the
-            saturation masks of the last ``self.time`` seconds are held in memory;
+            saturation masks of the last ``time`` seconds are held in memory;
             each is saved under its own file name with the step's suffix, whatever
             ``output_use_model`` and ``output_file`` say.
 
@@ -65,7 +74,7 @@ class PersistenceFlagStep(Step):
         -------
         ModelContainer or list of str
             Copy of the input in which pixels saturated in an earlier exposure of the
-            same detector, started less than ``self.time`` seconds before, have
+            same detector, started less than ``time`` seconds before, have
             ``DO_NOT_USE | PERSISTENCE`` set in ``dq``; for file names with
             ``save_results`` set, the paths of the saved files instead.
         """
@@ -95,6 +104,29 @@ class PersistenceFlagStep(Step):
         self.flag_in_time_order(exposures, lambda model: model, lambda model: None)
         return results
 
+    def time_for(self, detector):
+        """The time within which a detector's later exposures are flagged.
+
+        Parameters
+        ----------
+        detector : str
+            Detector name as in ``meta.instrument.detector``.
+
+        Returns
+        -------
+        float
+            ``self.time`` when it is set; otherwise the detector's `packaged_time`,
+            or `DEFAULT_TIME` when there is none.  Seconds, start to start.
+        """
+        if self.time is not None:
+            return self.time
+        packaged = packaged_time(detector)
+        if packaged is None:
+            log.info(f"No persistence time is packaged for {detector}; flagging for {DEFAULT_TIME:g} s")
+            return DEFAULT_TIME
+        log.info(f"Flagging {detector} for {packaged:g} s, the persistence time measured for the detector")
+        return packaged
+
     def flag_in_time_order(self, exposures, load, done):
         """Flag each exposure from the saturated pixels of the earlier ones, one detector at a time.
 
@@ -113,6 +145,7 @@ class PersistenceFlagStep(Step):
             by_detector[detector].append((start, item))
 
         for detector, sequence in by_detector.items():
+            limit = self.time_for(detector)
             sequence.sort(key=lambda entry: entry[0])
             starts = np.array([start for start, _ in sequence])
             log.info(
@@ -121,11 +154,11 @@ class PersistenceFlagStep(Step):
             )
 
             # start time [sec], file name, detector origin and saturation mask of the earlier exposures less than
-            # self.time before
+            # limit before
             recent = deque()
             for start, item in sequence:
                 seconds = start * SECONDS_PER_DAY
-                while recent and seconds - recent[0][0] >= self.time:
+                while recent and seconds - recent[0][0] >= limit:
                     recent.popleft()
 
                 model = load(item)
@@ -154,6 +187,33 @@ class PersistenceFlagStep(Step):
 
                 recent.append((seconds, model.meta.filename, origin, saturated))
                 done(model)
+
+
+def packaged_time(detector):
+    """The persistence time measured for a detector and packaged with snowblind.
+
+    ``snowblind/data/persistence_<detector>.asdf`` holds ``time``: the
+    start-to-start delay, in seconds, at which the persistence of the
+    detector's saturated stars falls to the file's ``threshold`` (DN/s), with
+    the fit and the measurement behind it.  ``scripts/measure_persistence.py``
+    measures the persistence in a series of exposures, and
+    ``scripts/package_persistence_defaults.py`` fits it and writes the files.
+
+    Parameters
+    ----------
+    detector : str
+        Detector name as in ``meta.instrument.detector``; case does not matter.
+
+    Returns
+    -------
+    float or None
+        The time in seconds; None when the package has no file for the detector.
+    """
+    path = PACKAGED_DIR.joinpath(PACKAGED_TIME_PATTERN.format(detector=str(detector).lower()))
+    if not path.is_file():
+        return None
+    with asdf.open(str(path), lazy_load=False, memmap=False) as handle:
+        return float(handle.tree["time"])
 
 
 def detector_origin(model):

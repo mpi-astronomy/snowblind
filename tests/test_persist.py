@@ -1,17 +1,35 @@
 import json
 
+import asdf
 import numpy as np
+import pytest
 from jwst import datamodels
 from astropy.io import fits
 from astropy.time import Time
 
-from snowblind import PersistenceFlagStep
+from snowblind import PersistenceFlagStep, persist
 
 
 SATURATED = datamodels.dqflags.pixel["SATURATED"]
 PERSISTENCE = datamodels.dqflags.pixel["PERSISTENCE"]
 DO_NOT_USE = datamodels.dqflags.pixel["DO_NOT_USE"]
 GOOD = datamodels.dqflags.pixel["GOOD"]
+
+
+@pytest.fixture(autouse=True)
+def packaged_times(tmp_path, monkeypatch):
+    """An empty folder of packaged persistence times in place of the package's, so that the step falls back on
+    2500 s unless a test writes a time there; returns the folder."""
+    folder = tmp_path / "packaged"
+    folder.mkdir()
+    monkeypatch.setattr(persist, "PACKAGED_DIR", folder)
+    return folder
+
+
+def write_packaged_time(folder, detector, seconds):
+    """Write a packaged persistence time of ``seconds`` for ``detector`` into ``folder``."""
+    path = folder / persist.PACKAGED_TIME_PATTERN.format(detector=detector.lower())
+    asdf.AsdfFile({"detector": detector, "time": seconds}).write_to(path)
 
 
 def make_image(i, detector="NRCALONG", start_time=60122.0, shape=(10, 10)):
@@ -302,3 +320,78 @@ def test_cal_step_complete_beside_skipped_jwst_persistence(tmp_path):
     results[0].save(tmp_path / "result.fits")
 
     assert fits.getheader(tmp_path / "result.fits")["S_PERSFL"] == "COMPLETE"
+
+
+def test_packaged_time_reads_the_detectors_file(packaged_times):
+    """packaged_time('NRCALONG') with a packaged file holding 1234 s returns 1234.0."""
+    write_packaged_time(packaged_times, "NRCALONG", 1234.0)
+
+    assert persist.packaged_time("NRCALONG") == 1234.0
+
+
+def test_packaged_time_without_a_file_is_none():
+    """packaged_time('NRCALONG') with no packaged file for the detector returns None."""
+    assert persist.packaged_time("NRCALONG") is None
+
+
+def test_packaged_time_flags_a_later_image_within_it(packaged_times):
+    """PersistenceFlagStep.call without time, packaged time 500 s, on an image saturated at (2, 2) and one 400 s later:
+    the later image is flagged there."""
+    write_packaged_time(packaged_times, "NRCALONG", 500.0)
+    first = make_image(1, start_time=60122.0)
+    first.dq[2, 2] = SATURATED
+    later = make_image(2, start_time=60122.0 + 400.0 / 86400.0)
+
+    results = PersistenceFlagStep.call(datamodels.ModelContainer([first, later]))
+
+    assert results[1].dq[2, 2] == PERSISTENCE | DO_NOT_USE
+
+
+def test_packaged_time_leaves_a_later_image_beyond_it(packaged_times):
+    """PersistenceFlagStep.call without time, packaged time 500 s, on an image saturated at (2, 2) and one 600 s later:
+    the later image stays GOOD there."""
+    write_packaged_time(packaged_times, "NRCALONG", 500.0)
+    first = make_image(1, start_time=60122.0)
+    first.dq[2, 2] = SATURATED
+    later = make_image(2, start_time=60122.0 + 600.0 / 86400.0)
+
+    results = PersistenceFlagStep.call(datamodels.ModelContainer([first, later]))
+
+    assert results[1].dq[2, 2] == GOOD
+
+
+def test_given_time_overrides_the_packaged_one(packaged_times):
+    """PersistenceFlagStep.call with time=1000, packaged time 500 s, on an image saturated at (2, 2) and one 600 s
+    later: the later image is flagged there."""
+    write_packaged_time(packaged_times, "NRCALONG", 500.0)
+    first = make_image(1, start_time=60122.0)
+    first.dq[2, 2] = SATURATED
+    later = make_image(2, start_time=60122.0 + 600.0 / 86400.0)
+
+    results = PersistenceFlagStep.call(datamodels.ModelContainer([first, later]), time=1000.0)
+
+    assert results[1].dq[2, 2] == PERSISTENCE | DO_NOT_USE
+
+
+def test_without_a_packaged_time_flags_within_2500_s():
+    """PersistenceFlagStep.call without time or a packaged time, on an image saturated at (2, 2) and one 2400 s
+    later: the later image is flagged there."""
+    first = make_image(1, start_time=60122.0)
+    first.dq[2, 2] = SATURATED
+    later = make_image(2, start_time=60122.0 + 2400.0 / 86400.0)
+
+    results = PersistenceFlagStep.call(datamodels.ModelContainer([first, later]))
+
+    assert results[1].dq[2, 2] == PERSISTENCE | DO_NOT_USE
+
+
+def test_without_a_packaged_time_leaves_an_image_beyond_2500_s():
+    """PersistenceFlagStep.call without time or a packaged time, on an image saturated at (2, 2) and one 2600 s
+    later: the later image stays GOOD there."""
+    first = make_image(1, start_time=60122.0)
+    first.dq[2, 2] = SATURATED
+    later = make_image(2, start_time=60122.0 + 2600.0 / 86400.0)
+
+    results = PersistenceFlagStep.call(datamodels.ModelContainer([first, later]))
+
+    assert results[1].dq[2, 2] == GOOD
