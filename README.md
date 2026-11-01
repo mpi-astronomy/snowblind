@@ -70,7 +70,7 @@ which runs them with their step default parameters.  If you want more flexibilit
 
 The steps `PersistenceFlagStep` and `OpenPixelStep` need to be run on an association of _rate or _cal files, because they are essentially self-calibration.  Here's an example for `PersistenceFlagStep`:
 
-Run `Detector1Pipeline` on each input _uncal.fits file, skipping the built-in `PersistenceStep` and saving the output of `JumpStep`.  We will need the output later.
+Run `Detector1Pipeline` on each input _uncal.fits file, skipping the built-in `PersistenceStep`.
 ```python
 from glob import glob
 from jwst.pipeline import Detector1Pipeline
@@ -79,10 +79,6 @@ from jwst.pipeline import Detector1Pipeline
 steps = dict(
     persistence=dict(
         skip=True,
-    ),
-    jump=dict(
-        save_results=True,
-        rejection_threshold=5.0,
     ),
 )
 
@@ -96,17 +92,16 @@ And then run `Image2Pipeline` to produce all the _cal.fits files.  Afterwards, t
 
 ```python
 from glob import glob
-from jwst.datamodels import ModelContainer
-from jwst.steps import PersistenceFlagStep
+from snowblind import PersistenceFlagStep
 
 
-cal_files = glob("jw*_cal.fits")
-cal_files.sort()
-combined_asn = ModelContainer(cal_files)
-PersistenceFlagStep.call(combined_asn, save_results=True, suffix="cal")
+cal_files = sorted(glob("jw*_cal.fits"))
+PersistenceFlagStep.call(cal_files, save_results=True, suffix="cal", output_dir="persist")
 ```
 
-which will overwrite _cal.fits files with the same file but with a new DQ array with PERSISTENCE and DO_NOT_USE flag set.  If you don't want to overwrite and will rename later, just don't use the `suffix` arg.
+which writes each _cal.fits file again, under the same name in `persist/`, with PERSISTENCE and DO_NOT_USE set in the DQ array at the pixels that saturated in an earlier exposure of the same detector, started less than `time` seconds (default 2500) before.  With file names (or an association file) and `save_results`, the step reads, flags, writes and closes one exposure at a time, so it handles any number of exposures; a `ModelContainer` is flagged in memory and returned.  Without `output_dir`, the files go to the current directory, which overwrites them when they are there.
+
+The saturated pixels are those with SATURATED in the DQ of each _rate or _cal file; ramp fitting sets it where any group of any integration saturated.
 
 Finally, both these steps can be inserted as pre-hooks into the `Image3Pipeline` using the same method as shown above with `SnowblindStep`.
 

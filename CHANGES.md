@@ -21,6 +21,23 @@
   `expand_large_events=True` gives back the jwst snowball flagging instead
   of the two hooks. With `--reset_fit=False` it warns that the jump step is
   still at 7 sigma.
+- `PersistenceFlagStep` takes the saturated pixels from the DQ of the
+  `_rate` or `_cal` files it flags (ramp fitting sets SATURATED where any
+  group of any integration saturated), so the `_jump` files are no longer
+  needed.
+- Given file names or an association file with `save_results`,
+  `PersistenceFlagStep` reads, flags, writes and closes one exposure at a
+  time, holding only the saturation masks of the last `time` seconds, and
+  returns the paths written. A container of models is flagged in memory as
+  before.
+- `PersistenceFlagStep(save_mask=True)` writes the mask of flagged pixels
+  (`_persistmask`) instead of the saturation mask of the `_jump` file.
+
+### Fixed
+
+- `PersistenceFlagStep` records its status in the FITS header as
+  `S_PERSFL`. `S_PERSIS` is the jwst keyword for its own persistence step,
+  and the jwst value replaced the snowblind one.
 
 ## [1.1.0] - 2026-10-27
 
