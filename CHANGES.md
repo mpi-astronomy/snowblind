@@ -32,6 +32,10 @@
   before.
 - `PersistenceFlagStep(save_mask=True)` writes the mask of flagged pixels
   (`_persistmask`) instead of the saturation mask of the `_jump` file.
+- The documentation of `StreamCleanStep` and `ResetRampFitStep` now
+  describes what data they take, how they work and how to choose their
+  settings for a given dataset. The measurements on individual fields
+  behind the defaults are kept in the plan file of the repository.
 
 ### Fixed
 

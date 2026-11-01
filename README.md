@@ -197,8 +197,8 @@ Both steps also run on their own on a `_jump` product (`strun stream_clean
 jw..._jump.fits`, `strun reset_rampfit jw..._jump.fits`).
 
 The packaged calibration holds, per detector, the reset-level scatter
-measured from dark ramps and the first-read timing measured on a field (see
-the documentation for the measurements).  To measure your own, for example
+measured from dark ramps and the first-read timing measured on a field (the
+documentation describes both).  To measure your own, for example
 for a detector or epoch not covered:
 
     snowblind-reset-calib jw..._nrca1_uncal.fits -o nrca1_reset_calib.asdf
