@@ -136,6 +136,17 @@ settings take precedence over the CRDS parameter references, while your own
 `--steps.jump.expand_large_events=True` gives back the jwst snowball
 flagging in place of the two hooks.
 
+The pipeline's superbias step is also its own, a subclass of the jwst one.
+The ZEROFRAME has no DQ array, so the pipeline marks an unusable zeroframe
+pixel by setting it to 0, and the later steps leave such pixels uncorrected
+and unused.  The jwst superbias step keeps the zeros it is given, but a
+pixel whose raw zeroframe equals the superbias exactly also comes out at 0.
+The raw data are whole DN, so with superbias references that hold only
+whole and half-integer values, as recent NIRCam ones do, that can be up to
+about 1% of the pixels.  The snowblind step gives those pixels a value that
+is 0 DN to every later step but not the marker, so they keep the
+reference-pixel correction and the reset fit uses their zeroframe.
+
 Parameters of the reset fit go through
 (`--steps.ramp_fit.reset_calib=my_calib.asdf`); parameters of the stream
 clean go through the hook
@@ -160,6 +171,8 @@ itself:
 On the command line a hook string can carry one keyword argument only,
 since the hook list is split on commas; in Python a hook can be a step
 instance with any arguments, `ResetRampFitStep(as_hook=True, reset_calib=...)`.
+This route keeps the jwst superbias step, so the reset fit finds the
+zeroframe at 0 in up to 1% of the pixels and fits those without it.
 
 A pre-hook of `ramp_fit` would also run before the skip, but the skipped
 step then marks its output as skipped and the pipeline names it `_ramp`;

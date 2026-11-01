@@ -5,6 +5,7 @@ from jwst.pipeline import Detector1Pipeline as JwstDetector1Pipeline
 from jwst.ramp_fitting import RampFitStep
 
 from snowblind import Detector1Pipeline, ResetRampFitStep, StreamCleanStep
+from snowblind.superbias import SuperBiasStep
 
 SNOWBLIND_HOOK = "snowblind.SnowblindStep(min_radius=3, after_jumps=5)"
 JUMP_PLUS_HOOK = "snowblind.JumpPlusStep"
@@ -25,6 +26,13 @@ def test_pipeline_fits_ramps_with_the_reset_step():
     pipeline = Detector1Pipeline()
 
     assert isinstance(pipeline.ramp_fit, ResetRampFitStep)
+
+
+def test_pipeline_subtracts_the_superbias_with_the_snowblind_step():
+    """Detector1Pipeline() has snowblind's SuperBiasStep in its superbias slot."""
+    pipeline = Detector1Pipeline()
+
+    assert isinstance(pipeline.superbias, SuperBiasStep)
 
 
 def test_pipeline_hooks_the_stream_clean_after_jump_and_skips_the_jwst_flicker_step():

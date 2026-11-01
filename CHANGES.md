@@ -38,6 +38,19 @@
 - `PersistenceFlagStep` records its status in the FITS header as
   `S_PERSFL`. `S_PERSIS` is the jwst keyword for its own persistence step,
   and the jwst value replaced the snowblind one.
+- `snowblind_detector1` subtracts the superbias with a subclass of the jwst
+  step that keeps zeroframe pixels equal to the superbias from coming out
+  at exactly 0, the pipeline's marker for an unusable zeroframe pixel. The
+  raw data are whole DN, so with superbias references that hold only whole
+  and half-integer values, as recent NIRCam ones do, this hit up to about
+  1% of the pixels of an exposure, which the later steps left uncorrected
+  and the reset fit could not anchor. Their rate uncertainty, about 7%
+  above that of the other pixels, is now the same.
+- `ResetRampFitStep` no longer marks pixels SATURATED where the zeroframe is
+  unusable (zero), which put up to 1% of the pixels, at random on the sky,
+  in the SATURATED mask of each rate product. It fits those pixels again
+  without the zeroframe, instead of taking a zero first frame out of group
+  1, which biased their rates by about 0.3 of the rate uncertainty.
 
 ## [1.1.0] - 2026-10-27
 

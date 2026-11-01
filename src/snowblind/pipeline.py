@@ -7,8 +7,9 @@ it, and makes two substitutions: `StreamCleanStep` runs as a post-hook of
 the jump step with the jwst flicker step skipped, and `ResetRampFitStep`
 takes the ramp-fit slot.  The jump step gets its own defaults for these
 two (`JUMP_DEFAULTS`, with `SnowblindStep` and `JumpPlusStep` as its first
-post-hooks).  It runs as ``strun snowblind_detector1`` or through
-`Detector1Pipeline.call`.
+post-hooks).  The superbias slot holds `snowblind.superbias.SuperBiasStep`,
+the jwst step without the zeroframe zeros its subtraction makes.  It runs
+as ``strun snowblind_detector1`` or through `Detector1Pipeline.call`.
 """
 import logging
 
@@ -18,6 +19,7 @@ from .jump_plus import JumpPlusStep
 from .reset_rampfit import ResetRampFitStep
 from .snowblind import SnowblindStep
 from .stream_clean import StreamCleanStep
+from .superbias import SuperBiasStep
 
 __all__ = ["Detector1Pipeline"]
 
@@ -64,6 +66,10 @@ class Detector1Pipeline(JwstDetector1Pipeline):
     first post-hooks; the caller's ``--steps.jump...`` parameters still
     win, and ``--steps.jump.expand_large_events=True`` gives the jwst
     snowball flagging back instead of the two hooks.
+
+    The ``superbias`` slot holds `snowblind.superbias.SuperBiasStep`, the
+    jwst step, which also keeps the zeroframe pixels its subtraction makes
+    exactly zero from reading as unusable to the later steps.
     """
 
     class_alias = "snowblind_detector1"
@@ -73,7 +79,7 @@ class Detector1Pipeline(JwstDetector1Pipeline):
     reset_fit = boolean(default=True)  # fit ramps with ResetRampFitStep instead of the jwst ramp fit
     """
 
-    step_defs = {**JwstDetector1Pipeline.step_defs, "ramp_fit": ResetRampFitStep}
+    step_defs = {**JwstDetector1Pipeline.step_defs, "superbias": SuperBiasStep, "ramp_fit": ResetRampFitStep}
 
     def __init__(self, *args, **kwargs):
         """Create the pipeline with the stream clean hooked after jump and the jwst flicker step skipped.

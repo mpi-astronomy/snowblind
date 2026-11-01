@@ -3826,3 +3826,67 @@ higher values (5.5, 6) are untested. Caveats: the count compares
 neighbours on the final rate, so a pixel the 7 sigma jump step flagged is
 not judged at all. It also charges extra noise as failure at the fixed
 scale, which is the cost a single-exposure user sees.
+
+### 2026-10-31: zeroframe pixels that the superbias subtraction sets to 0
+
+The full NEXUS reduction (programs 5105 and 9263) showed up to 1 percent
+of the pixels of each rate product flagged SATURATED at random on the
+sky. On NRCA1 jw05105001001_02101_00001 (F090W, SHALLOW4) the rate DQ had
+37,846 SATURATED pixels, 34,245 of them isolated single pixels at sky
+level.
+
+The zeroframe has no DQ array, so the pipeline marks an unusable
+zeroframe pixel by setting it to 0 (the saturation step does this), and
+the jwst superbias step keeps the zeros it is given (`bias_sub.py` finds
+them before subtracting). A pixel whose raw zeroframe equals the
+superbias exactly also comes out at 0, though: the raw data are whole DN
+and 52 percent of the values of the NRCA1 superbias (reference 0289) are
+whole numbers, which made 35,308 new zeros among the science pixels of
+that exposure, against 1,925 real ones. The later steps take the new
+zeros for unusable. Refpix restores zeros after its correction, so they
+miss a correction of -4.8 DN (median; rms 9.8 DN); linearity and the
+stream clean leave them at 0.
+
+Every NIRCam superbias reference delivered in 2025 and 2026 (0289 and
+0363 to 0454, all ten detectors, made from the cycle 2 to 4 darks) holds
+only whole and half-integer values, half of each; the January 2024
+delivery (0220 to 0246) is continuous and made no new zeros. Over the
+whole NEXUS set (6,470 integrations in 6,390 files from September 2024
+to August 2026, all ten detectors, twenty superbias references; table
+`5105_9263_nexus/zeroframe_zeros.ecsv` on the NEXUS disk) the new zeros
+were 0.46 percent of the pixels, per-integration median 0.51 percent,
+from 0 to 1.06 percent. The whole-number half of the superbias times the
+density of raw zeroframe minus superbias at 0 predicts each
+integration's fraction to 2 percent (median ratio 1.002), so it falls as
+the bias drifts away from the superbias: NRCA3 has sat 50 to 100 DN
+below its superbias since mid-2025 and has 0.01 percent, and the bias of
+NRCA1, NRCALONG, NRCB1 to NRCB4 and NRCBLONG moved by 27 to 140 DN
+between the February and March 2026 visits (same references), which
+took NRCB4 from 0.66 percent to none.
+
+What the zeros did to the fits, on the NRCA1 exposure:
+
+- The reset fit gave a zero zeroframe SATURATED in the zeroframe plane
+  (change 3 of `likely_fit_reset.py`), and that plane reaches the rate
+  DQ. It also dropped their zeroframe and the reset point and took a zero
+  first frame out of group 1, which raised their rates by 0.0046 DN/s
+  (0.3 of the rate uncertainty) with an ERR 7 percent higher than their
+  neighbours'.
+- Stock OLS_C (the default; NIRCam has no CRDS ramp-fit parameter
+  reference) uses the zeroframe only for pixels without a good group and
+  skips zeros: 11 pixels lose a rate.
+- Stock stcal LIKELY uses the 0 as data: rate error rms 0.39 of ERR,
+  tails to 8.6 of ERR, and a false JUMP_DET in 10.5 percent of them.
+
+Fix: `snowblind/superbias.py` `SuperBiasStep`, a subclass of the jwst
+step in the `superbias` slot of `snowblind_detector1`, notes the zeros it
+is given and sets any other zeroframe pixel left at 0 to the smallest
+normal float32 (1.2e-38 DN), which is 0 DN to every later step but not
+the marker. The reset fit now gives a zero zeroframe DO_NOT_USE in that
+plane and fits those pixels again without the zeroframe (change 7). On
+the same exposure only the 1,925 real zeros remain, SATURATED covers
+0.05 percent of the pixels instead of 0.90 (all in blocks of the
+saturation step's growth), the ERR ratio at the former zeros is 0.999
+(was 1.069), and the rate bias is gone. The 6,424 NEXUS rate files of the
+2026-10-30 run carry the old flags and need Detector1 again before
+persistence flagging. A jwst issue on the superbias step was filed.

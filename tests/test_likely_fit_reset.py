@@ -153,6 +153,47 @@ def test_zero_valued_zeroframe_is_unusable():
     assert image_info["dq"][0, 0] & DNU
 
 
+def test_zero_valued_zeroframe_pixel_gets_the_fit_without_zeroframe():
+    """likely_ramp_fit_reset on a 20 DN/s ramp whose zeroframe is exactly 0 returns the slope of the fit without it."""
+    ramp_data, readnoise, gain = blank_ramp_data(5, nframes=4, zeroframe=True)
+    linear_ramp(ramp_data, 20.0)
+    ramp_data.zeroframe[0, 0, 0] = 0.0
+
+    image_info, _integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+    expected, _, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B, use_zeroframe=False)
+
+    assert image_info["slope"][0, 0] == pytest.approx(expected["slope"][0, 0], rel=1e-6)
+
+
+def test_zero_valued_zeroframe_with_good_groups_is_not_saturated():
+    """likely_ramp_fit_reset on a good ramp whose zeroframe is exactly 0 leaves SATURATED out of the pixel DQ."""
+    ramp_data, readnoise, gain = blank_ramp_data(5, nframes=4, zeroframe=True)
+    linear_ramp(ramp_data, 20.0)
+    ramp_data.zeroframe[0, 0, 0] = 0.0
+
+    image_info, _integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert image_info["dq"][0, 0] & SAT == 0
+
+
+def test_usable_zeroframe_pixel_keeps_its_fit_beside_a_zero_valued_one():
+    """likely_ramp_fit_reset on two noisy pixels, the second with a zeroframe of 0, gives the first its slope alone."""
+    ramp_data, readnoise, gain = blank_ramp_data(5, ncols=2, nframes=4, zeroframe=True)
+    alone, readnoise_alone, gain_alone = blank_ramp_data(5, nframes=4, zeroframe=True)
+    linear_ramp(ramp_data, 20.0)
+    rng = np.random.default_rng(2)
+    ramp_data.data += rng.normal(scale=5.0, size=ramp_data.data.shape).astype(np.float32)
+    ramp_data.zeroframe[0, 0, 0] = 20.0 * FRAME_TIME + 3.0
+    ramp_data.zeroframe[0, 0, 1] = 0.0
+    alone.data[:] = ramp_data.data[:, :, :, :1]
+    alone.zeroframe[:] = ramp_data.zeroframe[:, :, :1]
+
+    image_info, _integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+    expected, _, _ = likely_ramp_fit_reset(alone, readnoise_alone, gain_alone, SIGMA_B)
+
+    assert image_info["slope"][0, 0] == pytest.approx(expected["slope"][0, 0], rel=1e-6)
+
+
 def test_reset_far_off_is_dropped():
     """likely_ramp_fit_reset on a ramp whose reset is 10 sigma_b off drops d_0 and returns the stcal rate."""
     ramp_data, readnoise, gain = blank_ramp_data(10)

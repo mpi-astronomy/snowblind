@@ -13,7 +13,7 @@ from stcal.  Changes, all inside the forked functions (plan section B.2):
    a per-pixel superbias-error map) is prepended to the data of each
    integration, with a DQ plane that is good except where the pixel DQ has
    DO_NOT_USE.
-3. When a zeroframe is used, its DQ is SATURATED where the zeroframe value
+3. When a zeroframe is used, its DQ is DO_NOT_USE where the zeroframe value
    is exactly zero (the pipeline's marker for an unusable zeroframe pixel)
    and good elsewhere, instead of a copy of group 1's DQ.
 4. The read-noise variance of the first difference becomes
@@ -28,6 +28,10 @@ from stcal.  Changes, all inside the forked functions (plan section B.2):
    of the first difference is returned as ``d0_resid``.
 6. The number of differences of each pixel that the jump search flags, on
    top of those already flagged on input, is returned as ``new_jumps``.
+7. Pixels whose zeroframe is unusable in any integration are fitted again
+   without the zeroframe, and that fit replaces theirs.  Their first group
+   is then the whole of group 1, at its own read times, rather than group 1
+   with an unknown first frame taken out.
 
 Snowball expansion (``flag_large_events``) is not carried over.
 """
@@ -187,6 +191,9 @@ def likely_ramp_fit_reset(
             readtimes.insert(0, np.array([rt_zero]))
             zeroframe_ok = True
 
+    # Change 7: fitted here, put in place at the end
+    refit = _fit_without_zeroframe(ramp_data, readnoise_2d, gain_2d, sigma_b, t1_scale, reset_level) if zeroframe_ok else None
+
     # Change 1: the reset resultant.  With t1_scale = k < 1 the first read
     # holds k times the signal the nominal interval predicts, as if the
     # integration started (1 - k) t_1 after the nominal reset.  Placing the
@@ -228,7 +235,7 @@ def likely_ramp_fit_reset(
         if zeroframe_ok:
             zf = ramp_data.zeroframe[integ]
             # Change 3: zeroframe DQ from the zeroframe itself.
-            zfdq = np.where(zf == 0, ramp_data.flags_saturated, 0).astype(gdq.dtype)
+            zfdq = np.where(zf == 0, ramp_data.flags_do_not_use, 0).astype(gdq.dtype)
             first_group = (data[0] * ramp_data.nframes - zf) / (ramp_data.nframes - 1)
             data = np.vstack([zf[None, :, :], first_group[None, :, :], data[1:]])
             gdq = np.vstack([zfdq[None, :, :], gdq])
@@ -298,7 +305,56 @@ def likely_ramp_fit_reset(
 
     integ_info = integ_class.prepare_info()
     image_info = compute_image_info(integ_class, ramp_data)
+    if refit is not None:
+        rows, cols, refit_image, refit_integ = refit
+        for key, value in refit_image.items():
+            image_info[key][rows, cols] = value[0]
+        for key, value in refit_integ.items():
+            integ_info[key][:, rows, cols] = value[:, 0]
     return image_info, integ_info, None
+
+
+def _fit_without_zeroframe(ramp_data, readnoise_2d, gain_2d, sigma_b, t1_scale, reset_level):
+    """Fit the pixels whose zeroframe is unusable (zero) in any integration as if there were no zeroframe.
+
+    Parameters
+    ----------
+    ramp_data : RampData
+        The ramp data handed to `likely_ramp_fit_reset`, with its zeroframe.
+    readnoise_2d, gain_2d, sigma_b, t1_scale, reset_level
+        As for `likely_ramp_fit_reset`.
+
+    Returns
+    -------
+    tuple or None
+        ``(rows, cols, image_info, integ_info)``: the pixel indices and the
+        results of `likely_ramp_fit_reset` on those pixels laid out as one
+        row; None when every zeroframe pixel is usable.
+    """
+    rows, cols = np.nonzero(np.any(ramp_data.zeroframe == 0, axis=0))
+    if rows.size == 0:
+        return None
+    shape = ramp_data.pixeldq.shape
+
+    def pick(array, dtype):
+        return np.broadcast_to(np.asarray(array, dtype=dtype), shape)[rows, cols][None, :]
+
+    sub = copy.copy(ramp_data)
+    sub.data = ramp_data.data[:, :, rows, cols][:, :, None, :]
+    sub.groupdq = ramp_data.groupdq[:, :, rows, cols][:, :, None, :]
+    sub.pixeldq = ramp_data.pixeldq[rows, cols][None, :]
+    sub.average_dark_current = ramp_data.average_dark_current[rows, cols][None, :]
+    sub.zeroframe = None
+    image_info, integ_info, _ = likely_ramp_fit_reset(
+        sub,
+        pick(readnoise_2d, float),
+        pick(gain_2d, float),
+        pick(sigma_b, float),
+        t1_scale=t1_scale,
+        use_zeroframe=False,
+        reset_level=pick(reset_level, np.float32),
+    )
+    return rows, cols, image_info, integ_info
 
 
 def likely_ramp_fit_reset_blocks(
