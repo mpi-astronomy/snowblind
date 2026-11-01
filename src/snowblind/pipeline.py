@@ -94,6 +94,9 @@ class Detector1Pipeline(JwstDetector1Pipeline):
             not hold and, while ``expand_large_events`` is off, a
             `SnowblindStep` and a `JumpPlusStep` in ``post_hooks`` unless
             one is there already, ahead of a stream clean listed there.
+            ``expand_large_events`` must be a boolean, or the string of
+            one that strun or a config file gives (``"True"``,
+            ``"False"``); the jump step's validation rejects anything else.
             With ``stream_clean`` (the default) it also gets
             `StreamCleanStep` appended to ``post_hooks`` unless one is there
             already, and the ``clean_flicker_noise`` entry gets ``skip``

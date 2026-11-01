@@ -60,3 +60,22 @@ def test_zeroframe_has_the_superbias_subtracted(tmp_path):
     result = SuperBiasStep.call(make_ramp(950.0), override_superbias=save_superbias(tmp_path, 900.0))
 
     assert np.all(result.zeroframe == 50.0)
+
+
+def test_file_name_input_has_the_zeroframe_lifted(tmp_path):
+    """SuperBiasStep.call on the file name of a ramp with a 900 DN zeroframe and a 900 DN superbias returns NOT_ZERO."""
+    path = tmp_path / "ramp.fits"
+    make_ramp(900.0).save(path)
+
+    result = SuperBiasStep.call(str(path), override_superbias=save_superbias(tmp_path, 900.0))
+
+    assert np.all(result.zeroframe == NOT_ZERO)
+
+
+def test_model_input_is_unchanged(tmp_path):
+    """SuperBiasStep.call on a ramp model with a 950 DN zeroframe and a 900 DN superbias leaves the input at 950 DN."""
+    ramp = make_ramp(950.0)
+
+    SuperBiasStep.call(ramp, override_superbias=save_superbias(tmp_path, 900.0))
+
+    assert np.all(ramp.zeroframe == 950.0)

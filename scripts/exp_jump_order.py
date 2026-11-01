@@ -677,7 +677,9 @@ def main():
         summary["rate_quality"][name] = rate_quality(rates[name], background, dq_user, blocks, fastaxis, flat)
     print(json.dumps(summary["rate_quality"], indent=1), flush=True)
 
-    fit_rates, fit_errs, fit_flagged, fit_dq = {}, {}, {}, {}
+    fit_rates, fit_errs, fit_flagged = {}, {}, {}
+    # only the reference chain's input DQ is kept, for the comparison of the chains
+    reference_dq = None
     if args.reset_fit:
         summary["reset_fit"] = {}
         # the user chains first, so that their cleaned cube can go before the high ones run
@@ -706,12 +708,13 @@ def main():
             fit_rates[name] = record.pop("rate")
             fit_errs[name] = record.pop("err")
             fit_flagged[name] = record.pop("flagged")
-            fit_dq[name] = dq
+            if name == "high_default":
+                reference_dq = dq
             summary["reset_fit"][name] = record
             print(name, json.dumps(record), flush=True)
         if "high_default" in fit_rates:
             per_run, pairs = common_outliers(
-                fit_rates, fit_errs, fit_flagged, "high_default", background, fit_dq["high_default"]
+                fit_rates, fit_errs, fit_flagged, "high_default", background, reference_dq
             )
             summary["reset_fit_common"] = {"reference": "high_default", "per_run": per_run, "pairs": pairs}
             print(json.dumps(summary["reset_fit_common"], indent=1), flush=True)

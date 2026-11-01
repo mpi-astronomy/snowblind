@@ -126,12 +126,12 @@ and `_rateints` products from the cleaned ramp and the reset-anchored fit:
     strun snowblind_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs
 
 The pipeline also sets up the jump step for the two.  It runs at 7 sigma
-and leaves the snowball expansion and the flagging
-after jumps to `SnowblindStep(min_radius=3, after_jumps=5)` and
-`JumpPlusStep`, which run as its first post-hooks.  At 7 sigma the jump
-step flags what would disturb the stream clean, and the likelyhood own
-jump search (4.5 sigma) finds the fainter jumps on the cleaned ramp.  These
-settings take precedence over the CRDS parameter references, while your own
+and leaves the snowball expansion and the flagging after jumps to
+`SnowblindStep(min_radius=3, after_jumps=5)` and `JumpPlusStep`, which run
+as its first post-hooks.  At 7 sigma the jump step flags what would
+disturb the stream clean, and the reset fit's own likelihood jump search
+(4.5 sigma) finds the fainter jumps on the cleaned ramp.  These settings
+take precedence over the CRDS parameter references, while your own
 (`--steps.jump.rejection_threshold=5` and so on) still win;
 `--steps.jump.expand_large_events=True` gives back the jwst snowball
 flagging in place of the two hooks.
@@ -154,7 +154,12 @@ clean go through the hook
 the trailing comma making `post_hooks` a list of one; the snowball hooks
 are put ahead of it).  Either
 substitution can be switched off, `--stream_clean=False` or
-`--reset_fit=False`, which gives the jwst step back.
+`--reset_fit=False`, which gives the jwst step back.  The jump setup stays
+either way.  The default algorithm of the jwst ramp fit, `OLS_C`, does no
+jump search of its own (`LIKELY` searches at 4.5 sigma), so with
+`--reset_fit=False` give the jump step its threshold too
+(`--steps.jump.rejection_threshold=4`, for example); the pipeline warns
+while it is still at 7 sigma.
 
 The stock pipeline can also be made to do the same with hooks alone.  The
 stream clean is a post-hook of the jump step, and the reset fit is a

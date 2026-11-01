@@ -54,9 +54,13 @@ class SuperBiasStep(Step, JwstSuperBiasStep):
             that are zero after the subtraction but were not zero before it.
         """
         # only read here; the jwst step makes the copy a standalone run needs
-        result = self.prepare_output(step_input, make_copy=False, open_as_ramp=True)
-        unusable = result.zeroframe == 0 if result.meta.exposure.zero_frame else None
-        result = super().process(result)
+        model = self.prepare_output(step_input, make_copy=False, open_as_ramp=True)
+        unusable = model.zeroframe == 0 if model.meta.exposure.zero_frame else None
+        if model is not step_input:
+            # opened here from a file name: the jwst step opens it again rather than copy this one
+            model.close()
+            model = step_input
+        result = super().process(model)
         if unusable is None or result.meta.cal_step.superbias != "COMPLETE":
             return result
         made = (result.zeroframe == 0) & ~unusable

@@ -1,8 +1,10 @@
 import logging
 
+import pytest
 from configobj import ConfigObj
 from jwst.pipeline import Detector1Pipeline as JwstDetector1Pipeline
 from jwst.ramp_fitting import RampFitStep
+from stpipe.exceptions import ValidationError
 
 from snowblind import Detector1Pipeline, ResetRampFitStep, StreamCleanStep
 from snowblind.superbias import SuperBiasStep
@@ -130,6 +132,19 @@ def test_pipeline_with_large_event_expansion_adds_no_snowball_hooks():
     pipeline = Detector1Pipeline(steps={"jump": {"expand_large_events": True}})
 
     assert pipeline.jump.post_hooks == [StreamCleanStep]
+
+
+def test_pipeline_with_large_event_expansion_off_as_a_string_adds_the_snowball_hooks():
+    """Detector1Pipeline(steps=...) with expand_large_events "False", as strun gives it, adds the snowball hooks."""
+    pipeline = Detector1Pipeline(steps={"jump": {"expand_large_events": "False"}})
+
+    assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, JUMP_PLUS_HOOK, StreamCleanStep]
+
+
+def test_pipeline_with_a_mistyped_large_event_expansion_raises():
+    """Detector1Pipeline(steps=...) with expand_large_events "Ture" raises stpipe's ValidationError."""
+    with pytest.raises(ValidationError):
+        Detector1Pipeline(steps={"jump": {"expand_large_events": "Ture"}})
 
 
 def test_config_from_reference_puts_the_jump_defaults_over_crds(monkeypatch):

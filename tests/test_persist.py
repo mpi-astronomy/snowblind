@@ -14,10 +14,10 @@ DO_NOT_USE = datamodels.dqflags.pixel["DO_NOT_USE"]
 GOOD = datamodels.dqflags.pixel["GOOD"]
 
 
-def make_image(i, detector="NRCALONG", start_time=60122.0):
-    """A 10x10 image model with an empty dq, named as exposure ``i`` of ``detector``."""
-    image = datamodels.ImageModel((10, 10))
-    image.dq = np.zeros((10, 10), dtype=np.uint32)
+def make_image(i, detector="NRCALONG", start_time=60122.0, shape=(10, 10)):
+    """An image model of ``shape`` (10x10 by default) with an empty dq, named as exposure ``i`` of ``detector``."""
+    image = datamodels.ImageModel(shape)
+    image.dq = np.zeros(shape, dtype=np.uint32)
     image.meta.instrument.detector = detector
     image.meta.filename = f"jw01125002001_03101_0000{i}_{detector.lower()}_cal.fits"
     image.meta.exposure.start_time = start_time
@@ -46,6 +46,8 @@ def test_init():
 
 
 def test_flags_pixels_saturated_in_earlier_exposures():
+    """PersistenceFlagStep.call on nine images 1140 s apart, given out of time order, three of them with a SATURATED
+    pixel: the image that starts next is flagged at each of those pixels, and an image that starts earlier is not."""
     images = datamodels.ModelContainer()
 
     time0 = Time(60122.0226664904, format="mjd")
@@ -119,6 +121,46 @@ def test_input_models_unchanged():
     assert images[1].dq[2, 2] == GOOD
 
 
+def test_subarray_flagged_where_earlier_full_frame_saturated():
+    """PersistenceFlagStep.call on a 10x10 image saturated at (5, 5) and a later 4x4 subarray starting at detector
+    pixel 4, 4 (1-based): the subarray is flagged at (2, 2)."""
+    first = make_image(1, start_time=60122.0)
+    first.dq[5, 5] = SATURATED
+    later = make_image(2, start_time=60122.001, shape=(4, 4))
+    later.meta.subarray.ystart = 4
+    later.meta.subarray.xstart = 4
+
+    results = PersistenceFlagStep.call(datamodels.ModelContainer([first, later]))
+
+    assert results[1].dq[2, 2] == PERSISTENCE | DO_NOT_USE
+
+
+def test_full_frame_flagged_where_earlier_subarray_saturated():
+    """PersistenceFlagStep.call on a 4x4 subarray starting at detector pixel 4, 4 (1-based) saturated at (0, 0) and a
+    later 10x10 image: the 10x10 image is flagged at (3, 3)."""
+    first = make_image(1, start_time=60122.0, shape=(4, 4))
+    first.meta.subarray.ystart = 4
+    first.meta.subarray.xstart = 4
+    first.dq[0, 0] = SATURATED
+    later = make_image(2, start_time=60122.001)
+
+    results = PersistenceFlagStep.call(datamodels.ModelContainer([first, later]))
+
+    assert results[1].dq[3, 3] == PERSISTENCE | DO_NOT_USE
+
+
+def test_same_start_time_not_flagged_from_each_other():
+    """PersistenceFlagStep.call on two images of one detector with the same start time, the first saturated at
+    (2, 2): the second stays GOOD there."""
+    first = make_image(1, start_time=60122.0)
+    first.dq[2, 2] = SATURATED
+    same = make_image(2, start_time=60122.0)
+
+    results = PersistenceFlagStep.call(datamodels.ModelContainer([first, same]))
+
+    assert results[1].dq[2, 2] == GOOD
+
+
 def test_file_names_saved_with_flags(tmp_path):
     """PersistenceFlagStep.call on a list of file names with save_results: the saved later file has PERSISTENCE set."""
     first = make_image(1, start_time=60122.0)
@@ -159,6 +201,59 @@ def test_association_members_saved_with_flags(tmp_path):
     PersistenceFlagStep.call(str(asn_path), save_results=True, suffix="cal", output_dir=str(output_dir))
 
     assert fits.getdata(output_dir / later.meta.filename, "DQ")[2, 2] == PERSISTENCE | DO_NOT_USE
+
+
+def test_association_background_member_flags_later_science_member(tmp_path):
+    """PersistenceFlagStep.call on an association file with save_results, the saturated exposure a background
+    member: the later science member is saved flagged."""
+    first = make_image(1, start_time=60122.0)
+    saturate(first, 2, 2)
+    later = make_image(2, start_time=60122.001)
+    save_images(tmp_path, [first, later])
+    members = [
+        {"expname": first.meta.filename, "exptype": "background"},
+        {"expname": later.meta.filename, "exptype": "science"},
+    ]
+    asn = {"asn_id": "o001", "asn_pool": "pool", "products": [{"name": "product", "members": members}]}
+    asn_path = tmp_path / "test_asn.json"
+    asn_path.write_text(json.dumps(asn))
+    output_dir = tmp_path / "flagged"
+
+    PersistenceFlagStep.call(str(asn_path), save_results=True, suffix="cal", output_dir=str(output_dir))
+
+    assert fits.getdata(output_dir / later.meta.filename, "DQ")[2, 2] == PERSISTENCE | DO_NOT_USE
+
+
+def test_bare_file_names_read_from_input_dir(tmp_path):
+    """PersistenceFlagStep.call on bare file names with input_dir set to their folder and save_results: the later
+    file is saved flagged."""
+    first = make_image(1, start_time=60122.0)
+    saturate(first, 2, 2)
+    later = make_image(2, start_time=60122.001)
+    save_images(tmp_path, [first, later])
+    names = [first.meta.filename, later.meta.filename]
+    output_dir = tmp_path / "flagged"
+
+    PersistenceFlagStep.call(
+        names, input_dir=str(tmp_path), save_results=True, suffix="cal", output_dir=str(output_dir)
+    )
+
+    assert fits.getdata(output_dir / later.meta.filename, "DQ")[2, 2] == PERSISTENCE | DO_NOT_USE
+
+
+def test_file_names_saved_under_their_own_names_without_output_use_model(tmp_path):
+    """PersistenceFlagStep.call on two file names with save_results and output_use_model=False: returns the two
+    paths named after the exposures."""
+    first = make_image(1, start_time=60122.0)
+    later = make_image(2, start_time=60122.001)
+    paths = save_images(tmp_path, [first, later])
+    output_dir = tmp_path / "flagged"
+
+    written = PersistenceFlagStep.call(
+        paths, save_results=True, output_use_model=False, suffix="cal", output_dir=str(output_dir)
+    )
+
+    assert written == [str(output_dir / first.meta.filename), str(output_dir / later.meta.filename)]
 
 
 def test_file_overwritten_in_place(tmp_path):

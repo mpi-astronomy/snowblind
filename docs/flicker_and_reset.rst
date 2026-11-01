@@ -71,7 +71,12 @@ Parameters of the reset fit go through the ``ramp_fit`` step
 clean through the hook
 (``--steps.jump.post_hooks="snowblind.StreamCleanStep(background_method='median')",``).
 Either substitution switches off, ``--stream_clean=False`` or
-``--reset_fit=False``, which gives the jwst step back.
+``--reset_fit=False``, which gives the jwst step back. The jump setup stays
+either way. The default algorithm of the jwst ramp fit, ``OLS_C``, does no
+jump search of its own (``LIKELY`` searches at 4.5 sigma), so with
+``--reset_fit=False`` give the jump step its threshold too
+(``--steps.jump.rejection_threshold=4``, for example); the pipeline warns
+while it is still at 7 sigma.
 
 The stock pipeline does the same with hooks alone: the stream clean as a
 post-hook of the jump step (``--steps.jump.post_hooks="snowblind.StreamCleanStep",``

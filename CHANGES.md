@@ -29,7 +29,9 @@
   `PersistenceFlagStep` reads, flags, writes and closes one exposure at a
   time, holding only the saturation masks of the last `time` seconds, and
   returns the paths written. A container of models is flagged in memory as
-  before.
+  before. Either way it reads every member of an association's first
+  product, as `ModelContainer` does, so background and PSF exposures count
+  too, and takes bare file names from `input_dir`.
 - `PersistenceFlagStep(save_mask=True)` writes the mask of flagged pixels
   (`_persistmask`) instead of the saturation mask of the `_jump` file.
 - The documentation of `StreamCleanStep` and `ResetRampFitStep` now
@@ -39,6 +41,15 @@
 
 ### Fixed
 
+- `PersistenceFlagStep` places each exposure on the detector by its
+  subarray start, so a subarray is flagged where an earlier full-frame
+  exposure saturated and the other way round; exposures of one detector
+  with different shapes made it fail. Two inputs of one detector that start
+  at the same time, such as the `_rate` and `_cal` files of one exposure,
+  are no longer flagged from each other.
+- `JumpPlusStep` no longer sets its own `skip` on a ramp without frame
+  averaging. As a hook, which it is in `snowblind_detector1`, it kept the
+  setting, so every later run of the same pipeline skipped it.
 - `PersistenceFlagStep` records its status in the FITS header as
   `S_PERSFL`. `S_PERSIS` is the jwst keyword for its own persistence step,
   and the jwst value replaced the snowblind one.
@@ -52,9 +63,10 @@
   above that of the other pixels, is now the same.
 - `ResetRampFitStep` no longer marks pixels SATURATED where the zeroframe is
   unusable (zero), which put up to 1% of the pixels, at random on the sky,
-  in the SATURATED mask of each rate product. It fits those pixels again
-  without the zeroframe, instead of taking a zero first frame out of group
-  1, which biased their rates by about 0.3 of the rate uncertainty.
+  in the SATURATED mask of each rate product. In each integration it fits
+  those pixels again without the zeroframe, instead of taking a zero first
+  frame out of group 1, which biased their rates by about 0.3 of the rate
+  uncertainty. A zeroframe that is 0 everywhere is ignored.
 
 ## [1.1.0] - 2026-10-27
 

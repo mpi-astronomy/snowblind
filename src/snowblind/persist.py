@@ -49,11 +49,17 @@ class PersistenceFlagStep(Step):
         input_data : str, list of str, or ModelContainer
             Association file, list of file names, or container of image datamodels
             (``_rate`` or ``_cal`` products) with ``dq`` arrays of shape (nrows, ncols).
+            Of an association, the members of its first product are read, whatever
+            their exposure type, as `~jwst.datamodels.ModelContainer` reads them.
             The exposures are grouped by ``meta.instrument.detector`` and each group
-            is handled on its own, in order of ``meta.exposure.start_time``.  When
-            file names are given and ``save_results`` is set, each exposure is
-            opened, flagged, saved and closed in turn, so only the saturation masks
-            of the last ``self.time`` seconds are held in memory.
+            is handled on its own, in order of ``meta.exposure.start_time``; the
+            ``meta.subarray`` start pixels place each exposure on the detector, so
+            a subarray is flagged where a full-frame exposure saturated, and the
+            other way round.  When file names are given and ``save_results`` is set,
+            each exposure is opened, flagged, saved and closed in turn, so only the
+            saturation masks of the last ``self.time`` seconds are held in memory;
+            each is saved under its own file name with the step's suffix, whatever
+            ``output_use_model`` and ``output_file`` say.
 
         Returns
         -------
@@ -63,7 +69,7 @@ class PersistenceFlagStep(Step):
             ``DO_NOT_USE | PERSISTENCE`` set in ``dq``; for file names with
             ``save_results`` set, the paths of the saved files instead.
         """
-        paths = member_paths(input_data)
+        paths = member_paths(input_data, self.make_input_path)
         if paths is not None and self.save_results:
             written = []
             exposures = []
@@ -72,14 +78,18 @@ class PersistenceFlagStep(Step):
                 exposures.append((meta["meta.instrument.detector"], meta["meta.exposure.start_time"], path))
 
             def save(model):
-                # stpipe finalizes and saves the result after process returns; these are saved one at a time here
+                # stpipe finalizes and saves the result after process returns; these are saved one at a time here,
+                # each under its own name, which one output_file cannot give several exposures
                 self.finalize_result(model, [])
-                written.append(self.save_model(model))
+                written.append(self.save_model(model, output_file=model.meta.filename))
                 model.close()
 
             self.flag_in_time_order(exposures, datamodels.open, save)
             return written
 
+        if paths is not None and isinstance(input_data, (list, tuple)):
+            # with bare names put in input_dir
+            input_data = paths
         results = self.prepare_output(input_data)
         exposures = [(m.meta.instrument.detector, m.meta.exposure.start_time, m) for m in results]
         self.flag_in_time_order(exposures, lambda model: model, lambda model: None)
@@ -110,7 +120,8 @@ class PersistenceFlagStep(Step):
                 f"{np.round(np.diff(starts, prepend=starts[0]) * SECONDS_PER_DAY, 1).tolist()}"
             )
 
-            # start time [sec] and saturation mask of the earlier exposures less than self.time before
+            # start time [sec], file name, detector origin and saturation mask of the earlier exposures less than
+            # self.time before
             recent = deque()
             for start, item in sequence:
                 seconds = start * SECONDS_PER_DAY
@@ -118,12 +129,22 @@ class PersistenceFlagStep(Step):
                     recent.popleft()
 
                 model = load(item)
+                origin = detector_origin(model)
                 saturated = (model.dq & SATURATED) > 0
                 mask = np.zeros(model.dq.shape, dtype=bool)
-                for _, earlier in recent:
-                    mask |= earlier
+                used = 0
+                for earlier_seconds, earlier_name, earlier_origin, earlier in recent:
+                    if earlier_seconds == seconds:
+                        # a detector takes one exposure at a time, so this is the same exposure given twice
+                        log.warning(
+                            f"{model.meta.filename} starts at the same time as {earlier_name} on {detector}, so it is "
+                            "taken for the same exposure and not flagged from it"
+                        )
+                        continue
+                    or_overlap(mask, origin, earlier, earlier_origin)
+                    used += 1
 
-                log.info(f"Pixels flagged: {model.meta.filename} {mask.sum()} from {len(recent)} earlier exposures")
+                log.info(f"Pixels flagged: {model.meta.filename} {mask.sum()} from {used} earlier exposures")
                 model.dq |= (mask * (DO_NOT_USE | PERSISTENCE)).astype(model.dq.dtype)
                 self.set_cal_step(model, "COMPLETE")
                 if self.save_mask:
@@ -131,24 +152,69 @@ class PersistenceFlagStep(Step):
                     fits.PrimaryHDU(data=mask.astype(np.uint8)).writeto(mask_name, overwrite=True)
                     log.info(f"Writing out persistence mask {mask_name}")
 
-                recent.append((seconds, saturated))
+                recent.append((seconds, model.meta.filename, origin, saturated))
                 done(model)
 
 
-def member_paths(input_data):
+def detector_origin(model):
+    """The detector pixel of the first pixel of an image, from its subarray start.
+
+    Parameters
+    ----------
+    model : DataModel
+        Image model; ``meta.subarray.ystart`` and ``xstart`` (1-based, in the
+        frame of the data) place it on the detector, and are taken as 1 when
+        not set.
+
+    Returns
+    -------
+    tuple of int
+        (row, column) on the detector, counted from 0, of ``model.dq[0, 0]``.
+    """
+    return (model.meta.subarray.ystart or 1) - 1, (model.meta.subarray.xstart or 1) - 1
+
+
+def or_overlap(mask, origin, other, other_origin):
+    """Set in a mask the pixels set in the mask of another exposure of the detector, where the two overlap.
+
+    Parameters
+    ----------
+    mask : ndarray of bool, shape (nrows, ncols)
+        Mask to update in place.
+    origin : tuple of int
+        Detector (row, column) of ``mask[0, 0]``.
+    other : ndarray of bool
+        The other exposure's mask, of any shape.
+    other_origin : tuple of int
+        Detector (row, column) of ``other[0, 0]``.
+    """
+    low = np.maximum(origin, other_origin)
+    high = np.minimum(np.add(origin, mask.shape), np.add(other_origin, other.shape))
+    if np.any(high <= low):
+        return
+    here = tuple(slice(a - o, b - o) for a, b, o in zip(low, high, origin))
+    there = tuple(slice(a - o, b - o) for a, b, o in zip(low, high, other_origin))
+    mask[here] |= other[there]
+
+
+def member_paths(input_data, input_path=lambda path: path):
     """The file names in an association file, file name or list of file names.
 
     Parameters
     ----------
     input_data : object
         Step input.
+    input_path : callable
+        Takes each file name of a list and returns its path; the step's
+        ``make_input_path``, which puts a bare name in ``input_dir``.
 
     Returns
     -------
     list of str or None
-        The science members of an association (relative to the association's
-        directory), the file name, or the list of file names; None when the input
-        holds datamodels.
+        The members of the association's first product (relative to the
+        association's directory) whatever their exposure type, as
+        `~jwst.datamodels.ModelContainer` reads them; the file name; or the list
+        of file names; None when the input holds datamodels.
     """
     if isinstance(input_data, (str, os.PathLike)):
         path = os.fspath(input_data)
@@ -157,12 +223,7 @@ def member_paths(input_data):
         with open(path) as asn_file:
             asn = load_asn(asn_file)
         folder = os.path.dirname(path)
-        return [
-            os.path.join(folder, member["expname"])
-            for product in asn["products"]
-            for member in product["members"]
-            if member["exptype"] == "science"
-        ]
+        return [os.path.join(folder, member["expname"]) for member in asn["products"][0]["members"]]
     if isinstance(input_data, (list, tuple)) and all(isinstance(i, (str, os.PathLike)) for i in input_data):
-        return [os.fspath(i) for i in input_data]
+        return [input_path(os.fspath(i)) for i in input_data]
     return None
