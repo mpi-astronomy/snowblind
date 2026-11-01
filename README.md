@@ -70,7 +70,7 @@ which runs them with their step default parameters.  If you want more flexibilit
 
 The steps `PersistenceFlagStep` and `OpenPixelStep` need to be run on an association of _rate or _cal files, because they are essentially self-calibration.  Here's an example for `PersistenceFlagStep`:
 
-Run `Detector1Pipeline` on each input _uncal.fits file, skipping the built-in `PersistenceStep` and saving the output of `JumpStep`.  We will need the output later.
+Run `Detector1Pipeline` on each input _uncal.fits file, skipping the built-in `PersistenceStep`.
 ```python
 from glob import glob
 from jwst.pipeline import Detector1Pipeline
@@ -79,10 +79,6 @@ from jwst.pipeline import Detector1Pipeline
 steps = dict(
     persistence=dict(
         skip=True,
-    ),
-    jump=dict(
-        save_results=True,
-        rejection_threshold=5.0,
     ),
 )
 
@@ -96,17 +92,16 @@ And then run `Image2Pipeline` to produce all the _cal.fits files.  Afterwards, t
 
 ```python
 from glob import glob
-from jwst.datamodels import ModelContainer
-from jwst.steps import PersistenceFlagStep
+from snowblind import PersistenceFlagStep
 
 
-cal_files = glob("jw*_cal.fits")
-cal_files.sort()
-combined_asn = ModelContainer(cal_files)
-PersistenceFlagStep.call(combined_asn, save_results=True, suffix="cal")
+cal_files = sorted(glob("jw*_cal.fits"))
+PersistenceFlagStep.call(cal_files, save_results=True, suffix="cal", output_dir="persist")
 ```
 
-which will overwrite _cal.fits files with the same file but with a new DQ array with PERSISTENCE and DO_NOT_USE flag set.  If you don't want to overwrite and will rename later, just don't use the `suffix` arg.
+which writes each _cal.fits file again, under the same name in `persist/`, with PERSISTENCE and DO_NOT_USE set in the DQ array at the pixels that saturated in an earlier exposure of the same detector, started less than `time` seconds (default 2500) before.  With file names (or an association file) and `save_results`, the step reads, flags, writes and closes one exposure at a time, so it handles any number of exposures; a `ModelContainer` is flagged in memory and returned.  Without `output_dir`, the files go to the current directory, which overwrites them when they are there.
+
+The saturated pixels are those with SATURATED in the DQ of each _rate or _cal file; ramp fitting sets it where any group of any integration saturated.
 
 Finally, both these steps can be inserted as pre-hooks into the `Image3Pipeline` using the same method as shown above with `SnowblindStep`.
 
@@ -130,13 +125,41 @@ and `_rateints` products from the cleaned ramp and the reset-anchored fit:
 
     strun snowblind_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs
 
-Parameters of the reset fit go through the slot
+The pipeline also sets up the jump step for the two.  It runs at 7 sigma
+and leaves the snowball expansion and the flagging after jumps to
+`SnowblindStep(min_radius=3, after_jumps=5)` and `JumpPlusStep`, which run
+as its first post-hooks.  At 7 sigma the jump step flags what would
+disturb the stream clean, and the reset fit's own likelihood jump search
+(4.5 sigma) finds the fainter jumps on the cleaned ramp.  These settings
+take precedence over the CRDS parameter references, while your own
+(`--steps.jump.rejection_threshold=5` and so on) still win;
+`--steps.jump.expand_large_events=True` gives back the jwst snowball
+flagging in place of the two hooks.
+
+The pipeline's superbias step is also its own, a subclass of the jwst one.
+The ZEROFRAME has no DQ array, so the pipeline marks an unusable zeroframe
+pixel by setting it to 0, and the later steps leave such pixels uncorrected
+and unused.  The jwst superbias step keeps the zeros it is given, but a
+pixel whose raw zeroframe equals the superbias exactly also comes out at 0.
+The raw data are whole DN, so with superbias references that hold only
+whole and half-integer values, as recent NIRCam ones do, that can be up to
+about 1% of the pixels.  The snowblind step gives those pixels a value that
+is 0 DN to every later step but not the marker, so they keep the
+reference-pixel correction and the reset fit uses their zeroframe.
+
+Parameters of the reset fit go through
 (`--steps.ramp_fit.reset_calib=my_calib.asdf`); parameters of the stream
 clean go through the hook
 (`--steps.jump.post_hooks="snowblind.StreamCleanStep(background_method='median')",`,
-the trailing comma making `post_hooks` a list of one).  Either
+the trailing comma making `post_hooks` a list of one; the snowball hooks
+are put ahead of it).  Either
 substitution can be switched off, `--stream_clean=False` or
-`--reset_fit=False`, which gives the jwst step back.
+`--reset_fit=False`, which gives the jwst step back.  The jump setup stays
+either way.  The default algorithm of the jwst ramp fit, `OLS_C`, does no
+jump search of its own (`LIKELY` searches at 4.5 sigma), so with
+`--reset_fit=False` give the jump step its threshold too
+(`--steps.jump.rejection_threshold=4`, for example); the pipeline warns
+while it is still at 7 sigma.
 
 The stock pipeline can also be made to do the same with hooks alone.  The
 stream clean is a post-hook of the jump step, and the reset fit is a
@@ -153,6 +176,8 @@ itself:
 On the command line a hook string can carry one keyword argument only,
 since the hook list is split on commas; in Python a hook can be a step
 instance with any arguments, `ResetRampFitStep(as_hook=True, reset_calib=...)`.
+This route keeps the jwst superbias step, so the reset fit finds the
+zeroframe at 0 in up to 1% of the pixels and fits those without it.
 
 A pre-hook of `ramp_fit` would also run before the skip, but the skipped
 step then marks its output as skipped and the pipeline names it `_ramp`;
@@ -177,8 +202,8 @@ Both steps also run on their own on a `_jump` product (`strun stream_clean
 jw..._jump.fits`, `strun reset_rampfit jw..._jump.fits`).
 
 The packaged calibration holds, per detector, the reset-level scatter
-measured from dark ramps and the first-read timing measured on a field (see
-the documentation for the measurements).  To measure your own, for example
+measured from dark ramps and the first-read timing measured on a field (the
+documentation describes both).  To measure your own, for example
 for a detector or epoch not covered:
 
     snowblind-reset-calib jw..._nrca1_uncal.fits -o nrca1_reset_calib.asdf

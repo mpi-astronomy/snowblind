@@ -17,14 +17,14 @@ GAIN = 2.0
 SIGMA_B = 15.0
 
 
-def blank_ramp_data(ngroups, ncols=1, nframes=1, groupgap=0, zeroframe=False):
-    """RampData of one integration and one row, with uniform read noise and gain."""
-    data = np.zeros((1, ngroups, 1, ncols), dtype=np.float32)
-    gdq = np.zeros((1, ngroups, 1, ncols), dtype=np.uint8)
+def blank_ramp_data(ngroups, ncols=1, nframes=1, groupgap=0, zeroframe=False, nints=1):
+    """RampData of ``nints`` integrations and one row, with uniform read noise and gain."""
+    data = np.zeros((nints, ngroups, 1, ncols), dtype=np.float32)
+    gdq = np.zeros((nints, ngroups, 1, ncols), dtype=np.uint8)
     pdq = np.zeros((1, ncols), dtype=np.uint32)
     dark = np.zeros((1, ncols), dtype=np.float32)
     ramp_data = RampData()
-    zf = np.zeros((1, 1, ncols), dtype=np.float32) if zeroframe else None
+    zf = np.zeros((nints, 1, ncols), dtype=np.float32) if zeroframe else None
     ramp_data.set_arrays(data=data, groupdq=gdq, pixeldq=pdq, average_dark_current=dark, zeroframe=zf)
     ramp_data.set_meta(
         name="NIRCAM",
@@ -153,6 +153,88 @@ def test_zero_valued_zeroframe_is_unusable():
     assert image_info["dq"][0, 0] & DNU
 
 
+def test_zero_valued_zeroframe_pixel_gets_the_fit_without_zeroframe():
+    """likely_ramp_fit_reset on a 20 DN/s ramp whose zeroframe is exactly 0 returns the slope of the fit without it."""
+    ramp_data, readnoise, gain = blank_ramp_data(5, nframes=4, zeroframe=True)
+    linear_ramp(ramp_data, 20.0)
+    ramp_data.zeroframe[0, 0, 0] = 0.0
+
+    image_info, _integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+    expected, _, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B, use_zeroframe=False)
+
+    assert image_info["slope"][0, 0] == pytest.approx(expected["slope"][0, 0], rel=1e-6)
+
+
+def test_zero_valued_zeroframe_with_good_groups_is_not_saturated():
+    """likely_ramp_fit_reset on a good ramp whose zeroframe is exactly 0 leaves SATURATED out of the pixel DQ."""
+    ramp_data, readnoise, gain = blank_ramp_data(5, nframes=4, zeroframe=True)
+    linear_ramp(ramp_data, 20.0)
+    ramp_data.zeroframe[0, 0, 0] = 0.0
+
+    image_info, _integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert image_info["dq"][0, 0] & SAT == 0
+
+
+def test_usable_zeroframe_pixel_keeps_its_fit_beside_a_zero_valued_one():
+    """likely_ramp_fit_reset on two noisy pixels, the second with a zeroframe of 0, gives the first its slope alone."""
+    ramp_data, readnoise, gain = blank_ramp_data(5, ncols=2, nframes=4, zeroframe=True)
+    alone, readnoise_alone, gain_alone = blank_ramp_data(5, nframes=4, zeroframe=True)
+    linear_ramp(ramp_data, 20.0)
+    rng = np.random.default_rng(2)
+    ramp_data.data += rng.normal(scale=5.0, size=ramp_data.data.shape).astype(np.float32)
+    ramp_data.zeroframe[0, 0, 0] = 20.0 * FRAME_TIME + 3.0
+    ramp_data.zeroframe[0, 0, 1] = 0.0
+    alone.data[:] = ramp_data.data[:, :, :, :1]
+    alone.zeroframe[:] = ramp_data.zeroframe[:, :, :1]
+
+    image_info, _integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+    expected, _, _ = likely_ramp_fit_reset(alone, readnoise_alone, gain_alone, SIGMA_B)
+
+    assert image_info["slope"][0, 0] == pytest.approx(expected["slope"][0, 0], rel=1e-6)
+
+
+def test_zero_valued_zeroframe_beside_a_usable_one_gets_the_fit_without_zeroframe():
+    """likely_ramp_fit_reset on two noisy pixels, the second with a zeroframe of 0, gives the second its fit without it."""
+    ramp_data, readnoise, gain = blank_ramp_data(5, ncols=2, nframes=4, zeroframe=True)
+    linear_ramp(ramp_data, 20.0)
+    rng = np.random.default_rng(3)
+    ramp_data.data += rng.normal(scale=5.0, size=ramp_data.data.shape).astype(np.float32)
+    ramp_data.zeroframe[0, 0, 0] = 20.0 * FRAME_TIME + 3.0
+    ramp_data.zeroframe[0, 0, 1] = 0.0
+
+    image_info, _integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+    expected, _, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B, use_zeroframe=False)
+
+    assert image_info["slope"][0, 1] == pytest.approx(expected["slope"][0, 1], rel=1e-6)
+
+
+def test_zeroframe_of_0_in_one_integration_leaves_the_other_its_zeroframe():
+    """likely_ramp_fit_reset on two saturated integrations, zeroframe usable in the first and 0 in the second, gives
+    the first integration zeroframe / frame_time."""
+    ramp_data, readnoise, gain = blank_ramp_data(5, nframes=4, zeroframe=True, nints=2)
+    ramp_data.groupdq[:] = SAT
+    ramp_data.zeroframe[0, 0, 0] = 30.0 * FRAME_TIME + 2.0
+    ramp_data.zeroframe[1, 0, 0] = 0.0
+
+    _image_info, integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert integ_info["slope"][0, 0, 0] == pytest.approx((30.0 * FRAME_TIME + 2.0) / FRAME_TIME, rel=1e-6)
+
+
+def test_zeroframe_of_0_in_one_integration_keeps_the_image_rate_from_the_other():
+    """likely_ramp_fit_reset on two saturated integrations, zeroframe usable in the first and 0 in the second, gives
+    the image zeroframe / frame_time."""
+    ramp_data, readnoise, gain = blank_ramp_data(5, nframes=4, zeroframe=True, nints=2)
+    ramp_data.groupdq[:] = SAT
+    ramp_data.zeroframe[0, 0, 0] = 30.0 * FRAME_TIME + 2.0
+    ramp_data.zeroframe[1, 0, 0] = 0.0
+
+    image_info, _integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert image_info["slope"][0, 0] == pytest.approx((30.0 * FRAME_TIME + 2.0) / FRAME_TIME, rel=1e-6)
+
+
 def test_reset_far_off_is_dropped():
     """likely_ramp_fit_reset on a ramp whose reset is 10 sigma_b off drops d_0 and returns the stcal rate."""
     ramp_data, readnoise, gain = blank_ramp_data(10)
@@ -177,6 +259,39 @@ def test_dropped_reset_is_not_a_jump_but_real_jump_is():
     assert image_info["dq"][0, 0] & JUMP
     assert integ_info["used_reset"][0, 0, 0]
     assert image_info["slope"][0, 0] == pytest.approx(20.0, rel=1e-6)
+
+
+def test_new_jumps_counts_a_jump_the_search_finds():
+    """likely_ramp_fit_reset on a ramp with an unflagged 500 DN jump at group 5 sets new_jumps to 1 for that pixel."""
+    ramp_data, readnoise, gain = blank_ramp_data(10)
+    linear_ramp(ramp_data, 20.0)
+    ramp_data.data[0, 5:, 0, 0] += 500.0
+
+    _image_info, integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert integ_info["new_jumps"][0, 0, 0] == 1
+
+
+def test_new_jumps_leaves_out_a_jump_flagged_on_input():
+    """likely_ramp_fit_reset on a 500 DN jump at group 5 already flagged JUMP_DET leaves new_jumps at 0."""
+    ramp_data, readnoise, gain = blank_ramp_data(10)
+    linear_ramp(ramp_data, 20.0)
+    ramp_data.data[0, 5:, 0, 0] += 500.0
+    ramp_data.groupdq[0, 5, 0, 0] = JUMP
+
+    _image_info, integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert integ_info["new_jumps"][0, 0, 0] == 0
+
+
+def test_new_jumps_leaves_out_a_dropped_reset():
+    """likely_ramp_fit_reset on a ramp whose reset is 10 sigma_b off drops d_0 and leaves new_jumps at 0."""
+    ramp_data, readnoise, gain = blank_ramp_data(10)
+    linear_ramp(ramp_data, 20.0, reset=10.0 * SIGMA_B)
+
+    _image_info, integ_info, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert integ_info["new_jumps"][0, 0, 0] == 0
 
 
 def test_scalar_and_uniform_per_pixel_sigma_b_agree():

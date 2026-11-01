@@ -2,6 +2,74 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-01
+
+### Added
+
+- `ResetRampFitStep` logs the pixels in which its own likelihood jump
+  search found jumps: those the jump step had not flagged, and those it had
+  flagged where the search found more groups to exclude (the count of
+  flagged differences is at DEBUG). The fitter returns the per-pixel count
+  as a `new_jumps` plane of its per-integration results.
+
+### Changed
+
+- `snowblind_detector1` sets up the jump step for the stream clean and the
+  reset fit: 7 sigma (three- and four-group thresholds too), neighbours
+  flagged above 20 sigma, no large-event expansion or after-jump flagging,
+  and `SnowblindStep(min_radius=3, after_jumps=5)` and `JumpPlusStep` as
+  its first post-hooks. These take precedence over the CRDS parameter
+  references; the caller's jump parameters still win, and
+  `expand_large_events=True` gives back the jwst snowball flagging instead
+  of the two hooks. With `--reset_fit=False` it warns that the jump step is
+  still at 7 sigma.
+- `PersistenceFlagStep` takes the saturated pixels from the DQ of the
+  `_rate` or `_cal` files it flags (ramp fitting sets SATURATED where any
+  group of any integration saturated), so the `_jump` files are no longer
+  needed.
+- Given file names or an association file with `save_results`,
+  `PersistenceFlagStep` reads, flags, writes and closes one exposure at a
+  time, holding only the saturation masks of the last `time` seconds, and
+  returns the paths written. A container of models is flagged in memory as
+  before. Either way it reads every member of an association's first
+  product, as `ModelContainer` does, so background and PSF exposures count
+  too, and takes bare file names from `input_dir`.
+- `PersistenceFlagStep(save_mask=True)` writes the mask of flagged pixels
+  (`_persistmask`) instead of the saturation mask of the `_jump` file.
+- The documentation of `StreamCleanStep` and `ResetRampFitStep` now
+  describes what data they take, how they work and how to choose their
+  settings for a given dataset. The measurements on individual fields
+  behind the defaults are kept in the plan file of the repository.
+
+### Fixed
+
+- `PersistenceFlagStep` places each exposure on the detector by its
+  subarray start, so a subarray is flagged where an earlier full-frame
+  exposure saturated and the other way round; exposures of one detector
+  with different shapes made it fail. Two inputs of one detector that start
+  at the same time, such as the `_rate` and `_cal` files of one exposure,
+  are no longer flagged from each other.
+- `JumpPlusStep` no longer sets its own `skip` on a ramp without frame
+  averaging. As a hook, which it is in `snowblind_detector1`, it kept the
+  setting, so every later run of the same pipeline skipped it.
+- `PersistenceFlagStep` records its status in the FITS header as
+  `S_PERSFL`. `S_PERSIS` is the jwst keyword for its own persistence step,
+  and the jwst value replaced the snowblind one.
+- `snowblind_detector1` subtracts the superbias with a subclass of the jwst
+  step that keeps zeroframe pixels equal to the superbias from coming out
+  at exactly 0, the pipeline's marker for an unusable zeroframe pixel. The
+  raw data are whole DN, so with superbias references that hold only whole
+  and half-integer values, as recent NIRCam ones do, this hit up to about
+  1% of the pixels of an exposure, which the later steps left uncorrected
+  and the reset fit could not anchor. Their rate uncertainty, about 7%
+  above that of the other pixels, is now the same.
+- `ResetRampFitStep` no longer marks pixels SATURATED where the zeroframe is
+  unusable (zero), which put up to 1% of the pixels, at random on the sky,
+  in the SATURATED mask of each rate product. In each integration it fits
+  those pixels again without the zeroframe, instead of taking a zero first
+  frame out of group 1, which biased their rates by about 0.3 of the rate
+  uncertainty. A zeroframe that is 0 everywhere is ignored.
+
 ## [1.1.0] - 2026-10-27
 
 ### Added
@@ -164,7 +232,8 @@ First release.
 - Steps register as stpipe plugins and run with `strun` or as pipeline
   hooks.
 
-[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.1.0...HEAD
+[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.2.0...HEAD
+[1.2.0]: https://github.com/mpi-astronomy/snowblind/compare/1.1.0...1.2.0
 [1.1.0]: https://github.com/mpi-astronomy/snowblind/compare/1.0.1...1.1.0
 [1.0.1]: https://github.com/mpi-astronomy/snowblind/compare/1.0.0...1.0.1
 [1.0.0]: https://github.com/mpi-astronomy/snowblind/compare/0.2.0...1.0.0

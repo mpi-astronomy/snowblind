@@ -58,6 +58,49 @@ def _span(values, fmt):
     return f"{low:{fmt}} to {high:{fmt}}"
 
 
+def log_new_jumps(new_jumps, input_jumps, rejection_threshold):
+    """Log the pixels in which the fit's own jump search found jumps, apart from those the jump step had flagged.
+
+    Parameters
+    ----------
+    new_jumps : ndarray of int, shape (nints, nrows, ncols)
+        Per pixel and integration, the differences the likelihood jump
+        search flagged on top of the input DQ (``integ_info["new_jumps"]``).
+    input_jumps : ndarray of bool, shape (nints, nrows, ncols)
+        Per pixel and integration, whether the input DQ has JUMP_DET in any
+        group.
+    rejection_threshold : float or None
+        The search threshold in sigma; None is stcal's default of 4.5.
+
+    Returns
+    -------
+    unflagged : int
+        The pixels with a new jump that the jump step had not flagged,
+        counted once per integration.
+    flagged : int
+        The pixels with a new jump that the jump step had flagged in other
+        groups, counted once per integration.
+    """
+    new_jumps = np.asarray(new_jumps)
+    input_jumps = np.asarray(input_jumps, dtype=bool)
+    found = new_jumps > 0
+    unflagged = int(np.count_nonzero(found & ~input_jumps))
+    flagged = int(np.count_nonzero(found & input_jumps))
+    nints = new_jumps.shape[0]
+    over = f" over the {nints} integrations" if nints > 1 else ""
+    log.info(
+        f"The fit's jump search found jumps in {unflagged} pixel{'s' if unflagged != 1 else ''} the jump step had "
+        f"not flagged ({100 * unflagged / new_jumps.size:.2g} percent){over}, and more groups to exclude in "
+        f"{flagged} pixel{'s' if flagged != 1 else ''} it had flagged"
+    )
+    threshold = 4.5 if rejection_threshold is None else rejection_threshold
+    log.debug(
+        f"Likelihood jump search at {threshold:g} sigma: {int(new_jumps.sum())} differences flagged in "
+        f"{unflagged + flagged} pixel-integrations, {int(np.count_nonzero(new_jumps > 1))} of them with more than one"
+    )
+    return unflagged, flagged
+
+
 class ResetRampFitStep(Step):
     """Fit ramps by maximum likelihood with a Gaussian prior on the reset level.
 
@@ -97,7 +140,7 @@ class ResetRampFitStep(Step):
         anchor_timing_to_stars = boolean(default=False)  # also fit the first-read scale per channel from this exposure's bright unsaturated pixels (needs many bright pixels)
         anchor_min_bright = integer(default=500)  # fewer bright pixels than this in a channel keeps the file's first-read scale there
         use_zeroframe = boolean(default=True)  # use the zeroframe when present
-        rejection_threshold = float(default=None)  # sigma threshold of the likelihood jump search; None for stcal default
+        rejection_threshold = float(default=None)  # sigma threshold of the likelihood jump search, which runs on top of the jump step's flags; None for stcal's 4.5
         save_opt = boolean(default=False)  # save used_reset and d0_resid as a _resetfit ASDF product
         # accepted so that the step fits the ramp_fit slot of calwebb_detector1, whose CRDS parameters set them; not used
         algorithm = string(default='LIKELY')  # the fit is always the reset-anchored likelihood fit
@@ -235,6 +278,8 @@ class ResetRampFitStep(Step):
                 use_zeroframe=self.use_zeroframe,
                 reset_level=reset_level,
             )
+        input_jumps = np.any((ramp_data.groupdq & ramp_data.flags_jump_det) > 0, axis=1)
+        log_new_jumps(integ_info["new_jumps"], input_jumps, self.rejection_threshold)
 
         if self.save_opt:
             path = self.make_output_path(basepath=result.meta.filename, suffix="resetfit", ext="asdf")

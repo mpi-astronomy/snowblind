@@ -44,8 +44,10 @@ class JumpPlusStep(Step):
             Copy of the input.  With frame averaging, each group's JUMP_DET flags are
             also set in the following group, each group's SATURATED flags are also set
             in the preceding group, and ``meta.cal_step.jump_plus`` is ``"COMPLETE"``.
-            Without frame averaging the copy is unchanged, ``self.skip`` is set and
-            ``meta.cal_step.jump_plus`` is ``"SKIPPED"``.
+            Without frame averaging the copy is unchanged and
+            ``meta.cal_step.jump_plus`` is ``"SKIPPED"``.  ``self.skip`` is left
+            alone: stpipe resets it only for a step without a parent, so a hook
+            that set it would skip every later run of its pipeline.
         """
         with datamodels.open(input_data) as jump:
             # If there is more than one frame averaged into a group,
@@ -60,7 +62,6 @@ class JumpPlusStep(Step):
         if not frame_averaging:
             # Update step meta
             log.info("No frame averaging in this readout mode")
-            self.skip = True
             self.set_cal_step(result, "SKIPPED")
 
             return result
