@@ -6,7 +6,7 @@ import pytest
 from astropy.io import fits
 from stdatamodels.jwst import datamodels
 
-from snowblind import ResetRampFitStep, readout
+from snowblind import ResetRampFitStep, StreamCleanStep, __version__, readout
 from snowblind.reset_calib import default_calibration, update_timing, write_calibration
 from snowblind.reset_rampfit import (
     calibrated_pedestal_map,
@@ -18,6 +18,7 @@ from snowblind.reset_rampfit import (
     superbias_difference,
     write_resetfit,
 )
+from snowblind.step import _history
 
 
 SAT = datamodels.dqflags.group["SATURATED"]
@@ -25,6 +26,11 @@ JUMP = datamodels.dqflags.group["JUMP_DET"]
 NY, NX = 8, 8
 FRAME_TIME = 10.73677
 RATE = 20.0
+
+
+def primary_cards(model):
+    """The primary header cards of a model's extra_fits record, by keyword."""
+    return {card[0]: card[1] for card in model._instance.get("extra_fits", {}).get("PRIMARY", {}).get("header", [])}
 
 
 def set_subarray(model):
@@ -523,6 +529,50 @@ def test_call_carries_the_stream_clean_record_into_the_rate_products(tmp_path):
 
     assert out.meta.cal_step.stream_clean == "COMPLETE"
     assert ints.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def test_call_carries_meta_snowblind_into_the_rate(tmp_path):
+    """ResetRampFitStep.call on a ramp with meta.snowblind.stream_clean.sky_mean_minus_median 0.5 returns a rate with 0.5."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp()
+    StreamCleanStep().record(model, sky_mean_minus_median=0.5)
+
+    out, _ints = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
+
+    assert out.meta.snowblind.stream_clean.sky_mean_minus_median == 0.5
+
+
+def test_call_carries_the_extra_header_cards_into_the_rate(tmp_path):
+    """ResetRampFitStep.call on a ramp with the extra header card SKYMNMED = 0.5 returns a rate with the same card."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp()
+    StreamCleanStep().record(model, sky_mean_minus_median=0.5)
+
+    out, _ints = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
+
+    assert primary_cards(out)["SKYMNMED"] == 0.5
+
+
+def test_call_leaves_nextend_out_of_the_rate(tmp_path):
+    """ResetRampFitStep.call on a ramp with an extra header card NEXTEND = 4 returns a rate without NEXTEND."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp()
+    model._instance.setdefault("extra_fits", {}).setdefault("PRIMARY", {})["header"] = [["NEXTEND", 4, ""]]
+
+    out, _ints = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
+
+    assert "NEXTEND" not in primary_cards(out)
+
+
+def test_call_puts_the_ramp_history_before_its_own(tmp_path):
+    """ResetRampFitStep.call on a ramp with the history entry 'earlier step' returns a rate with it, then its own entry."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp()
+    model.add_history_entry("earlier step")
+
+    out, _ints = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
+
+    assert _history(out) == ["earlier step", f"snowblind {__version__} ResetRampFitStep: COMPLETE"]
 
 
 def test_call_as_hook_returns_the_rate_image_alone(tmp_path):

@@ -279,7 +279,17 @@ bridged from the samples either side, and where the local fraction of
 background pixels is below ``min_density`` (0.2) the estimate tapers off.
 ``anchor_mean`` (on by default) sets each channel's mean removed noise to
 the masked mean of the residual, so a robust estimator such as
-``fit_method='row_median'`` cannot shift the sky.
+``fit_method='row_median'`` cannot shift the sky. What the step did to
+the sky level is recorded in ``meta.snowblind.stream_clean`` of the ASDF
+extension, in DN/s of the flat-fielded sky and averaged over the group
+differences and integrations: ``sky_mean_minus_median``, the masked mean
+minus the masked median of the background pixels (the shift a scalar
+median background imposes), and ``sky_change_by_cleaning``, the change of
+the sky made by the cleaning, negative when lowered. Both are also in
+the primary header, as ``SKYMNMED`` and ``SKYCHG``, and their values for
+each integration are in ``sky_mean_minus_median_per_integration`` and
+``sky_change_by_cleaning_per_integration``. The reset fit carries them to
+the rate file, and calwebb_image2 keeps them in the ``_cal`` files.
 
 The background model
 ~~~~~~~~~~~~~~~~~~~~

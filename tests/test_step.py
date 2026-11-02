@@ -6,7 +6,7 @@ from stdatamodels.jwst import datamodels
 
 from snowblind import __version__
 from snowblind import JumpPlusStep, OpenPixelStep, PersistenceFlagStep, ResetRampFitStep, SnowblindStep, StreamCleanStep
-from snowblind.step import Step, _history, carry_cal_step
+from snowblind.step import META_SCHEMA, Step, _history
 
 
 def test_step_names_the_snowblind_logger_after_the_jwst_ones():
@@ -124,13 +124,77 @@ def test_history_entry_is_in_fits_header_and_survives_reopen(tmp_path):
         assert _history(reopened) == [expected]
 
 
-def test_carry_cal_step_copies_snowblind_history_only():
-    """carry_cal_step from a model with a snowblind and an unrelated history entry copies only the snowblind one."""
-    source = datamodels.RampModel((1, 3, 4, 4))
-    SnowblindStep().set_cal_step(source, "COMPLETE")
-    source.add_history_entry("something else")
-    target = datamodels.ImageModel((4, 4))
-    carry_cal_step(source, target)
+def primary_cards(model):
+    """The primary header cards of a model's extra_fits record, by keyword."""
+    return {card[0]: card[1] for card in model._instance.get("extra_fits", {}).get("PRIMARY", {}).get("header", [])}
 
-    assert len(_history(target)) == 1
-    assert _history(target)[0].startswith("snowblind ")
+
+def schema_keywords():
+    """The fits_keyword of every entry in META_SCHEMA."""
+    return [
+        entry["fits_keyword"]
+        for step in META_SCHEMA["properties"].values()
+        for entry in step["properties"].values()
+        if "fits_keyword" in entry
+    ]
+
+
+def test_record_writes_the_value_under_meta_snowblind():
+    """StreamCleanStep.record with sky_mean_minus_median=0.5 sets meta.snowblind.stream_clean.sky_mean_minus_median to 0.5."""
+    model = datamodels.RampModel((1, 3, 4, 4))
+    StreamCleanStep().record(model, sky_mean_minus_median=0.5)
+
+    assert model.meta.snowblind.stream_clean.sky_mean_minus_median == 0.5
+
+
+def test_record_writes_the_header_card_of_the_schema():
+    """StreamCleanStep.record with sky_mean_minus_median=0.5 adds the card SKYMNMED = 0.5 to the primary header record."""
+    model = datamodels.RampModel((1, 3, 4, 4))
+    StreamCleanStep().record(model, sky_mean_minus_median=0.5)
+
+    assert primary_cards(model)["SKYMNMED"] == 0.5
+
+
+def test_record_without_a_fits_keyword_writes_no_card():
+    """StreamCleanStep.record with unit='DN/s', which has no fits_keyword in META_SCHEMA, adds no header card."""
+    model = datamodels.RampModel((1, 3, 4, 4))
+    StreamCleanStep().record(model, unit="DN/s")
+
+    assert primary_cards(model) == {}
+
+
+def test_record_of_a_name_not_in_the_schema_raises():
+    """StreamCleanStep.record with a name META_SCHEMA does not define for stream_clean raises KeyError."""
+    model = datamodels.RampModel((1, 3, 4, 4))
+
+    with pytest.raises(KeyError):
+        StreamCleanStep().record(model, sky_level=0.5)
+
+
+def test_recorded_card_survives_a_reopen_and_save_by_jwst(tmp_path):
+    """A model saved after StreamCleanStep.record, reopened with datamodels.open and saved again, has SKYMNMED in its header."""
+    model = datamodels.RampModel((1, 3, 4, 4))
+    StreamCleanStep().record(model, sky_mean_minus_median=0.5)
+    model.save(tmp_path / "first.fits")
+    with datamodels.open(tmp_path / "first.fits") as reopened:
+        reopened.save(tmp_path / "second.fits")
+
+    assert fits.getheader(tmp_path / "second.fits")["SKYMNMED"] == 0.5
+
+
+def test_recorded_value_survives_a_reopen_and_save_by_jwst(tmp_path):
+    """A model saved after StreamCleanStep.record, reopened with datamodels.open and saved again, keeps the value in meta."""
+    model = datamodels.RampModel((1, 3, 4, 4))
+    StreamCleanStep().record(model, sky_mean_minus_median=0.5)
+    model.save(tmp_path / "first.fits")
+    with datamodels.open(tmp_path / "first.fits") as reopened:
+        reopened.save(tmp_path / "second.fits")
+
+    with datamodels.open(tmp_path / "second.fits") as again:
+        assert again.meta.snowblind.stream_clean.sky_mean_minus_median == 0.5
+
+
+@pytest.mark.parametrize("keyword", schema_keywords())
+def test_schema_keyword_is_not_a_jwst_keyword(keyword):
+    """ImageModel.find_fits_keyword on each fits_keyword of META_SCHEMA finds nothing in the jwst schema."""
+    assert datamodels.ImageModel((4, 4)).find_fits_keyword(keyword) == []

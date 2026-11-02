@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- `StreamCleanStep` records what it did to the sky level of each exposure
+  in `meta.snowblind.stream_clean`, which the reset fit carries to the
+  rate file and calwebb_image2 keeps in the `_cal` files:
+  `sky_mean_minus_median`, the masked mean minus the masked median of the
+  background pixels (the shift a scalar median background imposes on the
+  sky), and `sky_change_by_cleaning`, the change of the sky made by the
+  cleaning (negative when lowered), both in DN/s of the flat-fielded sky,
+  averaged over the group differences and integrations, also in the
+  header cards `SKYMNMED` and `SKYCHG`, and with a value per integration.
+  The same numbers are logged. `clean_ramp` takes a `stats` dict that
+  receives them per integration; `sky_shift_and_change` computes them for
+  one difference. A level-matching step can compare its offsets with them.
+- `snowblind.step.META_SCHEMA` defines, once for each step, the names
+  under `meta.snowblind` and the header cards they are also written to;
+  `Step.record` writes them.
+
 ### Changed
 
 - `PersistenceFlagStep`'s `time` defaults to None: each detector then gets
@@ -21,6 +39,16 @@
 - `PersistenceFlagStep` measures `time` from the end of the saturated
   exposure to the middle of the later one, instead of from start to start,
   so an exposure longer than `time` still flags the next one.
+- `ResetRampFitStep` copies into the rate and rateints products all the
+  history entries and the extra primary header cards of the ramp (all but
+  NEXTEND, which counts the ramp file's extensions) and its
+  `meta.snowblind`, not only the snowblind history entries and `S_`
+  cards, as the jwst helpers that build the products leave them out.
+
+### Removed
+
+- `snowblind.step.carry_cal_step`: `ResetRampFitStep` is the only step
+  that builds new models, and copies what it takes itself.
 
 ## [1.2.0] - 2026-11-01
 

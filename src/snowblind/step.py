@@ -17,15 +17,68 @@ header.  `Step.set_cal_step` also writes it as an ``S_`` header card through the
 model's ``extra_fits`` record, which survives copying, saving and reopening.  It also
 adds a HISTORY entry naming the step and the snowblind version, which is kept in both
 the FITS header and the ASDF extension.
+
+What a step measures goes in ``meta.snowblind.<class_alias>``, under the names
+defined once for each step in `META_SCHEMA`, through `Step.record`; an entry with a
+``fits_keyword`` is also written to that header card through ``extra_fits``.  Both
+are kept in the ASDF extension, so they survive copying, saving and reopening, by
+jwst steps as well.  The schema is not added to the models: the jwst steps open and
+save them with their own schemas, which would leave out a card written from it, and a
+card both in the schema and in ``extra_fits`` is written twice.
 """
 import logging
 
 from jwst.stpipe import Step as JwstStep
 
-__all__ = ["Step", "carry_cal_step"]
+__all__ = ["Step", "META_SCHEMA"]
 
 PACKAGE_LOGGER = "snowblind"
 PIPELINE_LOGGER = "stpipe"
+
+# The schema of ``meta.snowblind``: one object per step, by ``class_alias``, with what
+# the step measures.  An entry with a ``fits_keyword`` is also written to that card of
+# the primary header, with its ``title`` (at most 47 characters) as the comment.
+META_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "stream_clean": {
+            "type": "object",
+            "properties": {
+                "unit": {"type": "string", "title": "Unit of the sky numbers"},
+                "sky_mean_minus_median": {
+                    "type": "number",
+                    "title": "stream_clean sky mean minus median [DN/s]",
+                    "description": (
+                        "Masked mean minus masked median of the background pixels of the flat-fielded group "
+                        "differences, averaged over the differences and integrations: the shift a scalar median "
+                        "background imposes on the sky."
+                    ),
+                    "fits_keyword": "SKYMNMED",
+                },
+                "sky_change_by_cleaning": {
+                    "type": "number",
+                    "title": "stream_clean sky change by cleaning [DN/s]",
+                    "description": (
+                        "Mean of the cleaned minus the input group differences over the background pixels, "
+                        "flat-fielded, averaged over the differences and integrations; negative when the cleaning "
+                        "lowered the sky."
+                    ),
+                    "fits_keyword": "SKYCHG",
+                },
+                "sky_mean_minus_median_per_integration": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "title": "sky_mean_minus_median of each integration [DN/s]",
+                },
+                "sky_change_by_cleaning_per_integration": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "title": "sky_change_by_cleaning of each integration [DN/s]",
+                },
+            },
+        },
+    },
+}
 
 
 def _set_card(model, keyword, value, comment):
@@ -37,7 +90,7 @@ def _set_card(model, keyword, value, comment):
         Model to update.
     keyword : str
         FITS keyword, at most 8 characters.
-    value : str
+    value : str or float
         Card value.
     comment : str
         Card comment.
@@ -64,34 +117,6 @@ def _history(model):
     return [entry["description"] for entry in model._asdf.get_history_entries()]
 
 
-def carry_cal_step(source, target):
-    """Copy step status records that ``target`` lacks from ``source``.
-
-    A model made from scratch (as the rate products of ramp fitting are) keeps only the
-    ``meta.cal_step`` entries its schema knows.  This copies the others, with their
-    ``S_`` header cards from ``source.extra_fits`` and the snowblind history entries,
-    and leaves entries ``target`` already has alone.
-
-    Parameters
-    ----------
-    source : DataModel
-        Model holding the step records, e.g. the ramp.
-    target : DataModel
-        Model to add them to.
-    """
-    for key, value in source.meta.cal_step.instance.items():
-        if key not in target.meta.cal_step.instance:
-            setattr(target.meta.cal_step, key, value)
-    for description in _history(source):
-        if description.startswith("snowblind ") and description not in _history(target):
-            target.add_history_entry(description)
-    cards = source._instance.get("extra_fits", {}).get("PRIMARY", {}).get("header", [])
-    present = {card[0] for card in target._instance.get("extra_fits", {}).get("PRIMARY", {}).get("header", [])}
-    for keyword, value, comment in cards:
-        if keyword.startswith("S_") and keyword not in present:
-            _set_card(target, keyword, value, comment)
-
-
 class Step(JwstStep):
     """A jwst step whose package loggers are routed into the stpipe log.
 
@@ -101,6 +126,32 @@ class Step(JwstStep):
 
     fits_keyword = None
     fits_comment = ""
+
+    def record(self, model, **values):
+        """Record what this step measured in ``meta.snowblind.<class_alias>``, and in its header cards.
+
+        Parameters
+        ----------
+        model : DataModel
+            Model to update.
+        **values
+            Each measurement by its name in `META_SCHEMA` for this step: a string,
+            a number or a list of numbers.  One with a ``fits_keyword`` there is
+            also written to that card of the primary header, through
+            ``model.extra_fits``, with the entry's ``title`` as the comment.
+
+        Raises
+        ------
+        KeyError
+            When a name is not in `META_SCHEMA` for this step.
+        """
+        entries = META_SCHEMA["properties"][self.class_alias]["properties"]
+        block = model.meta.instance.setdefault("snowblind", {}).setdefault(self.class_alias, {})
+        for name, value in values.items():
+            entry = entries[name]
+            block[name] = value
+            if "fits_keyword" in entry:
+                _set_card(model, entry["fits_keyword"], value, entry["title"])
 
     def set_cal_step(self, model, status):
         """Record the status of this step in ``meta.cal_step``, the FITS header and the history.
