@@ -1,5 +1,7 @@
 # Algorithms for cleaning JWST data
 
+Read the [documentation](https://mpi-astronomy.github.io/snowblind/).
+
  - `SnowblindStep`: mask cosmic ray showers and snowball halos by growing the actual shape of each contiguous jump-detected region and the ring around its saturated core; works on ramps, rate images and rateints cubes, so it can be applied after the fact; replaces `expand_large_events` in the standard JWST pipeline jump step
  - `JumpPlusStep`: for frame-averaged readouts (NFRAMES > 1), flag the group after a detected jump, which the cosmic ray also corrupts and which the pipeline's two-point jump detection leaves unflagged (though using the ramp fit likelyhood algorithm accounts for this correctly itself); replaces jump step's `after_jump_flag` mechanism; also flag the group before a saturated group as saturated, a conservative superset of the read-pattern check the pipeline's saturation step
  - `PersistenceFlagStep`: flag pixels that saturated in an earlier exposure of the association for a chosen time afterwards
