@@ -1,22 +1,38 @@
 """Write the persistence time of every measured detector into the package, one file per detector.
 
 Reads the ``persistence_<detector>.ecsv`` tables that ``scripts/measure_persistence.py`` writes, fits each
-detector's persistence against the start-to-start delay, and writes ``src/snowblind/data/persistence_<detector>.asdf``
-with ``time``: the delay at which the fit falls to ``--threshold``.  ``PersistenceFlagStep`` uses the detector's time
-when it is given no ``time``, and 2500 s for a detector without a file.
+detector's persistence against the delay from the end of the earlier exposure to the middle of the later one, and
+writes ``src/snowblind/data/persistence_<detector>.asdf``.  ``PersistenceFlagStep`` uses the detector's ``time`` when
+it is given no time, and 2500 s for a detector without a file.
+
+The fit follows the typical saturated star of the detector.  Persistence varies across a detector (with its quantum
+efficiency, as on the similar Euclid NISP detectors) and with each pixel's history of illumination (how long and how
+often it saturated), which the typical star does not show, so ``time`` is chosen long: the delay at which a pixel
+persisting ``--margin`` times more than the typical star falls to ``--threshold``.  The file also holds
+``typical_time``, the delay at which the typical star itself falls to the threshold, for those who would rather flag
+less and pass it, or a time between the two, as ``time``.
 
 The persistence of one pair of exposures (source, target) and one class of source pixels is the table's
-``excess_groups - null_groups``, with the error ``excess_groups_err``.  Only the classes of saturated stars are used
-(saturated with more than 60000 DN of signal, or with no rate), not ``sat 0k-60k``: a pixel flagged SATURATED with
-little signal is mostly a cosmic ray that saturated late in the ramp.  Pairs whose pointing moved by less than
-``--min_shift`` pixels are left out, since a star of the source may then still be on the same pixels.  The fit is
+``excess_groups - null_groups``.  Only the classes of saturated stars are used (saturated with more than 60000 DN of
+signal, or with no rate), not ``sat 0k-60k``: pixels flagged SATURATED with little signal (cosmic rays and snowballs
+that saturated partway through the ramp, and stars just at the saturation level) persist less than the stars at the
+same delay, so the stars set the time.  Pairs whose pointing moved by less than ``--min_shift`` pixels are left out,
+since a star of the source may then still be on the same pixels.
+
+The rows are pooled in bins of delay by their median: a few rows have a null far off (a moved group of the source
+landed on a star of the target), which the median ignores and a mean weighted by the rows' errors does not.  The
+error of a bin's median comes from resampling the source exposures with replacement, since the rows of one source
+share its stars.  The fit, to the bins with at least ``MIN_ROWS`` rows, is
 
     persistence = A (delay / 1000 s)^-alpha
 
 with weights of one over the error squared, the parameter errors scaled by the root of the reduced chi-square when it
-is above one, and ``time = 1000 s (A / threshold)^(1 / alpha)``.  A detector whose fit fails, or gives A or alpha of
-zero or less, gets no file.  A time beyond the longest delay measured is written with ``extrapolated`` set.  The file
-also keeps the pairs pooled in bins of delay (weights of one over the error squared), for reading.
+is above one.  The fit reaches a level at ``1000 s (A / level)^(1 / alpha)``; the bins reach it where they first fall
+below it (log-log interpolation between neighbours).  The decay flattens at long delays, where the fit falls faster
+than the bins, so each time is the longer of the two: ``typical_time`` at the threshold, ``time`` at the threshold over
+the margin.  A detector with fewer than ``MIN_BINS`` such bins, or
+whose fit fails or gives A or alpha of zero or less, gets no file.  A time beyond the longest delay measured is written
+with ``extrapolated`` set.  The bins are kept in the file for reading.
 
 Usage: ``python scripts/package_persistence_defaults.py <measurement dir> --dataset "<programs, exposures>"``
 """
@@ -35,10 +51,16 @@ from snowblind.reset_calib import add_history
 PACKAGE_DIR = os.path.join(os.path.dirname(__file__), "..", "src", "snowblind", "data")
 # the class of SATURATED pixels with little signal, as measure_persistence.py names it
 LATE_SATURATION_CLASS = "sat 0k-60k"
-# delay bins of the pooled table [s], as in measure_persistence.py
-DELAY_EDGES = [0, 150, 300, 600, 1200, 2400, 4800, 9600, 19200, 38400]
-MIN_PAIRS = 10  # fewest (pair, class) rows worth a fit
-MODEL_FORM = "persistence = amplitude * (delay / 1000 s)**-alpha, delay start to start, persistence in DN/s"
+# delay bins [s], from the end of the source to the middle of the target
+DELAY_EDGES = [0, 150, 212, 300, 425, 600, 850, 1200, 1700, 2400, 3400, 4800, 6800, 9600, 13600, 19200, 38400]
+MIN_ROWS = 20  # fewest (pair, class) rows in a bin worth fitting
+MIN_BINS = 4  # fewest bins worth a fit
+N_RESAMPLE = 300  # resamplings of the source exposures for the error of a bin's median
+ERROR_FLOOR = 1e-4  # DN/s, smallest error of a bin, against a bin of a few sources that happen to agree
+MODEL_FORM = (
+    "persistence = amplitude * (delay / 1000 s)**-alpha, delay from the end of the saturated exposure to the middle "
+    "of the later one, persistence in DN/s"
+)
 
 
 def star_rows(table, min_shift):
@@ -55,20 +77,52 @@ def model(delay, amplitude, alpha):
     return amplitude * (delay / 1000.0) ** -alpha
 
 
-def fit(rows):
-    """Fit the decay model to measurement rows; returns a dict, or None when the fit fails or is not a decay."""
-    delay = np.asarray(rows["delay_starts"], dtype=float)
+def median_and_error(values, sources, rng):
+    """Median of ``values`` and its error from resampling the source exposures (``sources``) with replacement."""
+    _, inverse = np.unique(sources, return_inverse=True)
+    members = [np.nonzero(inverse == k)[0] for k in range(inverse.max() + 1)]
+    medians = []
+    for _ in range(N_RESAMPLE):
+        pick = rng.integers(0, len(members), len(members))
+        medians.append(np.median(values[np.concatenate([members[k] for k in pick])]))
+    return float(np.median(values)), float(1.4826 * np.median(np.abs(np.array(medians) - np.median(medians))))
+
+
+def pooled(rows, rng):
+    """The rows pooled per delay bin: lists of bin edges, median delay, persistence, its error, rows and sources."""
+    delay = np.asarray(rows["delay_mid"], dtype=float)
     persistence = np.asarray(rows["excess_groups"] - rows["null_groups"], dtype=float)
-    error = np.asarray(rows["excess_groups_err"], dtype=float)
+    sources = np.asarray(rows["source"]).astype(str)
+    out = {"delay_lo": [], "delay_hi": [], "delay_median": [], "persistence": [], "error": [], "n_rows": [],
+           "n_sources": []}
+    for low, high in zip(DELAY_EDGES[:-1], DELAY_EDGES[1:]):
+        inside = (delay >= low) & (delay < high)
+        if inside.sum() >= MIN_ROWS:
+            value, error = median_and_error(persistence[inside], sources[inside], rng)
+            out["delay_lo"].append(float(low))
+            out["delay_hi"].append(float(high))
+            out["delay_median"].append(float(np.median(delay[inside])))
+            out["persistence"].append(value)
+            out["error"].append(max(error, ERROR_FLOOR))
+            out["n_rows"].append(int(inside.sum()))
+            out["n_sources"].append(len(set(sources[inside])))
+    return out
+
+
+def fit(bins):
+    """Fit the decay model to the pooled bins; returns a dict, or None when the fit fails or is not a decay."""
+    delay = np.array(bins["delay_median"])
+    persistence = np.array(bins["persistence"])
+    error = np.array(bins["error"])
     try:
         (amplitude, alpha), covariance = curve_fit(
-            model, delay, persistence, p0=(0.03, 1.0), sigma=error, absolute_sigma=True, maxfev=20000
+            model, delay, persistence, p0=(0.01, 1.0), sigma=error, absolute_sigma=True, maxfev=20000
         )
     except (RuntimeError, ValueError):
         return None
     if not (amplitude > 0 and alpha > 0):
         return None
-    reduced_chisq = float(np.sum(((persistence - model(delay, amplitude, alpha)) / error) ** 2) / (len(rows) - 2))
+    reduced_chisq = float(np.sum(((persistence - model(delay, amplitude, alpha)) / error) ** 2) / (len(delay) - 2))
     amplitude_error, alpha_error = np.sqrt(np.diag(covariance)) * np.sqrt(max(reduced_chisq, 1.0))
     return {
         "amplitude": float(amplitude),
@@ -76,25 +130,28 @@ def fit(rows):
         "alpha": float(alpha),
         "alpha_error": float(alpha_error),
         "reduced_chisq": reduced_chisq,
-        "n_rows": int(len(rows)),
+        "n_bins": int(len(delay)),
     }
 
 
-def pooled(rows):
-    """The rows pooled per delay bin: lists of bin edges, persistence, error and number of rows."""
-    delay = np.asarray(rows["delay_starts"], dtype=float)
-    persistence = np.asarray(rows["excess_groups"] - rows["null_groups"], dtype=float)
-    weight = 1.0 / np.asarray(rows["excess_groups_err"], dtype=float) ** 2
-    out = {"delay_lo": [], "delay_hi": [], "persistence": [], "error": [], "n_rows": []}
-    for low, high in zip(DELAY_EDGES[:-1], DELAY_EDGES[1:]):
-        inside = (delay >= low) & (delay < high)
-        if inside.any():
-            out["delay_lo"].append(float(low))
-            out["delay_hi"].append(float(high))
-            out["persistence"].append(float(np.sum(weight[inside] * persistence[inside]) / np.sum(weight[inside])))
-            out["error"].append(float(1.0 / np.sqrt(np.sum(weight[inside]))))
-            out["n_rows"].append(int(inside.sum()))
-    return out
+def crossing(bins, threshold):
+    """Delay at which the pooled bins first fall below ``threshold``, interpolated in log-log; NaN if they do not."""
+    delay = np.array(bins["delay_median"])
+    persistence = np.array(bins["persistence"])
+    below = np.nonzero(persistence < threshold)[0]
+    if not len(below) or below[0] == 0:
+        return np.nan
+    k = below[0]
+    x0, x1 = np.log(delay[k - 1]), np.log(delay[k])
+    y0, y1 = np.log(persistence[k - 1]), np.log(max(persistence[k], 1e-6))
+    return float(np.exp(x0 + (np.log(threshold) - y0) * (x1 - x0) / (y1 - y0)))
+
+
+def delay_at(result, bins, level):
+    """The delay at which the fit and the bins reach ``level``: the fit's, the bins', and the longer of the two."""
+    from_fit = 1000.0 * (result["amplitude"] / level) ** (1.0 / result["alpha"])
+    from_bins = crossing(bins, level)
+    return from_fit, from_bins, float(np.nanmax([from_fit, from_bins]))
 
 
 def main(argv=None):
@@ -103,6 +160,9 @@ def main(argv=None):
     parser.add_argument("measurement_dir", help="directory holding persistence_<detector>.ecsv tables")
     parser.add_argument("--dataset", required=True, help="what was measured, for the provenance")
     parser.add_argument("--threshold", type=float, default=0.005, help="persistence the time is set at [DN/s]")
+    parser.add_argument(
+        "--margin", type=float, default=2.0, help="how many times the typical star's persistence the time is set for"
+    )
     parser.add_argument("--min_shift", type=float, default=100.0, help="pointing shift a pair needs [pix]")
     parser.add_argument("--detectors", nargs="*", help="detectors to package, e.g. nrca1 nrca3 (default: all)")
     parser.add_argument("--out_dir", default=os.path.normpath(PACKAGE_DIR), help="where the per-detector files go")
@@ -121,21 +181,31 @@ def main(argv=None):
             continue
         detector = str(table["detector"][0]).upper()
         rows = star_rows(table, args.min_shift)
-        result = fit(rows) if len(rows) >= MIN_PAIRS else None
+        # the same resamplings for every run on the same tables
+        bins = pooled(rows, np.random.default_rng(0))
+        result = fit(bins) if len(bins["persistence"]) >= MIN_BINS else None
         if result is None:
-            print(f"{detector}: {len(rows)} rows, no decay fitted; no file written (the step uses 2500 s)")
+            print(f"{detector}: {len(bins['persistence'])} bins, no decay fitted; no file written (the step uses 2500 s)")
             continue
-        time = 1000.0 * (result["amplitude"] / args.threshold) ** (1.0 / result["alpha"])
-        longest = float(np.max(rows["delay_starts"]))
+        typical_fit, typical_bins, typical_time = delay_at(result, bins, args.threshold)
+        time_fit, time_bins, time = delay_at(result, bins, args.threshold / args.margin)
+        longest = float(np.max(rows["delay_mid"]))
         exposures = sorted(str(name) for name in set(table["source"]) | set(table["target"]))
         entry = {
             "detector": detector,
             "time": float(time),
+            "typical_time": float(typical_time),
+            "margin": float(args.margin),
             "threshold": float(args.threshold),
             "extrapolated": bool(time > longest),
             "longest_delay": longest,
             "model": {"form": MODEL_FORM, **result},
-            "measured": pooled(rows),
+            # the delays [s] of the fit and of the bins (NaN when they do not fall below it) behind each time
+            "estimates": {
+                "typical_time_fit": typical_fit, "typical_time_bins": typical_bins,
+                "time_fit": time_fit, "time_bins": time_bins,
+            },
+            "measured": bins,
             "provenance": {
                 "dataset": args.dataset,
                 "n_exposures": len(exposures),
@@ -143,12 +213,15 @@ def main(argv=None):
                 "last_exposure": exposures[-1],
                 "classes": sorted(str(cls) for cls in set(rows["cls"])),
                 "min_shift_pix": float(args.min_shift),
+                "pooling": "median per delay bin, error from resampling the source exposures",
                 "measurement": "scripts/measure_persistence.py",
                 "table": os.path.basename(path),
             },
             "description": (
-                "Persistence time of the detector, used by PersistenceFlagStep when it is given no time: the "
-                "start-to-start delay at which the fitted persistence of saturated stars falls to the threshold"
+                "Persistence time of the detector, used by PersistenceFlagStep when it is given no time: the delay "
+                "from the end of a saturated exposure to the middle of a later one at which a pixel persisting margin "
+                "times more than the detector's typical saturated star falls to the threshold; typical_time is the "
+                "delay at which the typical star itself does; each the longer of the fit's and the measured bins'"
             ),
             "generated": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         }
@@ -160,8 +233,10 @@ def main(argv=None):
         note = f", beyond the longest delay measured ({longest:.0f} s)" if time > longest else ""
         print(
             f"{detector}: A {result['amplitude']:.4f} +- {result['amplitude_error']:.4f} DN/s, alpha "
-            f"{result['alpha']:.2f} +- {result['alpha_error']:.2f}, reduced chi-square {result['reduced_chisq']:.2f}; "
-            f"time {time:.0f} s at {args.threshold:g} DN/s{note} -> {out}"
+            f"{result['alpha']:.2f} +- {result['alpha_error']:.2f}, reduced chi-square {result['reduced_chisq']:.2f} "
+            f"over {result['n_bins']} bins; typical star at {args.threshold:g} DN/s after {typical_time:.0f} s (fit "
+            f"{typical_fit:.0f}, bins {typical_bins:.0f}), {args.margin:g} times that persistence after {time:.0f} s "
+            f"(fit {time_fit:.0f}, bins {time_bins:.0f}){note} -> {out}"
         )
     print(f"wrote {written} files")
 

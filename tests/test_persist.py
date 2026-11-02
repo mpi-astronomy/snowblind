@@ -1,4 +1,5 @@
 import json
+from importlib.resources import files
 
 import asdf
 import numpy as np
@@ -14,6 +15,9 @@ SATURATED = datamodels.dqflags.pixel["SATURATED"]
 PERSISTENCE = datamodels.dqflags.pixel["PERSISTENCE"]
 DO_NOT_USE = datamodels.dqflags.pixel["DO_NOT_USE"]
 GOOD = datamodels.dqflags.pixel["GOOD"]
+NIRCAM_IMAGING_DETECTORS = [
+    "NRCA1", "NRCA2", "NRCA3", "NRCA4", "NRCALONG", "NRCB1", "NRCB2", "NRCB3", "NRCB4", "NRCBLONG"
+]
 
 
 @pytest.fixture(autouse=True)
@@ -32,13 +36,15 @@ def write_packaged_time(folder, detector, seconds):
     asdf.AsdfFile({"detector": detector, "time": seconds}).write_to(path)
 
 
-def make_image(i, detector="NRCALONG", start_time=60122.0, shape=(10, 10)):
-    """An image model of ``shape`` (10x10 by default) with an empty dq, named as exposure ``i`` of ``detector``."""
+def make_image(i, detector="NRCALONG", start_time=60122.0, shape=(10, 10), duration=0.0):
+    """An image model of ``shape`` (10x10 by default) with an empty dq, named as exposure ``i`` of ``detector``,
+    lasting ``duration`` seconds (0 by default, so that its start, middle and end coincide)."""
     image = datamodels.ImageModel(shape)
     image.dq = np.zeros(shape, dtype=np.uint32)
     image.meta.instrument.detector = detector
     image.meta.filename = f"jw01125002001_03101_0000{i}_{detector.lower()}_cal.fits"
     image.meta.exposure.start_time = start_time
+    image.meta.exposure.end_time = start_time + duration / 86400.0
     return image
 
 
@@ -88,6 +94,7 @@ def test_flags_pixels_saturated_in_earlier_exposures():
         image.meta.filename = f"jw01125002001_03101_0000{i}_nrcalong_cal.fits"
 
         image.meta.exposure.start_time = start_times[i]
+        image.meta.exposure.end_time = start_times[i]
 
     # Drop saturated pixels into the images
     images[0].dq[2, 2] = SATURATED
@@ -114,6 +121,30 @@ def test_lone_saturated_pixel_flagged_in_later_exposure():
     results = PersistenceFlagStep.call(datamodels.ModelContainer([first, later]))
 
     assert results[1].dq[5, 5] == PERSISTENCE | DO_NOT_USE
+
+
+def test_exposure_longer_than_time_flags_the_next_one():
+    """PersistenceFlagStep.call with time=500 on a 1000 s image saturated at (2, 2) and a 600 s image starting 100 s
+    after it ends, so with its middle 400 s after that end: the later image is flagged there."""
+    first = make_image(1, start_time=60122.0, duration=1000.0)
+    first.dq[2, 2] = SATURATED
+    later = make_image(2, start_time=60122.0 + 1100.0 / 86400.0, duration=600.0)
+
+    results = PersistenceFlagStep.call(datamodels.ModelContainer([first, later]), time=500.0)
+
+    assert results[1].dq[2, 2] == PERSISTENCE | DO_NOT_USE
+
+
+def test_later_exposure_with_its_middle_beyond_time_not_flagged():
+    """PersistenceFlagStep.call with time=500 on a 100 s image saturated at (2, 2) and a 1000 s image starting 100 s
+    after it ends, so with its middle 600 s after that end: the later image stays GOOD there."""
+    first = make_image(1, start_time=60122.0, duration=100.0)
+    first.dq[2, 2] = SATURATED
+    later = make_image(2, start_time=60122.0 + 200.0 / 86400.0, duration=1000.0)
+
+    results = PersistenceFlagStep.call(datamodels.ModelContainer([first, later]), time=500.0)
+
+    assert results[1].dq[2, 2] == GOOD
 
 
 def test_other_detector_not_flagged():
@@ -332,6 +363,14 @@ def test_packaged_time_reads_the_detectors_file(packaged_times):
 def test_packaged_time_without_a_file_is_none():
     """packaged_time('NRCALONG') with no packaged file for the detector returns None."""
     assert persist.packaged_time("NRCALONG") is None
+
+
+@pytest.mark.parametrize("detector", NIRCAM_IMAGING_DETECTORS)
+def test_package_holds_a_time_for_each_nircam_detector(detector, monkeypatch):
+    """packaged_time of each NIRCam imaging detector, from the files packaged with snowblind, returns a time above 0."""
+    monkeypatch.setattr(persist, "PACKAGED_DIR", files("snowblind").joinpath("data"))
+
+    assert persist.packaged_time(detector) > 0
 
 
 def test_packaged_time_flags_a_later_image_within_it(packaged_times):

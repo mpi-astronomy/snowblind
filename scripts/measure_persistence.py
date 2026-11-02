@@ -15,19 +15,22 @@ pairs that moved by more than --min_shift pixels.
 
 A pixel counts as saturated when it has SATURATED in the DQ or its signal (rate times integration time) is above the
 top unsaturated class edge: before jwst 2.0 ramp fitting set SATURATED only where every group saturated, so classing
-by signal gives the same classes for old and new products.  A SATURATED pixel with little signal is mostly a cosmic
-ray that saturated late in the ramp and has a class of its own ("sat 0k-60k").
+by signal gives the same classes for old and new products.  A SATURATED pixel with little signal (a cosmic ray or
+snowball that saturated partway through the ramp, or a star just at the saturation level) has a class of its own
+("sat 0k-60k").
 
 The excess of a class is its median residual minus the median residual of the target's other usable pixels (those in
-no class of the source), and the summary bins it by the time from the start of the source to the start of the target,
-the interval PersistenceFlagStep compares with its ``time``.  Neighbouring pixels of one source land together on one
-patch of the target, so they are not independent: each row also has the excess measured over sources (the connected
-groups of a class's pixels, 8-connected): the median over groups of their mean residual, minus the median residual of
-the rest, and its error from the scatter of the group means (1.25 times their robust sigma over the root of their
-number).  The rest of a crowded target is not a fair reference (the wings of its own stars, the persistence of other
+no class of the source), and the summary bins it by the time from the end of the source to the middle of the target
+(``delay_mid``), the interval PersistenceFlagStep compares with its ``time``.  Neighbouring pixels of one source land
+together on one patch of the target, so they are not independent: each row also has the excess measured over sources
+(the connected groups of a class's pixels, 8-connected): the median over groups of their mean residual, minus the
+median residual of the rest, and its error from the scatter of the group means (1.25 times their robust sigma over the
+root of their number).  The rest of a crowded target is not a fair reference (the wings of its own stars, the persistence of other
 earlier exposures), so the same group statistic is also measured with the source's groups moved to unrelated places
 in the target (shifted by each of NULL_SHIFTS, leaving out the source's own classed pixels), and the mean of those is
-the null, "null_groups"; "excess_groups - null_groups" is the persistence of the class.
+the null, "null_groups"; "excess_groups - null_groups" is the persistence of the class.  A few nulls are far off (a
+moved group landing on a star of the target), so the summary takes the median of the pairs of a bin, with its error
+from resampling the source exposures, whose pairs share their stars.
 
 Each detector runs in a Python process of its own (this script with --one) and writes
 <output_dir>/persistence_<detector>.ecsv, one row per (source, target, class), and its progress to
@@ -61,7 +64,7 @@ NOT_SKY = (
     | pixel["TELEGRAPH"] | pixel["NO_SAT_CHECK"] | pixel["UNRELIABLE_DARK"] | pixel["UNRELIABLE_SLOPE"]
     | pixel["OTHER_BAD_PIXEL"]
 )
-PIXEL_SCALE = {"short": 0.0311, "long": 0.0630}  # arcsec per pixel
+PIXEL_SCALE = {"short": 0.0311, "long": 0.0630, "NIS": 0.0656}  # arcsec per pixel: NIRCam short and long wave, NIRISS
 # signal collected in an integration [DN]: class edges for pixels that did not saturate, then for those that did
 UNSATURATED_EDGES = [2e3, 5e3, 1e4, 2e4, 3e4, 4e4, 6e4]
 SATURATED_EDGES = [0, 6e4, 1e5, 3e5, 1e6, np.inf]
@@ -151,7 +154,7 @@ def measure_detector(paths, max_delay, log):
     """All (source, target, class) rows of one detector's exposures."""
     infos = sorted((exposure_info(p) for p in paths), key=lambda info: info["start"])
     detector = infos[0]["detector"]
-    scale = PIXEL_SCALE["long" if detector.endswith("LONG") else "short"]
+    scale = PIXEL_SCALE.get(detector, PIXEL_SCALE["long" if detector.endswith("LONG") else "short"])
     print(f"{detector}: {len(infos)} exposures", file=log, flush=True)
 
     rows = []
@@ -234,26 +237,37 @@ def measure_detector(paths, max_delay, log):
     return rows
 
 
+def median_and_error(values, sources, rng, resamplings=300):
+    """Median of ``values`` and its error from resampling the source exposures (``sources``) with replacement."""
+    _, inverse = np.unique(sources, return_inverse=True)
+    members = [np.nonzero(inverse == k)[0] for k in range(inverse.max() + 1)]
+    medians = []
+    for _ in range(resamplings):
+        pick = rng.integers(0, len(members), len(members))
+        medians.append(np.median(values[np.concatenate([members[k] for k in pick])]))
+    return float(np.median(values)), float(robust_sigma(np.array(medians)))
+
+
 def summary(table, min_shift):
     """Per detector, class and delay bin: the persistence over the pairs that moved, with its error.
 
-    The persistence of a pair is ``excess_groups - null_groups``; the pairs of a bin are combined with weights of one
-    over ``excess_groups_err`` squared.
+    The persistence of a pair is ``excess_groups - null_groups``; a bin, of ``delay_mid``, holds the median over its
+    pairs, with its error from resampling the source exposures.
     """
     table = table[(table["shift_pix"] > min_shift) & np.isfinite(table["null_groups"]) & (table["excess_groups_err"] > 0)]
+    rng = np.random.default_rng(0)
     rows = []
     groups = defaultdict(list)
     for i, row in enumerate(table):
-        k = np.searchsorted(DELAY_EDGES, row["delay_starts"]) - 1
+        k = np.searchsorted(DELAY_EDGES, row["delay_mid"]) - 1
         groups[(row["detector"], row["cls"], k)].append(i)
     for (detector, cls, k), index in sorted(groups.items()):
         part = table[index]
-        weight = 1.0 / np.asarray(part["excess_groups_err"], dtype=float) ** 2
         net = np.asarray(part["excess_groups"] - part["null_groups"], dtype=float)
+        persistence, error = median_and_error(net, np.asarray(part["source"]).astype(str), rng)
         rows.append({
             "detector": detector, "cls": cls, "delay_lo": DELAY_EDGES[k], "delay_hi": DELAY_EDGES[k + 1],
-            "pairs": len(part), "ngroups": int(part["ngroups"].sum()),
-            "persistence": float(np.sum(weight * net) / np.sum(weight)), "error": float(1.0 / np.sqrt(np.sum(weight))),
+            "pairs": len(part), "ngroups": int(part["ngroups"].sum()), "persistence": persistence, "error": error,
             "noise": float(np.median(part["noise_target"])),
         })
     return Table(rows=rows) if rows else Table()
@@ -305,7 +319,10 @@ if __name__ == "__main__":
 
     paths = [os.path.join(args.output_dir, f"persistence_{detector}.ecsv") for detector in detectors]
     tables = [table for table in (Table.read(path) for path in paths if os.path.exists(path)) if len(table)]
-    result = summary(vstack(tables), args.min_shift)
+    result = summary(vstack(tables), args.min_shift) if tables else Table()
+    if len(result) == 0:
+        print(f"no summary: no measured pair of exposures moved by more than {args.min_shift:g} pixels", flush=True)
+        sys.exit(0)
     result.write(os.path.join(args.output_dir, "persistence_summary.ecsv"), overwrite=True)
     for column in ("persistence", "error", "noise"):
         result[column].format = ".4f"

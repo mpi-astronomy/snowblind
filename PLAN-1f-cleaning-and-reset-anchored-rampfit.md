@@ -5068,3 +5068,148 @@ times at 0.005 to 0.01 DN/s. So these data rank the detectors but do
 not set the times. That needs a sparser field, longer sequences and
 deeper targets: the NEXUS rate files (700 exposures per short-wave
 detector, delays of hours) run through the same script on an astronode.
+
+### 2026-11-02: persistence times from the NEXUS field
+
+Data: the NEXUS `_rate` files (programs 5105 and 9263) from the
+2026-11-01 run of snowblind_detector1, 700 exposures per short-wave
+detector and 412 per long-wave detector (the long-wave grism exposures
+are not among them), SHALLOW4 (311 s) and MEDIUM8 (623 s). Delays from
+the end of one exposure to the middle of a later one run from 150 to
+20500 s. `scripts/measure_persistence.py` ran on astronode-13 in 35
+minutes (about 2 s per exposure); the tables are in
+`results/2026-11-02_persistence_nexus/`. The per-pixel noise of a target
+is 0.007 to 0.019 DN/s (short wave) and 0.015 to 0.055 DN/s (long wave),
+ten times below the 6154 exposures. A test on one visit of NRCA3 first:
+the 2k-5k DN class, which should barely persist, gave 0.001 DN/s at
+every delay, so this field allows a floor well below 0.005 DN/s.
+
+Two changes from the 6154 entry, both now in the scripts:
+
+1. Pooling by median. With weights of one over the error squared, a few
+   pairs took over their bins. In NRCB3's 60k-100k DN class at
+   9600-19200 s, one pair whose null was 3.55 DN/s (one of the two
+   shifted copies of a three-star source landed on a star of the
+   target, and the row's error does not include the null's scatter)
+   carried the bin to -0.032 +- 0.0001 DN/s; the median of its 403 pairs
+   is +0.0012. A bin is now the median of its pairs, and its error comes
+   from resampling the source exposures with replacement (300 times),
+   since the pairs of one source share its stars.
+2. Delay from the end of the source to the middle of the target. Against
+   the start-to-start delay, the 425-600 s bin sat below the 600-850 s
+   bin on several detectors (NRCA1 0.023 then 0.033 DN/s, NRCB4 0.036
+   then 0.060): a short source ends long before the next exposure
+   starts, a long one just before. Persistence decays from the end of
+   the saturated exposure, and the rate of the target averages it over
+   the target, which its value at the middle approximates (within 2% at
+   the delays where the times fall, for alpha 1.3 and a 600 s target).
+   Against this delay every curve falls steadily. PersistenceFlagStep
+   now uses it, so an exposure longer than `time` still flags the next.
+
+Saturated stars (every saturated class but 0k-60k), median per bin, in
+mDN/s, against the delay from the end of the source to the middle of the
+target:
+
+| detector | 300-425 s | 600-850 s | 1200-1700 s | 2400-3400 s | 4800-6800 s | 9600-13600 s |
+|---|---|---|---|---|---|---|
+| NRCA1 | 40.9 +- 1.0 | 9.7 +- 1.1 | 4.6 +- 0.6 | 1.6 +- 0.3 | 1.3 +- 0.2 | 0.5 +- 0.2 |
+| NRCA2 | 40.8 +- 2.2 | 12.2 +- 1.0 | 4.2 +- 1.0 | 1.6 +- 0.4 | 1.2 +- 0.2 | 0.2 +- 0.2 |
+| NRCA3 | 84.8 +- 3.4 | 42.8 +- 3.3 | 19.0 +- 1.1 | 7.1 +- 0.8 | 4.3 +- 0.4 | 2.4 +- 0.3 |
+| NRCA4 | 34.2 +- 2.3 | 9.3 +- 0.7 | 5.1 +- 0.5 | 2.4 +- 0.4 | 1.2 +- 0.2 | 0.6 +- 0.2 |
+| NRCALONG | 31.5 +- 2.3 | 20.0 +- 3.6 | 10.2 +- 2.6 | 4.6 +- 0.7 | 3.4 +- 0.7 | 2.3 +- 0.5 |
+| NRCB1 | 38.8 +- 1.4 | 9.7 +- 1.7 | 4.7 +- 0.2 | 1.1 +- 0.6 | 0.8 +- 0.2 | 0.4 +- 0.2 |
+| NRCB2 | 52.6 +- 4.5 | 18.3 +- 4.1 | 7.6 +- 1.1 | 3.9 +- 0.3 | 2.1 +- 0.2 | 0.7 +- 0.4 |
+| NRCB3 | 68.3 +- 3.5 | 27.2 +- 3.4 | 11.3 +- 1.1 | 3.9 +- 0.5 | 2.8 +- 0.5 | 1.5 +- 0.4 |
+| NRCB4 | 73.2 +- 6.0 | 27.6 +- 8.4 | 15.9 +- 2.4 | 6.5 +- 0.8 | 4.4 +- 0.4 | 2.6 +- 0.3 |
+| NRCBLONG | 18.6 +- 1.6 | 9.8 +- 3.4 | 3.0 +- 0.8 | 0.8 +- 0.3 | 0.7 +- 0.5 | 0.1 +- 0.3 |
+
+The power law persistence = A (delay / 1000 s)^-alpha fitted to the 14
+bins from 212 to 38400 s (each with at least 20 pairs). "Typical" is
+the delay at which the median star falls to 0.005 DN/s, by the fit and
+by the bins themselves (where they first fall below it, log-log
+interpolation between neighbours). "Packaged" is the time now in the
+package: the delay at which twice the median star's persistence falls
+to 0.005 DN/s (the median star at 0.0025 DN/s), the longer of the
+fit's and the bins'. "Start to start" is the typical time by the fit
+from the same median pooling against the old delay, for comparison:
+
+| detector | A (mDN/s) | alpha | reduced chi-square | typical, fit | typical, bins | packaged | start to start |
+|---|---|---|---|---|---|---|---|
+| NRCA1 | 7.9 +- 1.1 | 1.50 +- 0.17 | 19.0 | 1350 s | 1364 s | 2141 s | 1570 s |
+| NRCA2 | 9.1 +- 0.6 | 1.45 +- 0.05 | 2.4 | 1506 s | 1347 s | 2428 s | 1810 s |
+| NRCA3 | 29.8 +- 0.7 | 1.14 +- 0.02 | 1.4 | 4770 s | 4720 s | 10502 s | 5100 s |
+| NRCA4 | 8.1 +- 0.5 | 1.23 +- 0.07 | 4.0 | 1484 s | 1467 s | 2931 s | 1790 s |
+| NRCALONG | 16.9 +- 1.0 | 0.95 +- 0.05 | 2.6 | 3575 s | 2754 s | 9563 s | 3310 s |
+| NRCB1 | 7.7 +- 0.6 | 1.50 +- 0.09 | 6.8 | 1340 s | 1019 s | 2129 s | 1530 s |
+| NRCB2 | 14.5 +- 0.3 | 1.21 +- 0.02 | 1.2 | 2422 s | 2271 s | 4571 s | 2420 s |
+| NRCB3 | 20.3 +- 0.9 | 1.27 +- 0.04 | 2.7 | 3006 s | 2663 s | 6074 s | 3350 s |
+| NRCB4 | 25.7 +- 1.1 | 1.03 +- 0.03 | 1.5 | 4939 s | 4859 s | 12006 s | 5140 s |
+| NRCBLONG | 6.1 +- 0.5 | 1.46 +- 0.09 | 1.7 | 1145 s | 1144 s | 2250 s | 1480 s |
+
+Why twice (James, 2026-11-02): persistence varies across a detector,
+likely with its quantum efficiency (as seen on the similar Euclid NISP
+detectors), and with each pixel's history of illumination, how long and
+how often it saturated; the median star shows neither. So the packaged
+times flag more than the typical star needs, and the files keep
+`typical_time` (the longer of the two typical columns) for those who
+would rather flag less. At the median star's 0.0025 DN/s the decay has
+flattened, so the bins give the longer delay on seven of the ten
+detectors (by up to 24%, NRCB4 12006 against 9710 s from the fit).
+
+Reading:
+
+- Every time lies inside the delays measured (up to 20500 s), so none
+  is extrapolated. The typical times against the old 2500 s default:
+  shorter on NRCA1, NRCA2, NRCA4, NRCB1 and NRCBLONG (1150 to 1500 s),
+  about the same on NRCB2, longer on NRCB3 and NRCALONG (3000 to 3600
+  s) and twice as long on NRCA3 and NRCB4 (4800 to 4900 s). The ranking
+  matches 6154, whose extrapolated 3519 and 4169 s for NRCA3 and NRCB4
+  were short. The packaged times are 2100 to 2900 s on NRCA1, NRCA2,
+  NRCA4, NRCB1 and NRCBLONG, 4600 to 6100 s on NRCB2 and NRCB3, and
+  9600 to 12000 s on NRCALONG, NRCA3 and NRCB4. The flags cover only
+  the pixels that saturated, a median of 240 per short-wave exposure
+  and 700 per long-wave exposure (0.006% and 0.017% of the detector), so
+  flagging longer costs little.
+- Where the typical fit and bins differ (NRCALONG, NRCB1, NRCA2) the
+  bins flatten near 0.005 DN/s (NRCB1: 0.0049 at 1200-1700 s, 0.0047
+  at 1700-2400 s), so the crossing is poorly defined.
+- NRCA1's chi-square of 19 comes from two bins at almost the same delay
+  (medians 408 and 435 s) at 0.041 and 0.020 DN/s, so the delay is not
+  all that matters. By the readout of the source, at 300-600 s stars
+  from MEDIUM8 (623 s) exposures persist 1.1 to 1.9 times more than
+  from SHALLOW4 (311 s) exposures (NRCA1 0.042 against 0.023, NRCA3
+  0.087 against 0.079, NRCB4 0.077 against 0.049 DN/s); near the times,
+  the two differ by up to a factor of 2 either way. How long a pixel
+  stayed saturated matters, so exposures much longer than these may
+  persist beyond the packaged times.
+- SATURATED pixels with less than 60000 DN of signal (cosmic rays and
+  snowballs that saturated partway through the ramp, stars just at the
+  saturation level) persist clearly but less than the stars: 0.005 DN/s
+  at 400 to 550 s on NRCA1, NRCA2, NRCA4 and NRCB1, 640 to 770 s on the
+  long-wave detectors, 1100 to 1270 s on NRCB2 and NRCB3, and 1800 s on
+  NRCA3 and NRCB4. That is well inside each detector's star time, which
+  covers them; they stay out of the fit.
+- Unsaturated pixels persist too (for issue #13), reaching 0.005 DN/s
+  at: 2k-5k DN, under 400 s; 5k-10k DN, under 650 s (NRCA3 900 to 1000
+  s); 10k-20k DN, 280 to 850 s (NRCA3 1100 to 1260 s); 20k-30k DN, 460
+  to 1570 s (NRCA3 2000 to 2100 s). The 30k-40k and 40k-60k DN classes
+  have 1 to 60 pairs per bin, too few for a time: each pair needs 20
+  pixels of a class, and the ring of such pixels around a star is
+  small. Pooling the stars of all pairs of a bin would measure them.
+- NRCALONG's faintest class (2k-5k DN) sits at 0.004 to 0.006 DN/s from
+  200 to 2400 s and 0.002 to 0.003 DN/s out to 20000 s, which is not
+  how persistence decays (NRCBLONG: 0.0005 to 0.001 DN/s after 3000 s).
+  The same offset under its star curve would lengthen its time, and it
+  has the largest gap between fit and bins. The cause is unknown; a
+  check: measure the bright pixels of later exposures in earlier ones,
+  where persistence cannot be.
+- Flagging on the ramp (a future step in Detector1 on `_uncal` or
+  `_jump` data) can use the same times: the fitted curve is the
+  persistence rate against the time since the saturated exposure ended,
+  so such a step would flag each group whose time since that end is
+  below the detector's time. It would also know how long each pixel
+  stayed saturated, which the readout dependence above says matters.
+
+Packaged with `python scripts/package_persistence_defaults.py
+results/2026-11-02_persistence_nexus --dataset "..."` into
+`src/snowblind/data/persistence_<detector>.asdf`.

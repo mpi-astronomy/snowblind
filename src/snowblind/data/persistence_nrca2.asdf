@@ -1,0 +1,71 @@
+#ASDF 1.0.0
+#ASDF_STANDARD 1.6.0
+%YAML 1.1
+%TAG ! tag:stsci.edu:asdf/
+--- !core/asdf-1.1.0
+asdf_library: !core/software-1.0.0 {author: The ASDF Developers, homepage: 'http://github.com/asdf-format/asdf',
+  name: asdf, version: 5.4.0}
+history:
+  entries:
+  - !core/history_entry-1.0.0
+    description: Persistence time of NRCA2 fitted from persistence_nrca2.ecsv
+    software: !core/software-1.0.0 {author: James E. Davies, homepage: 'https://github.com/mpi-astronomy/snowblind',
+      name: snowblind, version: 1.2.1.dev1+ga7967b3ff.d20261102}
+    time: 2026-11-02 15:19:17+00:00
+  extensions:
+  - !core/extension_metadata-1.0.0
+    extension_class: asdf.extension._manifest.ManifestExtension
+    extension_uri: asdf://asdf-format.org/core/extensions/core-1.6.0
+    manifest_software: !core/software-1.0.0 {name: asdf_standard, version: 1.5.0}
+    software: !core/software-1.0.0 {name: asdf, version: 5.4.0}
+description: 'Persistence time of the detector, used by PersistenceFlagStep when it
+  is given no time: the delay from the end of a saturated exposure to the middle of
+  a later one at which a pixel persisting margin times more than the detector''s typical
+  saturated star falls to the threshold; typical_time is the delay at which the typical
+  star itself does; each the longer of the fit''s and the measured bins'''
+detector: NRCA2
+estimates: {time_bins: 2263.647928244583, time_fit: 2427.8098684658366, typical_time_bins: 1346.7177348191929,
+  typical_time_fit: 1506.0723658050686}
+extrapolated: false
+generated: '2026-11-02T15:19:17+00:00'
+longest_delay: 20509.58899974823
+margin: 2.0
+measured:
+  delay_hi: [300.0, 425.0, 600.0, 850.0, 1200.0, 1700.0, 2400.0, 3400.0, 4800.0, 6800.0,
+    9600.0, 13600.0, 19200.0, 38400.0]
+  delay_lo: [212.0, 300.0, 425.0, 600.0, 850.0, 1200.0, 1700.0, 2400.0, 3400.0, 4800.0,
+    6800.0, 9600.0, 13600.0, 19200.0]
+  delay_median: [252.31650018692017, 407.9925003051758, 467.10100078582764, 775.7222499847412,
+    1079.0679998397827, 1446.5559997558594, 2119.8990001678467, 2985.013500213623,
+    4049.815999984741, 5674.327000617981, 8213.269000530243, 11529.680998802185, 16280.034000396729,
+    19709.158499717712]
+  error: [0.002232498921254483, 0.0021602907768287667, 0.0024461937448149555, 0.0010223072063791393,
+    0.001327185306477475, 0.001024703914427051, 0.0004937137358190874, 0.00038036987389169775,
+    0.00029156660016773137, 0.0002098020648969792, 0.0001530850816980696, 0.0002112345972497724,
+    0.0002547901732381434, 0.0004020399691196118]
+  n_rows: [48, 72, 37, 50, 82, 143, 207, 198, 379, 495, 628, 759, 851, 106]
+  n_sources: [29, 36, 20, 29, 51, 81, 79, 87, 117, 111, 105, 100, 89, 53]
+  persistence: [0.06635119670587748, 0.04079394666054709, 0.019679713373382885, 0.012239679771785935,
+    0.00841145920714861, 0.004227246991113613, 0.0027603054237957184, 0.0016465230273421515,
+    0.001361055316270462, 0.001154304378562503, 0.0004552319251081866, 0.00018150762965281775,
+    0.0002370669196049373, 0.00013089926965604312]
+model: {alpha: 1.4516646117901688, alpha_error: 0.05454892299045054, amplitude: 0.009060298716435156,
+  amplitude_error: 0.0005744092238386478, form: 'persistence = amplitude * (delay
+    / 1000 s)**-alpha, delay from the end of the saturated exposure to the middle
+    of the later one, persistence in DN/s', n_bins: 14, reduced_chisq: 2.430838230009449}
+provenance:
+  classes: [sat 100k-300k, sat 300k-1000k, sat 60k-100k, sat no rate]
+  dataset: 'NEXUS, programs 5105 and 9263: NIRCam imaging, 700 exposures per short-wavelength
+    detector and 412 per long-wavelength detector, SHALLOW4 and MEDIUM8, rates from
+    snowblind_detector1 of 2026-11-01'
+  first_exposure: jw05105001001_02101_00001_nrca2_rate.fits
+  last_exposure: jw09263005004_03201_00002_nrca2_rate.fits
+  measurement: scripts/measure_persistence.py
+  min_shift_pix: 100.0
+  n_exposures: 700
+  pooling: median per delay bin, error from resampling the source exposures
+  table: persistence_nrca2.ecsv
+threshold: 0.005
+time: 2427.8098684658366
+typical_time: 1506.0723658050686
+...
