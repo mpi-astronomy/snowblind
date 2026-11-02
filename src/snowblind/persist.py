@@ -1,7 +1,9 @@
 import logging
 import os
 from collections import defaultdict, deque
+from importlib.resources import files
 
+import asdf
 from astropy.io import fits
 import numpy as np
 from jwst import datamodels
@@ -17,17 +19,33 @@ DO_NOT_USE = datamodels.dqflags.pixel["DO_NOT_USE"]
 SATURATED = datamodels.dqflags.pixel["SATURATED"]
 PERSISTENCE = datamodels.dqflags.pixel["PERSISTENCE"]
 SECONDS_PER_DAY = 86400.0
+DEFAULT_TIME = 2500.0  # seconds, for a detector without a packaged time
+PACKAGED_TIME_PATTERN = "persistence_{detector}.asdf"
+# the folder of the packaged times; tests point it elsewhere
+PACKAGED_DIR = files("snowblind").joinpath("data")
 
 
 class PersistenceFlagStep(Step):
     """
     Given a series of exposures, for any pixel flagged as SATURATED in one exposure,
     flag the pixel as DO_NOT_USE | PERSISTENCE in the later exposures of the same
-    detector that start less than ``time`` seconds after it, start time to start time.
+    detector whose middle is less than ``time`` seconds after the end of that one.
+
+    Persistence decays from the end of the saturated exposure, and the rate of a later
+    exposure averages it over the exposure, which its value at the middle of the
+    exposure approximates; so an exposure longer than ``time`` still flags the next.
+
+    Without ``time``, each detector gets the time measured for it and packaged with
+    snowblind (`packaged_time`), and `DEFAULT_TIME` (2500 s) when it has none.  The
+    packaged times are long on purpose: persistence varies across a detector and with
+    each pixel's history of illumination (how long and how often it saturated), so they
+    are set for a pixel persisting twice as much as the detector's typical saturated
+    star.  Each file's ``typical_time`` is the time of the typical star; pass it, or a
+    time between the two, as ``time`` to flag less.
     """
 
     spec = """
-        time = float(default=2500.0)  # amount of time after exposure to flag [seconds]
+        time = float(default=None)  # seconds, end of saturated exposure to middle of later one; None for the packaged time
         save_mask = boolean(default=False)  # write out persistence mask for each exposure
         output_use_model = boolean(default=True)
         output_use_index = boolean(default=False)
@@ -52,12 +70,13 @@ class PersistenceFlagStep(Step):
             Of an association, the members of its first product are read, whatever
             their exposure type, as `~jwst.datamodels.ModelContainer` reads them.
             The exposures are grouped by ``meta.instrument.detector`` and each group
-            is handled on its own, in order of ``meta.exposure.start_time``; the
+            is handled on its own, in order of ``meta.exposure.start_time``, with
+            ``meta.exposure.end_time`` giving the end and the middle of each; the
             ``meta.subarray`` start pixels place each exposure on the detector, so
             a subarray is flagged where a full-frame exposure saturated, and the
             other way round.  When file names are given and ``save_results`` is set,
             each exposure is opened, flagged, saved and closed in turn, so only the
-            saturation masks of the last ``self.time`` seconds are held in memory;
+            saturation masks of the last ``time`` seconds are held in memory;
             each is saved under its own file name with the step's suffix, whatever
             ``output_use_model`` and ``output_file`` say.
 
@@ -65,8 +84,8 @@ class PersistenceFlagStep(Step):
         -------
         ModelContainer or list of str
             Copy of the input in which pixels saturated in an earlier exposure of the
-            same detector, started less than ``self.time`` seconds before, have
-            ``DO_NOT_USE | PERSISTENCE`` set in ``dq``; for file names with
+            same detector, which ended less than ``time`` seconds before the middle
+            of the exposure, have ``DO_NOT_USE | PERSISTENCE`` set in ``dq``; for file names with
             ``save_results`` set, the paths of the saved files instead.
         """
         paths = member_paths(input_data, self.make_input_path)
@@ -75,7 +94,10 @@ class PersistenceFlagStep(Step):
             exposures = []
             for path in paths:
                 meta = read_metadata(path)
-                exposures.append((meta["meta.instrument.detector"], meta["meta.exposure.start_time"], path))
+                exposures.append((
+                    meta["meta.instrument.detector"], meta["meta.exposure.start_time"],
+                    meta["meta.exposure.end_time"], path,
+                ))
 
             def save(model):
                 # stpipe finalizes and saves the result after process returns; these are saved one at a time here,
@@ -91,41 +113,70 @@ class PersistenceFlagStep(Step):
             # with bare names put in input_dir
             input_data = paths
         results = self.prepare_output(input_data)
-        exposures = [(m.meta.instrument.detector, m.meta.exposure.start_time, m) for m in results]
+        exposures = [
+            (m.meta.instrument.detector, m.meta.exposure.start_time, m.meta.exposure.end_time, m) for m in results
+        ]
         self.flag_in_time_order(exposures, lambda model: model, lambda model: None)
         return results
+
+    def time_for(self, detector):
+        """The time within which a detector's later exposures are flagged.
+
+        Parameters
+        ----------
+        detector : str
+            Detector name as in ``meta.instrument.detector``.
+
+        Returns
+        -------
+        float
+            ``self.time`` when it is set; otherwise the detector's `packaged_time`,
+            or `DEFAULT_TIME` when there is none.  Seconds, from the end of the
+            saturated exposure to the middle of the later one.
+        """
+        if self.time is not None:
+            return self.time
+        packaged = packaged_time(detector)
+        if packaged is None:
+            log.info(f"No persistence time is packaged for {detector}; flagging for {DEFAULT_TIME:g} s")
+            return DEFAULT_TIME
+        log.info(f"Flagging {detector} for {packaged:g} s, the persistence time measured for the detector")
+        return packaged
 
     def flag_in_time_order(self, exposures, load, done):
         """Flag each exposure from the saturated pixels of the earlier ones, one detector at a time.
 
         Parameters
         ----------
-        exposures : list of (str, float, object)
-            Detector name, start time (MJD) and an item that ``load`` turns into the
-            image model, for each exposure.
+        exposures : list of (str, float, float, object)
+            Detector name, start and end time (MJD) and an item that ``load`` turns
+            into the image model, for each exposure.
         load : callable
             Takes an item and returns its datamodel.
         done : callable
             Takes the datamodel once its flags are set.
         """
         by_detector = defaultdict(list)
-        for detector, start, item in exposures:
-            by_detector[detector].append((start, item))
+        for detector, start, end, item in exposures:
+            by_detector[detector].append((start, end, item))
 
         for detector, sequence in by_detector.items():
+            limit = self.time_for(detector)
             sequence.sort(key=lambda entry: entry[0])
-            starts = np.array([start for start, _ in sequence])
+            starts = np.array([start for start, _, _ in sequence])
+            ends = np.array([end for _, end, _ in sequence])
             log.info(
-                f"Time deltas [sec] between {detector} exposures are "
-                f"{np.round(np.diff(starts, prepend=starts[0]) * SECONDS_PER_DAY, 1).tolist()}"
+                f"Delays [sec] from the end of each {detector} exposure to the middle of the next are "
+                f"{np.round(((starts[1:] + ends[1:]) / 2 - ends[:-1]) * SECONDS_PER_DAY, 1).tolist()}"
             )
 
-            # start time [sec], file name, detector origin and saturation mask of the earlier exposures less than
-            # self.time before
+            # start and end time [sec], file name, detector origin and saturation mask of the earlier exposures that
+            # ended less than limit before the middle of the current one
             recent = deque()
-            for start, item in sequence:
+            for start, end, item in sequence:
                 seconds = start * SECONDS_PER_DAY
-                while recent and seconds - recent[0][0] >= self.time:
+                middle = (start + end) / 2 * SECONDS_PER_DAY
+                while recent and middle - recent[0][1] >= limit:
                     recent.popleft()
 
                 model = load(item)
@@ -133,7 +184,7 @@ class PersistenceFlagStep(Step):
                 saturated = (model.dq & SATURATED) > 0
                 mask = np.zeros(model.dq.shape, dtype=bool)
                 used = 0
-                for earlier_seconds, earlier_name, earlier_origin, earlier in recent:
+                for earlier_seconds, _, earlier_name, earlier_origin, earlier in recent:
                     if earlier_seconds == seconds:
                         # a detector takes one exposure at a time, so this is the same exposure given twice
                         log.warning(
@@ -152,8 +203,37 @@ class PersistenceFlagStep(Step):
                     fits.PrimaryHDU(data=mask.astype(np.uint8)).writeto(mask_name, overwrite=True)
                     log.info(f"Writing out persistence mask {mask_name}")
 
-                recent.append((seconds, model.meta.filename, origin, saturated))
+                recent.append((seconds, end * SECONDS_PER_DAY, model.meta.filename, origin, saturated))
                 done(model)
+
+
+def packaged_time(detector):
+    """The persistence time measured for a detector and packaged with snowblind.
+
+    ``snowblind/data/persistence_<detector>.asdf`` holds ``time``: the delay,
+    in seconds from the end of a saturated exposure to the middle of a later
+    one, at which a pixel persisting ``margin`` (2) times more than the
+    detector's typical saturated star falls to the file's ``threshold``
+    (DN/s); ``typical_time``, the delay at which the typical star itself
+    does; and the fit and the measurement behind them.  ``scripts/measure_persistence.py``
+    measures the persistence in a series of exposures, and
+    ``scripts/package_persistence_defaults.py`` fits it and writes the files.
+
+    Parameters
+    ----------
+    detector : str
+        Detector name as in ``meta.instrument.detector``; case does not matter.
+
+    Returns
+    -------
+    float or None
+        The time in seconds; None when the package has no file for the detector.
+    """
+    path = PACKAGED_DIR.joinpath(PACKAGED_TIME_PATTERN.format(detector=str(detector).lower()))
+    if not path.is_file():
+        return None
+    with asdf.open(str(path), lazy_load=False, memmap=False) as handle:
+        return float(handle.tree["time"])
 
 
 def detector_origin(model):

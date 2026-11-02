@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `PersistenceFlagStep`'s `time` defaults to None: each detector then gets
+  the persistence time measured for it and packaged with snowblind
+  (`snowblind/data/persistence_<detector>.asdf`), and 2500 s, the former
+  default, when it has none. The package holds times for the ten NIRCam
+  imaging detectors, from 2100 s (NRCB1) to 12000 s (NRCB4): long on
+  purpose, since persistence varies across a detector and with each
+  pixel's history of illumination, each is the delay at which a pixel
+  persisting twice as much as the detector's typical saturated star falls
+  to 0.005 DN/s. Each file also holds `typical_time`, when the typical
+  star itself does (1150 s to 4900 s), to pass as `time` to flag less. A
+  `time` given still applies to every detector.
+  `scripts/measure_persistence.py` measures the persistence of saturated
+  stars against the delay in a series of `_rate` files, and
+  `scripts/package_persistence_defaults.py` fits it and writes the files.
+- `PersistenceFlagStep` measures `time` from the end of the saturated
+  exposure to the middle of the later one, instead of from start to start,
+  so an exposure longer than `time` still flags the next one.
+
 ## [1.2.0] - 2026-11-01
 
 ### Added
