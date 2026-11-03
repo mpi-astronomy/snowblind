@@ -24,13 +24,26 @@
 - `SparseOutlierDetectionStep` (`sparse_outlier_detection`): the jwst
   outlier detection for images, its method unchanged, drizzling with
   `SparseResampleImage` and blotting with spizzle. Images only.
-- `snowblind_image3` (`snowblind.Image3Pipeline`): `calwebb_image3` with the
-  two steps in its `outlier_detection` and `resample` slots.
+- `TiledOutlierStep` (`tiled_outlier`): outlier detection for images
+  against one reference built from the input pixels of all the exposures on
+  the outlier mosaic's grid sampled twice as finely (pixfrac 0.8, weighted
+  by overlap and inverse read-noise variance, weighted median then clipped
+  mean, one correction step), blotted onto each exposure and compared by
+  jwst's two-pass rule with `scale` 0.5 / 0.3. Where fewer than three
+  exposures overlap, the reference is their weighted mean and only pixels
+  above it are flagged. The grid is processed in tiles, so no mosaic-sized
+  array is allocated. `snowblind.outlier_reference` holds the method.
+- `snowblind_image3` (`snowblind.Image3Pipeline`): `calwebb_image3` with
+  `TiledOutlierStep` in its `outlier_detection` slot and
+  `SparseResampleStep` in its `resample` slot; `tiled_outliers=False` puts
+  `SparseOutlierDetectionStep` in the outlier slot, with jwst's `scale`.
 - The optional extra `snowblind[spizzle]` installs spizzle, which these
   steps need.
 - `scripts/compare_sparse_resample.py` and
   `scripts/compare_sparse_outlier_detection.py` compare the steps with the
-  jwst steps on a set of `_cal` files.
+  jwst steps on a set of `_cal` files; `scripts/exp_injected_outliers.py`
+  injects cosmic rays into `_cal` files and compares jwst's outlier
+  detection with `TiledOutlierStep`'s method.
 
 ## [1.3.0] - 2026-11-03
 

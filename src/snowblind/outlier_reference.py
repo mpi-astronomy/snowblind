@@ -1,4 +1,7 @@
-"""Outlier detection against one reference built from all exposures' input pixels, in tiles (prototype).
+"""Outlier detection against one reference built from all exposures' input pixels, in tiles.
+
+`TiledOutlierStep` flags outliers in a set of images this way, as jwst's
+outlier detection does for images with its own reference.
 
 jwst's outlier detection drizzles each exposure alone, takes the median of
 those images and blots it back: JWST PSFs are undersampled, so that blurs
@@ -32,9 +35,8 @@ fine pixels with a halo of ``halo``.  For each tile, only the input pixels
 landing in it and its halo are drizzled, from geometry computed once per
 exposure, and each exposure pixel whose center lies in the tile gets its
 prediction; then the tile is dropped.  Memory is one tile's input pixels
-plus each exposure's own arrays.  This is a prototype for
-`PairwiseOutlierStep`; the tile builder and the combinations are planned
-for spizzle once the method is settled.
+plus each exposure's own arrays.  The tile builder and the combinations
+are planned for spizzle once the method is settled.
 
 spizzle is an optional dependency, ``pip install 'snowblind[spizzle]'``.
 """
@@ -43,20 +45,29 @@ import logging
 import numba
 import numpy as np
 from astropy.stats import sigma_clipped_stats
+from jwst.datamodels import ModelLibrary
+from jwst.lib.pipe_utils import match_nans_and_flags
+from jwst.outlier_detection.outlier_detection_step import OutlierDetectionStep
+from jwst.resample.resample_utils import resampled_wcs_from_models
+from jwst.stpipe.utilities import record_step_status
 from scipy import ndimage
 from stcal.outlier_detection.utils import flag_resampled_crs
 from stdatamodels.jwst.datamodels import dqflags
+
+from .step import Step
 
 try:
     import spizzle
 except ImportError:
     spizzle = None
 
-__all__ = ["Exposure", "predict", "flag_outliers", "sky_level", "weighted_median", "clipped_mean"]
+__all__ = ["TiledOutlierStep", "Exposure", "predict", "run", "flag_outliers", "sky_level", "weighted_median",
+           "clipped_mean"]
 
 log = logging.getLogger(__name__)
 
 DO_NOT_USE = dqflags.pixel["DO_NOT_USE"]
+OUTLIER = dqflags.pixel["OUTLIER"]
 # rows of fine pixels each thread combines with one buffer
 CHUNK = 4096
 # input pixels of margin around the pixels of a tile, for the footprints that reach its halo
@@ -312,7 +323,6 @@ class Exposure:
         ny_m, nx_m = mosaic_wcs.array_shape
         self.n_tiles = (-(-oversample * ny_m // tile), -(-oversample * nx_m // tile))
         self.fine_shape = (oversample * ny_m, oversample * nx_m)
-        self.model = model
         pixmap = spizzle.pixel_map(model.meta.wcs, mosaic_wcs, shape=shape)
         self.centers = oversample * (pixmap + 0.5) - 0.5
         del pixmap
@@ -327,8 +337,9 @@ class Exposure:
         self.weights = np.zeros(shape, dtype=np.float32)
         self.weights[weighted] = 1.0 / var_rnoise[weighted]
         self.sky = sky_level(model)
-        self.values = np.where(weighted, model.data - self.sky, np.nan).astype(np.float32)
-        self.sigma = np.where(weighted, model.err, np.inf).astype(np.float32)
+        # the pixels used, with their data and error; NaN for the others
+        self.data = np.where(weighted, model.data, np.nan).astype(np.float32)
+        self.err = np.where(weighted, model.err, np.nan).astype(np.float32)
         # the tile of each pixel center, which gives the pixel its prediction
         self.tile_of = _tile_ids(self.centers[..., 0], self.centers[..., 1], tile, self.n_tiles).astype(np.int32)
         # the input pixels drizzled into each tile and its halo: the box of the centers within its reach, from the
@@ -390,12 +401,12 @@ def _tile(exposures, t, tile, halo, correct, spread):
         users.append(exposure)
     if not parts:
         return
-    values = np.concatenate([e.values[r].ravel() for e, r in zip(users, regions)])
-    sigma = np.concatenate([e.sigma[r].ravel() for e, r in zip(users, regions)])
+    values = np.concatenate([(e.data[r] - e.sky).ravel() for e, r in zip(users, regions)])
+    sigma = np.concatenate([e.err[r].ravel() for e, r in zip(users, regions)])
     reference, model2, count = _combine_parts(parts, shape, values, sigma, median_only=False, spread=spread)
     if correct:
         residuals = np.concatenate([
-            (e.values[r] - spizzle.blot(reference, e.centers[r] - origin)).ravel() for e, r in zip(users, regions)
+            (e.data[r] - e.sky - spizzle.blot(reference, e.centers[r] - origin)).ravel() for e, r in zip(users, regions)
         ])
         correction, _, _ = _combine_parts(parts, shape, residuals, sigma, median_only=True)
         reference += np.where(count >= 3, np.nan_to_num(correction), 0.0)
@@ -443,11 +454,24 @@ def predict(models, mosaic_wcs, oversample=2, pixfrac=0.8, correct=True, tile=10
         fine pixels its prediction comes from).
     """
     exposures = [Exposure(m, mosaic_wcs, oversample, pixfrac, tile, halo) for m in models]
+    run(exposures, correct, tile, halo, spread)
+    return exposures
+
+
+def run(exposures, correct=True, tile=1024, halo=4, spread=False):
+    """Build the reference tile by tile and write each exposure's prediction, as `predict` does.
+
+    Parameters
+    ----------
+    exposures : list of `Exposure`
+        Made with the same mosaic WCS, ``oversample``, ``tile`` and ``halo``.
+    correct, tile, halo, spread
+        As for `predict`.
+    """
     tiles = sorted(set().union(*(e.regions for e in exposures)))
     log.info(f"Reference of {len(exposures)} exposures in {len(tiles)} tiles of {tile} fine pixels")
     for t in tiles:
         _tile(exposures, t, tile, halo, correct, spread)
-    return exposures
 
 
 def flag_outliers(exposure, snr=(5.0, 4.0), scale=(0.5, 0.3)):
@@ -471,10 +495,8 @@ def flag_outliers(exposure, snr=(5.0, 4.0), scale=(0.5, 0.3)):
     -------
     ndarray of bool, the exposure's shape
     """
-    model = exposure.model
-    good = _good(model)
-    data = np.where(good, model.data, np.nan).astype(np.float32)
-    err = np.where(good, model.err, np.nan).astype(np.float32)
+    data, err = exposure.data, exposure.err
+    good = np.isfinite(data)
     prediction = exposure.prediction
     if scale is None:
         diff = np.abs(data - prediction)
@@ -485,3 +507,80 @@ def flag_outliers(exposure, snr=(5.0, 4.0), scale=(0.5, 0.3)):
         flags = flag_resampled_crs(data, err, prediction, snr[0], snr[1], scale[0], scale[1], 0.0)
     flags &= (exposure.n_exposures >= 3) | (data > prediction)
     return flags & good & np.isfinite(prediction)
+
+
+class TiledOutlierStep(Step):
+    """Flag outliers in images against one reference built from all their input pixels, in tiles.
+
+    The reference, the prediction of each exposure and the flags are those
+    of this module (`predict` and `flag_outliers`), on the outlier mosaic's
+    grid that jwst's outlier detection uses (the input pixel scale, from
+    ``resampled_wcs_from_models``) sampled twice as finely, with pixfrac 0.8
+    and the correction step.  The outliers get DO_NOT_USE and OUTLIER in
+    ``dq``, and NaN in the data, error and variance arrays, as jwst's step
+    sets them.
+
+    The parameters are jwst's ``snr`` and ``scale``; ``scale`` is 0.5 / 0.3,
+    which the sharper reference allows for every NIRCam, NIRISS and NIRSpec
+    imaging filter simulated.  The grid, pixfrac and the correction step are
+    fixed.  The step does not read jwst's step parameters from CRDS, and runs
+    on images only: it raises for spectra, coronagraphy and time series.
+    """
+
+    class_alias = "tiled_outlier"
+    fits_keyword = "S_TILOUT"
+    fits_comment = "Outliers: snowblind.TiledOutlierStep"
+
+    spec = """
+        snr = string(default='5.0 4.0')  # Thresholds in noise of the two passes
+        scale = string(default='0.5 0.3')  # Factors of the prediction's largest difference from its neighbors added to them
+        search_output_file = boolean(default=False)
+        in_memory = boolean(default=True)  # in_memory flag ignored if run within the pipeline; set at pipeline level instead
+    """  # noqa: E501
+
+    def process(self, input_data):
+        """Flag the outliers of every input image.
+
+        Parameters
+        ----------
+        input_data : asn file or `~jwst.datamodels.library.ModelLibrary`
+            The images.
+
+        Returns
+        -------
+        `~jwst.datamodels.library.ModelLibrary`
+            The images with their outliers flagged.
+        """
+        # jwst's mode, from the pipeline's ``mode`` attribute or the exposure type, and the association ID of the
+        # output names; both are private methods of jwst's step
+        mode = OutlierDetectionStep._guess_mode(self, input_data)
+        if mode != "imaging":
+            raise ValueError(f"TiledOutlierStep supports images only, not mode {mode!r}")
+        library = self.prepare_output(input_data, open_models=False)
+        if not isinstance(library, ModelLibrary):
+            library = ModelLibrary(library, on_disk=not self.in_memory)
+        OutlierDetectionStep._get_asn_id(self, input_data)
+        if len(library) < 2:
+            log.warning(f"Input only contains {len(library)} exposures; outlier detection is skipped")
+            record_step_status(library, "outlier_detection", False)
+            return library
+
+        snr = [float(v) for v in self.snr.split()]
+        scale = [float(v) for v in self.scale.split()]
+        mosaic_wcs = resampled_wcs_from_models(library, pixel_scale_ratio=1.0)[0]
+        exposures = []
+        with library:
+            for model in library:
+                exposures.append(Exposure(model, mosaic_wcs))
+                library.shelve(model, modify=False)
+        run(exposures)
+        with library:
+            for model, exposure in zip(library, exposures):
+                flags = flag_outliers(exposure, snr=snr, scale=scale)
+                model.dq[flags] |= np.uint32(DO_NOT_USE | OUTLIER)
+                log.info(f"{np.count_nonzero(flags)} pixels marked as outliers in {model.meta.filename}")
+                match_nans_and_flags(model)
+                self.set_cal_step(model, "COMPLETE")
+                library.shelve(model, modify=True)
+        record_step_status(library, "outlier_detection", True)
+        return library

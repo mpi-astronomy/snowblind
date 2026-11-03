@@ -14,7 +14,7 @@ from stpipe import crds_client
 
 pytest.importorskip("spizzle")
 
-from snowblind import Image3Pipeline, SparseOutlierDetectionStep, SparseResampleStep  # noqa: E402
+from snowblind import Image3Pipeline, SparseOutlierDetectionStep, SparseResampleStep, TiledOutlierStep  # noqa: E402
 
 
 SHAPE = (40, 50)
@@ -100,9 +100,26 @@ def pipeline_run(tmp_path_factory):
     return folder
 
 
-def test_outlier_detection_slot_holds_the_sparse_step():
-    """Image3Pipeline().outlier_detection is a SparseOutlierDetectionStep."""
-    assert isinstance(Image3Pipeline().outlier_detection, SparseOutlierDetectionStep)
+def test_outlier_detection_slot_holds_the_tiled_step():
+    """Image3Pipeline().outlier_detection is a TiledOutlierStep."""
+    assert isinstance(Image3Pipeline().outlier_detection, TiledOutlierStep)
+
+
+def test_outlier_detection_slot_without_tiled_outliers_holds_the_sparse_step():
+    """Image3Pipeline(tiled_outliers=False).outlier_detection is a SparseOutlierDetectionStep."""
+    assert isinstance(Image3Pipeline(tiled_outliers=False).outlier_detection, SparseOutlierDetectionStep)
+
+
+def test_sparse_outlier_step_keeps_jwsts_scale():
+    """Image3Pipeline(tiled_outliers=False).outlier_detection.scale is jwst's "1.2 0.7", not the tiled step's."""
+    assert Image3Pipeline(tiled_outliers=False).outlier_detection.scale == "1.2 0.7"
+
+
+def test_sparse_outlier_step_takes_a_scale_given():
+    """Image3Pipeline(tiled_outliers=False) with steps.outlier_detection.scale "0.5 0.3" keeps that scale."""
+    pipeline = Image3Pipeline(tiled_outliers=False, steps={"outlier_detection": {"scale": "0.5 0.3"}})
+
+    assert pipeline.outlier_detection.scale == "0.5 0.3"
 
 
 def test_resample_slot_holds_the_sparse_step():

@@ -869,6 +869,21 @@ nothing changes (0-5% against 29-44%; 1% of the pixels in 2234, 9% in
 6154).
 
 
+`TiledOutlierStep`, 2026-11-03 (name and default by the user): the step
+(`tiled_outlier`, in `outlier_reference.py`) runs `outlier_reference` on a
+model library, with the outlier mosaic grid from jwst's
+`resampled_wcs_from_models` (input pixel scale), and sets DO_NOT_USE and
+OUTLIER and the matching NaNs as jwst's step does. Parameters: jwst's `snr`
+and `scale` (0.5 / 0.3), `in_memory`, `search_output_file`; the grid,
+pixfrac and correction step are fixed. `Exposure` keeps its own data and
+error, so a library on disk is read twice (geometry, then flags). It is the
+default in `snowblind_image3`'s outlier slot; `tiled_outliers=False` puts
+`SparseOutlierDetectionStep` there. stpipe fills that slot's section from
+`TiledOutlierStep`'s spec, so the sparse step would get its `scale` of 0.5 /
+0.3; the pipeline gives it its own defaults for parameters the caller did
+not set (ConfigObj marks values that came from the defaults).
+
+
 ## 7. Open questions for the user (ask, do not decide)
 
 Most are answered in section 0 (2026-11-03); the pixel maps use spizzle's

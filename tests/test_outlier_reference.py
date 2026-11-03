@@ -4,12 +4,14 @@ from astropy import coordinates as coord
 from astropy.modeling import models
 from gwcs import coordinate_frames as cf
 from gwcs import wcs as gwcs_wcs
+from jwst.datamodels import ModelLibrary
 from scipy import sparse
-from stdatamodels.jwst.datamodels import ImageModel
+from stdatamodels.jwst.datamodels import ImageModel, dqflags
+from stpipe.exceptions import ValidationError
 
 pytest.importorskip("spizzle")
 
-from snowblind import outlier_reference  # noqa: E402
+from snowblind import TiledOutlierStep, outlier_reference  # noqa: E402
 
 
 SHAPE = (20, 20)
@@ -40,7 +42,8 @@ class Predicted:
     """An exposure's prediction as `outlier_reference.predict` gives it: flat at 1, from ``n`` exposures."""
 
     def __init__(self, model, n):
-        self.model = model
+        self.data = model.data
+        self.err = model.err
         self.prediction = np.ones(SHAPE, dtype=np.float32)
         self.spread = np.zeros(SHAPE, dtype=np.float32)
         self.n_exposures = np.full(SHAPE, n, dtype=np.uint8)
@@ -159,7 +162,7 @@ def dithered_exposures():
     at HIT_PIXEL."""
     rng = np.random.default_rng(3)
     exposures = []
-    for dx, dy, angle in DITHERS:
+    for i, (dx, dy, angle) in enumerate(DITHERS):
         model = ImageModel(EXPOSURE_SHAPE)
         crval = (CRVAL[0] + dx * SCALE / np.cos(np.deg2rad(CRVAL[1])), CRVAL[1] + dy * SCALE)
         model.meta.wcs = tan_wcs(EXPOSURE_SHAPE, (24.5, 19.5), crval, angle)
@@ -167,6 +170,17 @@ def dithered_exposures():
         model.err = np.full(EXPOSURE_SHAPE, 0.1, dtype=np.float32)
         model.var_rnoise = np.full(EXPOSURE_SHAPE, 0.01, dtype=np.float32)
         model.dq = np.zeros(EXPOSURE_SHAPE, dtype=np.uint32)
+        # what jwst reads to make the outlier mosaic's grid and to group the exposures
+        model.meta.filename = f"exposure{i}_cal.fits"
+        model.meta.group_id = f"group{i}"
+        model.meta.exposure.type = "NRC_IMAGE"
+        model.meta.photometry.pixelarea_steradians = np.deg2rad(SCALE) ** 2
+        model.meta.wcsinfo.ra_ref, model.meta.wcsinfo.dec_ref = model.meta.wcs(24.5, 19.5)
+        model.meta.wcsinfo.roll_ref = 0.0
+        model.meta.wcsinfo.v3yangle = 0.0
+        model.meta.wcsinfo.vparity = -1
+        corners = model.meta.wcs.footprint()
+        model.meta.wcsinfo.s_region = "POLYGON ICRS " + " ".join(f"{ra:.9f} {dec:.9f}" for ra, dec in corners)
         exposures.append(model)
     exposures[HIT_EXPOSURE].data[HIT_PIXEL] += 5.0
     return exposures
@@ -207,3 +221,50 @@ def test_flags_the_cosmic_ray_with_two_exposures():
     exposures = outlier_reference.predict(dithered_exposures()[:2], mosaic_wcs())
 
     assert outlier_reference.flag_outliers(exposures[HIT_EXPOSURE])[HIT_PIXEL]
+
+
+def run_step(mode="imaging", **parameters):
+    """TiledOutlierStep(**parameters) in ``mode`` run on the four dithered exposures; the models it returns."""
+    step = TiledOutlierStep(**parameters)
+    step.mode = mode
+    result = step.run(ModelLibrary(dithered_exposures(), on_disk=False))
+    models = []
+    with result:
+        for model in result:
+            models.append(model)
+            result.shelve(model, modify=False)
+    return models
+
+
+def test_step_flags_the_cosmic_ray_as_an_outlier():
+    """TiledOutlierStep of the four dithered exposures sets OUTLIER at HIT_PIXEL of HIT_EXPOSURE."""
+    models = run_step()
+
+    assert models[HIT_EXPOSURE].dq[HIT_PIXEL] & dqflags.pixel["OUTLIER"]
+
+
+def test_step_sets_the_outlier_to_nan():
+    """TiledOutlierStep of the four dithered exposures sets the data at HIT_PIXEL of HIT_EXPOSURE to NaN, as jwst's
+    outlier detection does."""
+    models = run_step()
+
+    assert np.isnan(models[HIT_EXPOSURE].data[HIT_PIXEL])
+
+
+def test_step_records_its_status():
+    """TiledOutlierStep of the four dithered exposures sets meta.cal_step.tiled_outlier to COMPLETE."""
+    models = run_step()
+
+    assert models[0].meta.cal_step.instance["tiled_outlier"] == "COMPLETE"
+
+
+def test_step_rejects_other_modes():
+    """TiledOutlierStep with mode "spec" raises ValueError."""
+    with pytest.raises(ValueError, match="images only"):
+        run_step(mode="spec")
+
+
+def test_step_rejects_the_kernel_parameter():
+    """TiledOutlierStep.call(kernel="square") raises ValidationError: the step has no kernel parameter."""
+    with pytest.raises(ValidationError, match="kernel"):
+        TiledOutlierStep.call(ModelLibrary(dithered_exposures(), on_disk=False), kernel="square")

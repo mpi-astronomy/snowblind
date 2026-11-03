@@ -6,8 +6,13 @@ other bad pixels the earlier steps missed), and once to make the mosaic.
 ``SparseResampleStep`` (``sparse_resample``) and
 ``SparseOutlierDetectionStep`` (``sparse_outlier_detection``) are the jwst
 resample and outlier detection steps for images with drizzle replaced by
-`spizzle <https://github.com/mpi-astronomy/spizzle>`_, and the
-``snowblind_image3`` pipeline is ``calwebb_image3`` with both in place.
+`spizzle <https://github.com/mpi-astronomy/spizzle>`_.
+``TiledOutlierStep`` (``tiled_outlier``) finds outliers against a sharper
+reference, built from the input pixels of all the exposures at once.  The
+``snowblind_image3`` pipeline is ``calwebb_image3`` with
+``TiledOutlierStep`` and ``SparseResampleStep`` in place
+(``--tiled_outliers=False`` puts ``SparseOutlierDetectionStep`` in the
+outlier slot instead).
 spizzle computes drizzle's square kernel as a sparse matrix for each
 exposure, applies it to the science data, the weights and the variance
 planes in double precision, and so gives the exact variance of each output
@@ -25,9 +30,13 @@ Summary
   the noise factor.
 * The jwst step's variance planes and ERR are still available, with
   ``variance="stcal"``, to compare with.
-* Outlier detection is jwst's method unchanged, with spizzle's drizzling
-  and blot.
-* Both steps are faster than the jwst steps, and take their parameters from
+* ``SparseOutlierDetectionStep`` is jwst's outlier detection unchanged, with
+  spizzle's drizzling and blot.
+* ``TiledOutlierStep`` compares each exposure with a reference that resolves
+  undersampled star cores, so that its threshold can be tighter: it finds
+  more cosmic rays near stars and flags far fewer star cores than jwst's
+  method, with the same parameters for every filter.
+* All three are faster than the jwst steps, and take their parameters from
   the caller only, not from CRDS.
 
 Installation and running
@@ -37,15 +46,15 @@ spizzle is an optional dependency::
 
     pip install 'snowblind[spizzle]'
 
-Run Image3 with both steps in place:
+Run Image3 with the snowblind steps in place:
 
 .. code-block:: bash
 
     strun snowblind_image3 jw..._image3_asn.json
 
-The two steps take their parameters in the jwst pipeline's slots, e.g.
+The steps take their parameters in the jwst pipeline's slots, e.g.
 ``--steps.resample.pixel_scale=0.03`` or
-``--steps.outlier_detection.snr="5.0 4.0"``. Each step also runs on its
+``--steps.outlier_detection.scale="0.5 0.3"``. Each step also runs on its
 own:
 
 .. code-block:: python
@@ -111,11 +120,61 @@ How the parameters differ from the jwst steps
   supported. The variance planes are NaN where there is no weight, whatever
   the fill value, as in the jwst step.
 * ``variance``: ``exact`` (the default) or ``stcal``, as above.
-* ``SparseOutlierDetectionStep`` runs on images only; spectra, coronagraphy
-  and time series stay with the jwst step.
+* ``SparseOutlierDetectionStep`` and ``TiledOutlierStep`` run on images
+  only; spectra, coronagraphy and time series stay with the jwst step.
 
 A parameter the step does not have, such as ``kernel``, is rejected rather
 than ignored.
+
+Outlier detection against all exposures' input pixels
+-----------------------------------------------------
+
+jwst's outlier detection drizzles each exposure alone onto the mosaic grid,
+takes the median of those images and blots it back onto each exposure. JWST
+point spreads are undersampled, so each of those images blurs a star's
+core, the median cannot use the dithers to sharpen it, and the blot blurs it
+again. A star's peak pixel is then predicted too low and looks like an
+outlier, which jwst's rule allows for by loosening its threshold where the
+reference changes steeply (``scale * D``, ``D`` the largest difference
+between a reference pixel and its neighbors), and that also hides cosmic
+rays on and next to stars.
+
+``TiledOutlierStep`` builds one reference from the input pixels of all the
+exposures at their true positions, on the outlier mosaic's grid sampled
+twice as finely:
+
+1. each exposure's input pixels are drizzled onto that grid (pixfrac 0.8)
+   after its sky level is subtracted (skymatch's level, or the sigma-clipped
+   median of its good pixels), weighted by their overlap and their inverse
+   read-noise variance;
+2. for each fine pixel, the input pixels that land on it are combined by
+   their weighted median, then their weighted mean within 3 sigma of it;
+3. the exposures' residuals from the reference are combined the same way
+   and added once;
+4. the reference is blotted onto each exposure and compared with it by
+   jwst's two-pass rule, with ``scale`` 0.5 / 0.3 instead of jwst's 1.2 /
+   0.7.
+
+Where fewer than three exposures land on a fine pixel, the reference there
+is their weighted mean, as jwst's median of two images is, the residuals are
+not added, and only pixels above the prediction are flagged: with two
+exposures no combination can tell which one holds an outlier, and cosmic
+rays are positive. Where only one exposure covers a pixel, nothing can be
+flagged. jwst's step flags some pixels there by comparing the exposure with
+a blurred copy of itself; ``TiledOutlierStep`` does not.
+
+The grid is never allocated whole: it is processed in tiles of 1024 fine
+pixels with a small halo, and for each tile only the input pixels landing on
+it are drizzled, from geometry computed once per exposure. Memory therefore
+depends on the number and size of the exposures, not on the size of the
+mosaic. The outliers get DO_NOT_USE and OUTLIER in ``dq`` and NaN in the
+data, error and variance arrays, as with jwst's step.
+
+In simulations of dithered star fields with ``stpsf`` point spreads, for the
+NIRCam, NIRISS and NIRSpec imaging filters, the same parameters find more
+cosmic rays than jwst's step, many more within a few pixels of stars, and
+flag a few percent of star-core pixels or fewer where jwst's step flags up
+to about 15%.
 
 Agreement with the jwst steps
 -----------------------------
@@ -139,6 +198,7 @@ Speed
 On eight NIRCam exposures on a laptop (11 threads), the mosaic with the
 variance planes takes a third of the jwst step's time with every pixel's
 WCS evaluated, and less with the defaults, including the second pass for
-the noise factor. Outlier detection takes about half the jwst step's time
-with the defaults; the median of the drizzled exposures and the flagging
-are jwst's code and are not faster.
+the noise factor. ``SparseOutlierDetectionStep`` takes about half the jwst
+step's time with the defaults (the median of the drizzled exposures and the
+flagging are jwst's code and are not faster), and ``TiledOutlierStep`` half
+to two thirds of it.

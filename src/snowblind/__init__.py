@@ -9,6 +9,7 @@ from .reset_rampfit import ResetRampFitStep
 from .pipeline import Detector1Pipeline
 from .resample import SparseResampleStep
 from .outlier_detection import SparseOutlierDetectionStep
+from .outlier_reference import TiledOutlierStep
 from .image3 import Image3Pipeline
 
 
@@ -29,6 +30,7 @@ __all__ = [
     'Detector1Pipeline',
     'SparseResampleStep',
     'SparseOutlierDetectionStep',
+    'TiledOutlierStep',
     'Image3Pipeline',
 ]
 
@@ -53,5 +55,6 @@ def _get_steps():
         ("snowblind.Detector1Pipeline", 'snowblind_detector1', True),
         ("snowblind.SparseResampleStep", 'sparse_resample', False),
         ("snowblind.SparseOutlierDetectionStep", 'sparse_outlier_detection', False),
+        ("snowblind.TiledOutlierStep", 'tiled_outlier', False),
         ("snowblind.Image3Pipeline", 'snowblind_image3', True),
     ]
