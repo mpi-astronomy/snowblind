@@ -24,6 +24,7 @@ from snowblind.stream_clean import (
     prepare_difference,
     read_scene_model,
     reference_carries_flat,
+    sky_shift_and_change,
     reference_flat_correlation,
     reference_in_raw_units,
     mean_slope_per_group,
@@ -195,6 +196,62 @@ def test_clean_ramp_removes_stripes_from_differences():
     np.testing.assert_allclose(diffs.mean(axis=(1, 2)), 10.0, atol=1.0)
 
 
+def test_clean_ramp_sky_change_is_the_mean_change_of_the_differences():
+    """clean_ramp with a stats dict reports, per integration, the mean of cleaned minus input over the differences."""
+    rng = np.random.default_rng(7)
+    data, _ = striped_ramp(rng)
+    groupdq = np.zeros(data.shape, dtype=np.uint8)
+    mask = np.ones((NY, NX), dtype=bool)
+    stats = {}
+
+    cleaned = clean_ramp(data, groupdq, mask, -1, 2, fit_method="row_median", stats=stats)
+
+    expected = np.mean(np.diff(cleaned[0], axis=0).astype(np.float64) - np.diff(data[0], axis=0))
+    assert len(stats["sky_change"]) == 1
+    np.testing.assert_allclose(stats["sky_change"][0], expected, rtol=1e-6, atol=1e-6)
+
+
+def test_clean_ramp_sky_shift_is_mean_minus_median_of_the_differences():
+    """clean_ramp with a stats dict reports the mean minus the median of the input differences over the mask.
+
+    The difference is 9 to 11 DN across 48 columns and 11.5 DN on the other
+    16, within the 3-sigma clipping of the background helper (whose sigma
+    comes from the lower half), so every pixel stays in the mask.
+    """
+    row = np.concatenate([np.linspace(9.0, 11.0, 48), np.full(16, 11.5)]).astype(np.float32)
+    data = np.zeros((1, 4, NY, NX), dtype=np.float32)
+    for j in range(4):
+        data[0, j] = (j + 1) * row[None, :]
+    groupdq = np.zeros(data.shape, dtype=np.uint8)
+    mask = np.ones((NY, NX), dtype=bool)
+    stats = {}
+
+    clean_ramp(data, groupdq, mask, -1, 2, fit_method="row_median", stats=stats)
+
+    expected = float(np.mean(row) - np.median(row))
+    np.testing.assert_allclose(stats["sky_shift"], [expected], rtol=1e-5)
+
+
+def test_sky_shift_and_change_divides_by_the_response():
+    """sky_shift_and_change on a sky of [2, 2, 8] DN, removed [1, 1, 1], response 2 returns a shift of 1 and a change of -0.5."""
+    sky = np.array([2.0, 2.0, 8.0])
+    removed = np.array([1.0, 1.0, 1.0])
+    response = np.array([2.0, 2.0, 2.0])
+
+    shift, change = sky_shift_and_change(sky, removed, response)
+
+    np.testing.assert_allclose(shift, 1.0)
+    np.testing.assert_allclose(change, -0.5)
+
+
+def test_sky_shift_and_change_nan_without_finite_pixels():
+    """sky_shift_and_change with a response of zero everywhere returns NaN for both numbers."""
+    shift, change = sky_shift_and_change(np.array([1.0, 2.0]), np.array([0.0, 0.0]), np.array([0.0, 0.0]))
+
+    assert np.isnan(shift)
+    assert np.isnan(change)
+
+
 def test_clean_ramp_leaves_group0_when_clean_first_group_false():
     """clean_ramp with clean_first_group=False returns group 0 unchanged."""
     rng = np.random.default_rng(8)
@@ -274,6 +331,51 @@ def test_step_call_with_user_mask_cleans_and_completes(tmp_path):
     diffs = np.diff(result.data[0], axis=0)[:, 4:-4, 4:-4]
     assert np.all(np.ptp(diffs, axis=(1, 2)) < 1e-3)
     np.testing.assert_allclose(diffs.mean(axis=(1, 2)), 10.0, atol=1.0)
+
+
+def test_step_records_the_sky_numbers(tmp_path):
+    """StreamCleanStep.call records sky_mean_minus_median and sky_change_by_cleaning, in DN/s, in meta.snowblind.stream_clean."""
+    rng = np.random.default_rng(12)
+    data, _ = striped_ramp(rng)
+    model = make_ramp_model()
+    model.data = data
+    mask_path = write_mask(tmp_path, np.ones((NY, NX), dtype=bool))
+
+    result = StreamCleanStep.call(
+        model, apply_flat_field=False, fit_method="row_median", user_mask=mask_path, background_method="median"
+    )
+
+    record = result.meta.snowblind.stream_clean
+    # the step cleans group 0 against zero as well, and keeps the 4-pixel reference border out of the mask
+    interior = (slice(4, -4), slice(4, -4))
+    diffs_in = np.diff(data[0], axis=0, prepend=0.0).astype(np.float64)[(slice(None),) + interior]
+    diffs_out = np.diff(result.data[0], axis=0, prepend=0.0).astype(np.float64)[(slice(None),) + interior]
+    expected_change = np.mean((diffs_out - diffs_in).mean(axis=(1, 2))) / model.meta.exposure.group_time
+    expected_shift = np.mean([np.mean(d) - np.median(d) for d in diffs_in]) / model.meta.exposure.group_time
+    np.testing.assert_allclose(record.sky_change_by_cleaning, expected_change, rtol=1e-4, atol=1e-7)
+    np.testing.assert_allclose(record.sky_mean_minus_median, expected_shift, rtol=1e-4, atol=1e-7)
+
+
+def test_step_writes_the_sky_numbers_to_header_cards(tmp_path):
+    """StreamCleanStep.call, saved, has SKYMNMED and SKYCHG in its primary header, the numbers in meta.snowblind to 1e-12.
+
+    A header card holds at most 20 characters of the value, so the last digit can differ.
+    """
+    rng = np.random.default_rng(12)
+    data, _ = striped_ramp(rng)
+    model = make_ramp_model()
+    model.data = data
+    mask_path = write_mask(tmp_path, np.ones((NY, NX), dtype=bool))
+
+    result = StreamCleanStep.call(
+        model, apply_flat_field=False, fit_method="row_median", user_mask=mask_path, background_method="median"
+    )
+    path = str(tmp_path / "cleaned.fits")
+    result.save(path)
+
+    header = fits.getheader(path)
+    np.testing.assert_allclose(header["SKYMNMED"], result.meta.snowblind.stream_clean.sky_mean_minus_median, rtol=1e-12)
+    np.testing.assert_allclose(header["SKYCHG"], result.meta.snowblind.stream_clean.sky_change_by_cleaning, rtol=1e-12)
 
 
 def test_step_skips_subarray():

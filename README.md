@@ -1,16 +1,96 @@
-# Algorithms for cleaning JWST data
+# snowblind: algorithms for cleaning JWST data
 
-Read the [documentation](https://mpi-astronomy.github.io/snowblind/).
+snowblind provides steps for JWST near-infrared data that improve on, or add
+to, steps of the official jwst pipeline. They run like the pipeline's own
+steps, on their own or as hooks inside the jwst pipelines.
 
- - `SnowblindStep`: mask cosmic ray showers and snowball halos by growing the actual shape of each contiguous jump-detected region and the ring around its saturated core; works on ramps, rate images and rateints cubes, so it can be applied after the fact; replaces `expand_large_events` in the standard JWST pipeline jump step
- - `JumpPlusStep`: for frame-averaged readouts (NFRAMES > 1), flag the group after a detected jump, which the cosmic ray also corrupts and which the pipeline's two-point jump detection leaves unflagged (though using the ramp fit likelyhood algorithm accounts for this correctly itself); replaces jump step's `after_jump_flag` mechanism; also flag the group before a saturated group as saturated, a conservative superset of the read-pattern check the pipeline's saturation step
- - `PersistenceFlagStep`: flag pixels that saturated in an earlier exposure of the association for a chosen time afterwards
- - `OpenPixelStep`: find open, hot and cross-shaped open-adjacent pixels that have appeared since the reference bad-pixel mask was made, by self-calibration against the other exposures of the same detector.  Use with caution.  Needs tuning.
- - `StreamCleanStep`: remove 1/f (flicker) noise, the striping, from NIR group data with a Wiener filter along each output channel's readout stream, its gain taken from the exposure's own noise spectrum; the same linear filter on every group difference, so, unlike the per-group medians of the pipeline's `clean_flicker_noise` step, it adds no noise along the ramp and improves with the number of groups; also removes the per-read even-odd and column offsets
- - `ResetRampFitStep`: likelihood ramp fitting as in the standard JWST pipeline, but with the superbias-subtracted reset level as an extra resultant at the beginning, so that pixels with a single unsaturated group or only a ZEROFRAME still get a rate; needs a per-detector calibration from dark ramps, made once with `snowblind-reset-calib`
+Read the [documentation](https://mpi-astronomy.github.io/snowblind/) for how
+each step works and how to choose its settings.
 
+## What it provides
 
-# Citing snowblind
+- **`SnowblindStep`** masks the halos of cosmic-ray showers and snowballs by
+  growing the shape of each jump-flagged region and the ring around its
+  saturated core. It replaces the jump step's `expand_large_events`, which
+  draws circles or ellipses around them, and works on rate products as well
+  as ramps, so it can be applied after the fact.
+- **`JumpPlusStep`** flags, in readouts that average several frames per
+  group, the group after each jump and the group before saturation, which
+  the jwst jump and saturation steps leave unflagged. It replaces the jump
+  step's `after_jump_flag` settings.
+- **`PersistenceFlagStep`** flags the pixels that saturated in an earlier
+  exposure of the same detector, for a time measured for each detector and
+  packaged with snowblind. The jwst `persistence` step (as of jwst 3.0)
+  needs a time chosen by hand and the exposures run one after another; this
+  step takes a whole set of finished `_rate` or `_cal` files at once.
+- **`OpenPixelStep`** finds open and hot pixels that have appeared since the
+  reference bad-pixel mask was made, by comparing the exposures of each
+  detector. Experimental.
+- **`StreamCleanStep`** removes 1/f noise (striping) from the ramp along
+  each output channel's readout stream. Unlike the jwst
+  `clean_flicker_noise` step, it applies the same linear filter to every
+  group difference, so it adds no noise along the ramp and does better the
+  more groups there are.
+- **`ResetRampFitStep`** is the jwst likelihood ramp fit with the reset
+  level as an extra point at the start, so pixels with only one unsaturated
+  group, such as the cores of bright stars, still get a rate.
+- **`snowblind_detector1`** is `calwebb_detector1` with the stream clean,
+  the reset likelihood ramp fit and the snowball and jump steps in place,
+  and the SIRS reference-pixel correction. It works as a drop-in
+  replacement.
+
+## Installation
+
+    pip install snowblind
+
+snowblind needs jwst 2.0.0 or later; earlier releases of snowblind work with
+earlier jwst releases.
+
+## Getting started
+
+Run Detector1 with the 1/f cleaning, the reset fit and the snowball masking
+(and the SIRS reference-pixel correction, which the 1/f cleaning is matched
+to):
+
+    strun snowblind_detector1 jw..._uncal.fits
+
+Or add only the snowball and jump steps to the jwst pipeline, as hooks after
+its jump step:
+
+```python
+from jwst.pipeline import Detector1Pipeline
+from snowblind import JumpPlusStep, SnowblindStep
+
+steps = {"jump": {"expand_large_events": False, "post_hooks": [SnowblindStep, JumpPlusStep]}}
+Detector1Pipeline.call("jw..._uncal.fits", steps=steps, save_results=True)
+```
+
+Flag persistence in a set of `_cal` files, after `calwebb_image2`:
+
+```python
+from glob import glob
+from snowblind import PersistenceFlagStep
+
+PersistenceFlagStep.call(sorted(glob("jw*_cal.fits")), save_results=True, suffix="cal", output_dir="persist")
+```
+
+This writes each file again in `persist/`, with `DO_NOT_USE` and
+`PERSISTENCE` set where an earlier exposure of the same detector saturated
+recently.
+
+## Results
+
+`StreamCleanStep` on a dark exposure, against no cleaning and the jwst
+`clean_flicker_noise` step:
+
+![Rate images of an NRCA1 dark with four kinds of 1/f cleaning](https://raw.githubusercontent.com/mpi-astronomy/snowblind/main/docs/figures/dark_rate_images.png)
+
+The persistence of saturated stars against the time since their exposure
+ended, which sets the time `PersistenceFlagStep` flags them for:
+
+![Persistence of saturated stars against the delay, with the packaged fit and times](https://raw.githubusercontent.com/mpi-astronomy/snowblind/main/docs/figures/persistence_decay.png)
+
+## Citing snowblind
 
 Please cite `snowblind` through its Zenodo record DOI,
 [10.5281/zenodo.15791614](https://doi.org/10.5281/zenodo.15791614), that
@@ -25,239 +105,5 @@ always points to the latest release.
     }
 
 The same information is in `CITATION.cff`.
-
-# Installation
-
-snowblind needs jwst 2.0.0 or later.  Earlier releases of snowblind work
-with earlier jwst releases.
-
-    pip install snowblind
-
-
-# Usage
-
-## SnowblindStep and JumpPlusStep
-
-The steps in snowblind run like any other pipeline steps.  From the command line you can run `SnowblindStep` (aliased as `snowblind`) to remove the halos from high-energy CR hits, i.e. "snowballs", on the result file from JumpStep:
-
-    strun snowblind jw001234_010203_00001_nrcalong_jump.fits --suffix=snowblind
-
-Or you can run `SnowblindStep` and/or `JumpPlusStep` as post-hooks after `JumpStep` in a full pipeline, remembering to turn off the default snowball flagging.
-
-    strun calwebb_detector1 jw001234_010203_00001_nrcalong_uncal.fits --steps.jump.post_hooks="snowblind.SnowblindStep","snowblind.JumpPlusStep" --steps.jump.flag_large_events=False
-
-In Python, we can insert `SnowblindStep` and `JumpPlusStep` after `JumpStep` as a post-hook too:
-
-```python
-from snowblind import SnowblindStep, JumpPlusStep
-from jwst.pipeline import Detector1Pipeline
-
-steps = {
-    "jump": {
-        "save_results": True,
-        "flag_large_events": False,
-        "post_hooks": [
-            SnowblindStep,
-            JumpPlusStep,
-        ],
-    },
-}
-
-Detector1Pipeline.call("jw001234_010203_00001_nrcalong_uncal.fits", steps=steps, save_results=True)
-```
-
-which runs them with their step default parameters.  If you want more flexibility, run each step independently with its individual parameters.
-
-## PersistenceFlagStep and OpenPixelStep
-
-The steps `PersistenceFlagStep` and `OpenPixelStep` need to be run on an association of _rate or _cal files, because they are essentially self-calibration.  Here's an example for `PersistenceFlagStep`:
-
-Run `Detector1Pipeline` on each input _uncal.fits file, skipping the built-in `PersistenceStep`.
-```python
-from glob import glob
-from jwst.pipeline import Detector1Pipeline
-
-
-steps = dict(
-    persistence=dict(
-        skip=True,
-    ),
-)
-
-uncal_files = glob("jw*_uncal.fits")
-uncal_files.sort()
-for file in uncal_files:
-    Detector1Pipeline.call(file, steps=steps)
-```
-
-And then run `Image2Pipeline` to produce all the _cal.fits files.  Afterwards, to flag persistence in these:
-
-```python
-from glob import glob
-from snowblind import PersistenceFlagStep
-
-
-cal_files = sorted(glob("jw*_cal.fits"))
-PersistenceFlagStep.call(cal_files, save_results=True, suffix="cal", output_dir="persist")
-```
-
-which writes each _cal.fits file again, under the same name in `persist/`, with PERSISTENCE and DO_NOT_USE set in the DQ array at the pixels that saturated in an earlier exposure of the same detector that ended less than `time` seconds before the middle of the exposure.  Without `time`, each detector gets the time measured for it and packaged with snowblind, and 2500 s when it has none.  The packaged times are long on purpose, to flag more than needed rather than less: persistence varies across a detector (with its quantum efficiency) and with each pixel's history of illumination (how long and how often it saturated), so each is the delay at which a pixel persisting twice as much as the detector's typical saturated star falls to 0.005 DN/s (for the NIRCam imaging detectors, 2100 s on NRCB1 to 12000 s on NRCB4).  The typical star itself falls to 0.005 DN/s sooner (1150 s on NRCBLONG to 4900 s on NRCB4); that time is `typical_time` in each `snowblind/data/persistence_<detector>.asdf`, and passing it, or a time between the two, as `time` flags less; `scripts/measure_persistence.py` measures the persistence in a series of `_rate` files and `scripts/package_persistence_defaults.py` fits it and writes the per-detector files.  With file names (or an association file) and `save_results`, the step reads, flags, writes and closes one exposure at a time, so it handles any number of exposures; a `ModelContainer` is flagged in memory and returned.  Without `output_dir`, the files go to the current directory, which overwrites them when they are there.
-
-The saturated pixels are those with SATURATED in the DQ of each _rate or _cal file; ramp fitting sets it where any group of any integration saturated.
-
-Finally, both these steps can be inserted as pre-hooks into the `Image3Pipeline` using the same method as shown above with `SnowblindStep`.
-
-## StreamCleanStep and ResetRampFitStep
-
-Both steps work on group data after the jump step, and want the reference
-pixel step run with the SIRS algorithm.  Their defaults are set for
-sky-limited imaging: the background of each group difference is a scalar
-median measured on the flat-fielded difference, sources come from a
-two-tier scene mask that also follows the column spikes of saturated stars,
-and the reset fit uses the reset calibration packaged for every NIRCam
-detector and NIRISS, with the reset offset anchored to the exposure's own
-sky.
-
-The simplest way to run both is the `snowblind_detector1` pipeline: it is
-`calwebb_detector1` with the same steps, parameters and CRDS parameter
-references, except that `StreamCleanStep` runs as a post-hook of the jump
-step, the pipeline's own `clean_flicker_noise` step is skipped, and
-`ResetRampFitStep` sits in the `ramp_fit` slot, so one run gives `_rate`
-and `_rateints` products from the cleaned ramp and the reset-anchored fit:
-
-    strun snowblind_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs
-
-The pipeline also sets up the jump step for the two.  It runs at 7 sigma
-and leaves the snowball expansion and the flagging after jumps to
-`SnowblindStep(min_radius=3, after_jumps=5)` and `JumpPlusStep`, which run
-as its first post-hooks.  At 7 sigma the jump step flags what would
-disturb the stream clean, and the reset fit's own likelihood jump search
-(4.5 sigma) finds the fainter jumps on the cleaned ramp.  These settings
-take precedence over the CRDS parameter references, while your own
-(`--steps.jump.rejection_threshold=5` and so on) still win;
-`--steps.jump.expand_large_events=True` gives back the jwst snowball
-flagging in place of the two hooks.
-
-The pipeline's superbias step is also its own, a subclass of the jwst one.
-The ZEROFRAME has no DQ array, so the pipeline marks an unusable zeroframe
-pixel by setting it to 0, and the later steps leave such pixels uncorrected
-and unused.  The jwst superbias step keeps the zeros it is given, but a
-pixel whose raw zeroframe equals the superbias exactly also comes out at 0.
-The raw data are whole DN, so with superbias references that hold only
-whole and half-integer values, as recent NIRCam ones do, that can be up to
-about 1% of the pixels.  The snowblind step gives those pixels a value that
-is 0 DN to every later step but not the marker, so they keep the
-reference-pixel correction and the reset fit uses their zeroframe.
-
-Parameters of the reset fit go through
-(`--steps.ramp_fit.reset_calib=my_calib.asdf`); parameters of the stream
-clean go through the hook
-(`--steps.jump.post_hooks="snowblind.StreamCleanStep(background_method='median')",`,
-the trailing comma making `post_hooks` a list of one; the snowball hooks
-are put ahead of it).  Either
-substitution can be switched off, `--stream_clean=False` or
-`--reset_fit=False`, which gives the jwst step back.  The jump setup stays
-either way.  The default algorithm of the jwst ramp fit, `OLS_C`, does no
-jump search of its own (`LIKELY` searches at 4.5 sigma), so with
-`--reset_fit=False` give the jump step its threshold too
-(`--steps.jump.rejection_threshold=4`, for example); the pipeline warns
-while it is still at 7 sigma.
-
-The stock pipeline can also be made to do the same with hooks alone.  The
-stream clean is a post-hook of the jump step, and the reset fit is a
-post-hook of a skipped `ramp_fit` (stpipe runs a step's post-hooks even
-when the step is skipped, and takes the hook's return value as the data
-that goes on), in its `as_hook` form, which returns the rate image alone
-because a hook must return one model, and writes the `_rateints` product
-itself:
-
-    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs \
-        --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.clean_flicker_noise.skip=True \
-        --steps.ramp_fit.skip=True --steps.ramp_fit.post_hooks="snowblind.ResetRampFitStep(as_hook=True)",
-
-On the command line a hook string can carry one keyword argument only,
-since the hook list is split on commas; in Python a hook can be a step
-instance with any arguments, `ResetRampFitStep(as_hook=True, reset_calib=...)`.
-This route keeps the jwst superbias step, so the reset fit finds the
-zeroframe at 0 in up to 1% of the pixels and fits those without it.
-
-A pre-hook of `ramp_fit` would also run before the skip, but the skipped
-step then marks its output as skipped and the pipeline names it `_ramp`;
-the post-hook form sets the ramp-fit record itself, so the product is
-`_rate`.  For the stream clean alone, leave `ramp_fit` as it is:
-
-    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.clean_flicker_noise.skip=True
-
-The same in Python, where a hook can be the step class itself:
-
-```python
-from snowblind import Detector1Pipeline, StreamCleanStep
-
-Detector1Pipeline.call(
-    "jw..._uncal.fits",
-    steps={"refpix": {"refpix_algorithm": "sirs"}, "jump": {"post_hooks": [StreamCleanStep]}},
-    save_results=True,
-)
-```
-
-Both steps also run on their own on a `_jump` product (`strun stream_clean
-jw..._jump.fits`, `strun reset_rampfit jw..._jump.fits`).
-
-The packaged calibration holds, per detector, the reset-level scatter
-measured from dark ramps and the first-read timing measured on a field (the
-documentation describes both).  To measure your own, for example
-for a detector or epoch not covered:
-
-    snowblind-reset-calib jw..._nrca1_uncal.fits -o nrca1_reset_calib.asdf
-    strun reset_rampfit jw..._nrca1_jump.fits --reset_calib=nrca1_reset_calib.asdf
-
-The file also carries the detector's mean reset-level map, which
-`reset_rampfit --use_pedestal_mean=True` uses as the prior; give the same
-file to `stream_clean --reset_calib=...` so that the first read is cleaned
-against the same prior.  On dark exposures set
-`--steps.stream_clean.background_method=None`; for fields with extended
-emission larger than a few hundred pixels, `integration_model` (a
-box-spline background) keeps that structure out of the noise estimate at
-the cost of the 1/f slower than its box, and the step warns when the
-unmasked background under the median has that much structure.  In one
-exposure, extended emission and slow 1/f cannot be told apart; a scene
-model from the other dithers (`scene_model`) is the way to do better.
-
-Dispersed (WFSS) exposures have a smooth dispersed background that no
-scalar or box background can model.  On a WFSS exposure the step
-therefore defaults to `background_method='crds_background'`: it takes the
-CRDS background reference for the grism and filter, scales it once to the
-exposure on the masked background pixels, and subtracts it from every
-group difference before the noise fit, so the same fixed background
-applies to every difference and nothing random-walks along the ramp.  The
-NIRCam references are flat-fielded while the NIRISS ones carry the
-detector's pixel response, and neither the files nor their documentation
-say which; the step tells them apart from the pixel pattern (logged, with
-a warning when it is unclear, and `reference_units` to decide by hand) and
-multiplies a flat-fielded one by the flat first, so that the flat's
-large-scale structure is not read as noise.  It
-also turns the per-column offset correction (`column_offsets`) off, since
-on a dispersed exposure the traces run along the columns and their
-outskirts would bias each column's masked mean, a flux loss of a few to
-30 percent on faint traces when it was left on; and it notches the Wiener
-gain at the readout row period, where the unmasked wings of traces along
-the columns, at the same clock in every row, would otherwise pass as
-noise.  The ordinary pipeline recipe applies unchanged:
-
-    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.clean_flicker_noise.skip=True
-
-This is for grisms that disperse across the readout stream, NIRISS GR150C
-and NIRCam GRISMC.  NIRISS GR150R and NIRCam GRISMR disperse along the
-stream, where a trace's continuum shape and emission lines sit at the
-scales the filter treats as noise, so the step skips those exposures with
-a warning; `allow_dispersion_along_stream=True` overrides that, at the
-cost of the spectral shape of faint traces.
-
-Both steps build on published work:
-- the SIRS reference-pixel correction ([Rauscher, Fixsen and Mosby 2022, JATIS 8, 028002](https://arxiv.org/abs/2602.02253))
-- the CEERS team's masked row and column striping removal ([Bagley et al. 2023, ApJL 946, L12](https://doi.org/10.3847/2041-8213/acbb08))
-- the likelihood ramp fitting of Brandt (2024, PASP, https://doi.org/10.1088/1538-3873/ad38d9 and https://doi.org/10.1088/1538-3873/ad38da) as implemented in `stcal`
-- the scene mask follows NoiseChisel ([Akhlaghi and Ichikawa 2015, ApJS 220](https://doi.org/10.1088/0067-0049/220/1/1))
-- comparisons are against the jwst `clean_flicker_noise` step, which descends from Chris Willott's image1overf (https://github.com/chriswillott/jwst) and from NSClean ([Rauscher 2024, PASP 136, 015001](https://ui.adsabs.harvard.edu/abs/2024PASP..136a5001R/abstract)).
 
 Please open an issue if you have any problems!

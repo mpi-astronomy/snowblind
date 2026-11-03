@@ -18,6 +18,11 @@ def crds_jump_threshold_of_4(cls, dataset, disable=None, crds_observatory=None):
     return ConfigObj({"steps": {"jump": {"rejection_threshold": 4.0}}})
 
 
+def crds_refpix_median(cls, dataset, disable=None, crds_observatory=None):
+    """Stand-in for the jwst pipeline's CRDS parameters: a refpix section with refpix_algorithm median."""
+    return ConfigObj({"steps": {"refpix": {"refpix_algorithm": "median"}}})
+
+
 def no_crds_parameters(cls, dataset):
     """Stand-in for the CRDS lookup of an input file: no parameters, for jwst."""
     return {}, "jwst"
@@ -92,6 +97,20 @@ def test_pipeline_without_reset_fit_drops_the_reset_parameters_from_the_ramp_fit
     assert pipeline.ramp_fit.algorithm == "OLS_C"
 
 
+def test_pipeline_corrects_the_reference_pixels_with_sirs():
+    """Detector1Pipeline() has the refpix step's refpix_algorithm at sirs."""
+    pipeline = Detector1Pipeline()
+
+    assert pipeline.refpix.refpix_algorithm == "sirs"
+
+
+def test_pipeline_keeps_a_refpix_algorithm_the_caller_gave():
+    """Detector1Pipeline(steps=...) with the refpix step's refpix_algorithm at median keeps median."""
+    pipeline = Detector1Pipeline(steps={"refpix": {"refpix_algorithm": "median"}})
+
+    assert pipeline.refpix.refpix_algorithm == "median"
+
+
 def test_pipeline_runs_the_jump_step_at_7_sigma():
     """Detector1Pipeline() has the jump step's rejection_threshold at 7."""
     pipeline = Detector1Pipeline()
@@ -154,6 +173,27 @@ def test_config_from_reference_puts_the_jump_defaults_over_crds(monkeypatch):
     config = Detector1Pipeline.get_config_from_reference({}, crds_observatory="jwst")
 
     assert config["steps"]["jump"]["rejection_threshold"] == 7.0
+
+
+def test_config_from_reference_puts_sirs_over_crds(monkeypatch):
+    """Detector1Pipeline.get_config_from_reference over CRDS parameters with refpix_algorithm median returns sirs."""
+    monkeypatch.setattr(JwstDetector1Pipeline, "get_config_from_reference", classmethod(crds_refpix_median))
+
+    config = Detector1Pipeline.get_config_from_reference({}, crds_observatory="jwst")
+
+    assert config["steps"]["refpix"]["refpix_algorithm"] == "sirs"
+
+
+def test_build_config_keeps_the_callers_refpix_algorithm_over_the_default(monkeypatch):
+    """Detector1Pipeline.build_config with CRDS at median and the caller's refpix_algorithm median returns median."""
+    monkeypatch.setattr(JwstDetector1Pipeline, "get_config_from_reference", classmethod(crds_refpix_median))
+    monkeypatch.setattr(Detector1Pipeline, "_get_crds_parameters", classmethod(no_crds_parameters))
+
+    config, _ = Detector1Pipeline.build_config(
+        "jw00000000000_00000_00000_nrca1_uncal.fits", steps={"refpix": {"refpix_algorithm": "median"}}
+    )
+
+    assert config["steps"]["refpix"]["refpix_algorithm"] == "median"
 
 
 def test_build_config_keeps_the_callers_jump_threshold_over_the_defaults(monkeypatch):

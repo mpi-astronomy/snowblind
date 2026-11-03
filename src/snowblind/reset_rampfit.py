@@ -8,6 +8,7 @@ planes of the fit, ``used_reset`` and ``d0_resid``, are written to a
 separate ``_resetfit.asdf`` product when ``save_opt`` is set; they are not
 attached to the cube model.
 """
+import copy
 import logging
 
 import asdf
@@ -18,7 +19,7 @@ from jwst.ramp_fitting.ramp_fit_step import (
     create_integration_model,
     get_reference_file_subarrays,
 )
-from .step import Step, carry_cal_step
+from .step import Step, _history
 from stcal.ramp_fitting.ramp_fit import create_ramp_fit_class
 from stdatamodels.jwst.datamodels import dqflags
 
@@ -226,7 +227,8 @@ class ResetRampFitStep(Step):
             + (f", per channel t1_scale {channel_timing[0]} offsets {channel_timing[1]}" if channel_timing else "")
         )
         blocks = readout.channel_blocks(result.data.shape[-2:], result.meta.subarray.fastaxis, result.meta.subarray.slowaxis)
-        if self.anchor_offset_to_sky and result.data.shape[1] >= 3:
+        anchored = self.anchor_offset_to_sky and result.data.shape[1] >= 3
+        if anchored:
             t1_scales = channel_timing[0] if channel_timing else [t1_scale] * len(blocks)
             # the prior without any scalar offset: the map (or zero); the step's own offset goes on top of the anchored value
             base = np.asarray(reset_level, dtype=np.float32) - np.float32(self._scalar_offset)
@@ -262,6 +264,15 @@ class ResetRampFitStep(Step):
             )
             channel_timing = (t1_scales, [float(b) + self.reset_offset for b in anchored])
             reset_level = base
+        # the offset of the reset level over the prior (the pedestal map, or zero) in each channel, for the record:
+        # anchored, reset_level is the bare prior and the channel offsets are whole; otherwise reset_level carries the
+        # scalar offset and the channel offsets (from the calibration) are relative to it
+        if anchored:
+            offsets_over_prior = list(channel_timing[1])
+        elif channel_timing:
+            offsets_over_prior = [self._scalar_offset + offset for offset in channel_timing[1]]
+        else:
+            offsets_over_prior = [self._scalar_offset]
         if channel_timing:
             t1_scales, offsets = channel_timing
             levels = [np.asarray(reset_level, dtype=np.float32) + np.float32(offset) for offset in offsets]
@@ -290,7 +301,18 @@ class ResetRampFitStep(Step):
             )
             log.info(f"Saved reset diagnostics to {path}")
 
+        fit_record = {
+            "unit": "DN",
+            "reset_level_scatter": float(np.nanmedian(sigma_b)),
+            "reset_offset": [float(offset) for offset in offsets_over_prior],
+            "reset_offset_origin": "sky" if anchored else "prior",
+            "first_read_time_scale": [float(k) for k in (channel_timing[0] if channel_timing else [t1_scale])],
+            "first_read_time_origin": "stars" if anchored and self.anchor_timing_to_stars else "prior",
+        }
+
         out_model = create_image_model(result, image_info)
+        _take_records(result, out_model)
+        self.record(out_model, **fit_record)
         out_model.meta.bunit_data = "DN/s"
         out_model.meta.bunit_err = "DN/s"
         out_model.meta.cal_step.ramp_fit = "COMPLETE"
@@ -300,14 +322,12 @@ class ResetRampFitStep(Step):
         if int_times_stripe is not None and len(int_times_stripe) == 0:
             int_times_stripe = None
         int_model = create_integration_model(result, integ_info, result.int_times, int_times_stripe)
+        _take_records(result, int_model)
+        self.record(int_model, **fit_record)
         int_model.meta.bunit_data = "DN/s"
         int_model.meta.bunit_err = "DN/s"
         int_model.meta.cal_step.ramp_fit = "COMPLETE"
         self.set_cal_step(int_model, "COMPLETE")
-        # the jwst model copy keeps only the step records its schema knows; carry the others (stream_clean,
-        # snowblind, jump_plus) from the ramp into the rate products
-        for product in (out_model, int_model):
-            carry_cal_step(result, product)
 
         # the pipeline's product names, from the exposure's file name (inside a hook stpipe has no other name
         # to go by); left to stpipe, a two-model result would get indexed names
@@ -437,6 +457,41 @@ class ResetRampFitStep(Step):
             t1_scale = 1.0
         self._scalar_offset = float(reset_level) if np.ndim(reset_level) == 0 else float(self.reset_offset + file_offset)
         return sigma_b, float(t1_scale), reset_level, channel_timing
+
+
+def _take_records(ramp, product):
+    """Copy to a rate product the records of the ramp that the jwst helpers leave out.
+
+    The jwst ``create_image_model`` and ``create_integration_model`` copy the
+    metadata with ``update``, which takes only what has a FITS keyword in the schema:
+    it leaves out the ``meta.cal_step`` entries of steps outside jwst,
+    ``meta.snowblind``, the history and the primary header cards kept in
+    ``extra_fits``.  This copies those that ``product`` lacks, all but the
+    NEXTEND card, which counts the extensions of the ramp's file.
+
+    Parameters
+    ----------
+    ramp : `~stdatamodels.jwst.datamodels.RampModel`
+        The ramp the product is made from.
+    product : DataModel
+        The rate or rateints model, updated in place.
+    """
+    for key, value in ramp.meta.cal_step.instance.items():
+        if key not in product.meta.cal_step.instance:
+            setattr(product.meta.cal_step, key, value)
+    if "snowblind" in ramp.meta.instance:
+        blocks = product.meta.instance.setdefault("snowblind", {})
+        for alias, block in ramp.meta.instance["snowblind"].items():
+            blocks.setdefault(alias, copy.deepcopy(block))
+    present = _history(product)
+    for description in _history(ramp):
+        if description not in present:
+            product.add_history_entry(description)
+    header = product._instance.setdefault("extra_fits", {}).setdefault("PRIMARY", {}).setdefault("header", [])
+    keywords = {card[0] for card in header}
+    for card in ramp._instance.get("extra_fits", {}).get("PRIMARY", {}).get("header", []):
+        if card[0] not in keywords and card[0] != "NEXTEND":
+            header.append(list(card))
 
 
 def calibrated_pedestal_map(tree, shape, fastaxis, slowaxis, highpass=True, science_superbias=None):

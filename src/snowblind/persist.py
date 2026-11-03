@@ -36,7 +36,10 @@ class PersistenceFlagStep(Step):
     exposure approximates; so an exposure longer than ``time`` still flags the next.
 
     Without ``time``, each detector gets the time measured for it and packaged with
-    snowblind (`packaged_time`), and `DEFAULT_TIME` (2500 s) when it has none.  The
+    snowblind (`packaged_time`), and `DEFAULT_TIME` (2500 s) when it has none.  Each
+    exposure records the time it was flagged with, where that came from, and how many
+    pixels it flagged from how many earlier exposures, in ``meta.snowblind.persist``;
+    the time also goes in the header card ``PERSTIME``.  The
     packaged times are long on purpose: persistence varies across a detector and with
     each pixel's history of illumination (how long and how often it saturated), so they
     are set for a pixel persisting twice as much as the detector's typical saturated
@@ -120,7 +123,7 @@ class PersistenceFlagStep(Step):
         return results
 
     def time_for(self, detector):
-        """The time within which a detector's later exposures are flagged.
+        """The time within which a detector's later exposures are flagged, and where it comes from.
 
         Parameters
         ----------
@@ -129,19 +132,21 @@ class PersistenceFlagStep(Step):
 
         Returns
         -------
-        float
+        time : float
             ``self.time`` when it is set; otherwise the detector's `packaged_time`,
             or `DEFAULT_TIME` when there is none.  Seconds, from the end of the
             saturated exposure to the middle of the later one.
+        origin : str
+            ``"given"``, ``"packaged"`` or ``"default"``, in that order.
         """
         if self.time is not None:
-            return self.time
+            return float(self.time), "given"
         packaged = packaged_time(detector)
         if packaged is None:
             log.info(f"No persistence time is packaged for {detector}; flagging for {DEFAULT_TIME:g} s")
-            return DEFAULT_TIME
+            return DEFAULT_TIME, "default"
         log.info(f"Flagging {detector} for {packaged:g} s, the persistence time measured for the detector")
-        return packaged
+        return packaged, "packaged"
 
     def flag_in_time_order(self, exposures, load, done):
         """Flag each exposure from the saturated pixels of the earlier ones, one detector at a time.
@@ -161,7 +166,7 @@ class PersistenceFlagStep(Step):
             by_detector[detector].append((start, end, item))
 
         for detector, sequence in by_detector.items():
-            limit = self.time_for(detector)
+            limit, limit_origin = self.time_for(detector)
             sequence.sort(key=lambda entry: entry[0])
             starts = np.array([start for start, _, _ in sequence])
             ends = np.array([end for _, end, _ in sequence])
@@ -197,6 +202,10 @@ class PersistenceFlagStep(Step):
 
                 log.info(f"Pixels flagged: {model.meta.filename} {mask.sum()} from {used} earlier exposures")
                 model.dq |= (mask * (DO_NOT_USE | PERSISTENCE)).astype(model.dq.dtype)
+                self.record(
+                    model, time=float(limit), time_origin=limit_origin, flagged_pixels=int(mask.sum()),
+                    earlier_exposures=used,
+                )
                 self.set_cal_step(model, "COMPLETE")
                 if self.save_mask:
                     mask_name = self.make_output_path(basepath=model.meta.filename, suffix="persistmask")

@@ -59,6 +59,7 @@ __all__ = [
     "channel_gain",
     "zero_gain",
     "write_spectra",
+    "sky_shift_and_change",
 ]
 
 log = logging.getLogger(__name__)
@@ -88,7 +89,12 @@ class StreamCleanStep(Step):
     against zero or the reset-level prior; ``even_odd_columns``,
     ``column_offsets`` and ``anchor_mean`` remove per-channel offsets
     around the stream filter; ``save_mask``, ``save_noise`` and
-    ``save_spectra`` write intermediate products.
+    ``save_spectra`` write intermediate products.  The step records what
+    it did to the sky level in ``meta.snowblind.stream_clean``:
+    ``sky_mean_minus_median`` of the background pixels (the shift a scalar
+    median background imposes, header card ``SKYMNMED``) and
+    ``sky_change_by_cleaning`` (card ``SKYCHG``), both in DN/s of the
+    flat-fielded sky, and each per integration.
     """
 
     class_alias = "stream_clean"
@@ -287,6 +293,7 @@ class StreamCleanStep(Step):
         result.data = cleaned
         if self._cleaned_zeroframe is not None:
             result.zeroframe = self._cleaned_zeroframe
+        self._record_sky_stats(result)
         self.set_cal_step(result, "COMPLETE")
         return result
 
@@ -344,6 +351,7 @@ class StreamCleanStep(Step):
             log.info("Cleaning the zeroframe as well")
         frame_time = result.meta.exposure.frame_time or 0.0
         group_time = result.meta.exposure.group_time or 1.0
+        self._sky_stats = {}
         return clean_ramp(
             result.data,
             result.groupdq,
@@ -369,6 +377,50 @@ class StreamCleanStep(Step):
             even_odd_columns=self.even_odd_columns,
             column_offsets=self.column_offsets,
             anchor_mean=self.anchor_mean,
+            stats=self._sky_stats,
+        )
+
+    def _record_sky_stats(self, result):
+        """Log and record what the cleaning did to the sky level of the exposure.
+
+        Two numbers, in DN/s of the flat-fielded sky (raw DN/s without a
+        flat), from the per-difference values of `clean_ramp` divided by
+        the group time: ``sky_mean_minus_median``, the masked mean minus
+        median of the background pixels, which is the shift a scalar median
+        background imposes on the sky, and ``sky_change_by_cleaning``,
+        negative when the cleaning lowered the sky.  `Step.record` writes
+        the mean over the integrations, also to the header cards
+        ``SKYMNMED`` and ``SKYCHG``, and the value of each integration to
+        ``meta.snowblind.stream_clean``, where a level-matching step can
+        read them.  Nothing is written when no difference was measured.
+
+        Parameters
+        ----------
+        result : `~stdatamodels.jwst.datamodels.RampModel`
+            The cleaned model.
+        """
+        stats = getattr(self, "_sky_stats", None) or {}
+        shifts = np.asarray(stats.get("sky_shift", []), dtype=np.float64)
+        changes = np.asarray(stats.get("sky_change", []), dtype=np.float64)
+        if shifts.size == 0 or not np.isfinite(shifts).any():
+            return
+        group_time = result.meta.exposure.group_time or 1.0
+        shift = float(np.nanmean(shifts)) / group_time
+        change = float(np.nanmean(changes)) / group_time
+        per_integration = ", ".join(
+            f"{s / group_time:+.4g} / {c / group_time:+.4g}" for s, c in zip(shifts, changes)
+        )
+        log.info(
+            f"Sky of the background pixels, DN/s: masked mean minus median {shift:+.4g}, change by the cleaning "
+            f"{change:+.4g} (per integration: {per_integration})"
+        )
+        self.record(
+            result,
+            unit="DN/s",
+            sky_mean_minus_median=shift,
+            sky_change_by_cleaning=change,
+            sky_mean_minus_median_per_integration=[float(s) / group_time for s in shifts],
+            sky_change_by_cleaning_per_integration=[float(c) / group_time for c in changes],
         )
 
     def _fit_reference(self, model, background_mask, flat):
@@ -1004,6 +1056,7 @@ def clean_ramp(
     even_odd_columns=False,
     column_offsets=False,
     anchor_mean=False,
+    stats=None,
     first_group_reference=None,
     scene_background=None,
     zeroframe=None,
@@ -1089,6 +1142,17 @@ def clean_ramp(
     min_density : float
         Local background fraction below which the ``wiener`` estimate blends
         toward the row median.
+    stats : dict or None
+        When a dict is given it receives two lists with one entry per
+        integration, both in DN per group difference averaged over the
+        differences cleaned, measured on the background pixels of the
+        flat-fielded difference (the raw difference when ``flat`` is
+        None): ``sky_shift``, the masked mean minus the masked median of
+        the difference, which is the shift a scalar median background
+        imposes on the sky; and ``sky_change``, the mean of the cleaned
+        minus the input difference, the change of the sky made by the
+        cleaning (negative when the sky was lowered).  NaN for an
+        integration with no usable difference.
 
     Returns
     -------
@@ -1143,6 +1207,9 @@ def clean_ramp(
 
     removed_power = [0.0] * nints
     removed_count = [0] * nints
+    sky_shift_sum = [0.0] * nints
+    sky_change_sum = [0.0] * nints
+    sky_count = [0] * nints
     for i, j, image, mask in iterate_differences(data, groupdq, background_mask, clean_first_group, first_group_reference):
         if j == 0:
             previous = np.zeros_like(image) if first_group_reference is None else first_group_reference
@@ -1169,9 +1236,16 @@ def clean_ramp(
             log.warning(f"No usable data in integration {i + 1}, group {j + 1}; difference left as is")
             cleaned_image = image
         else:
-            removed = (image - cleaned_image)[mask & np.isfinite(image) & np.isfinite(cleaned_image)]
+            good = mask & np.isfinite(image) & np.isfinite(cleaned_image)
+            removed = (image - cleaned_image)[good]
             removed_power[i] += float(np.sum(removed.astype(np.float64) ** 2))
             removed_count[i] += removed.size
+            if stats is not None:
+                shift, change = sky_shift_and_change(image[good], removed, None if flat is None else flat[good])
+                if np.isfinite(shift) and np.isfinite(change):
+                    sky_shift_sum[i] += shift
+                    sky_change_sum[i] += change
+                    sky_count[i] += 1
         cleaned[i, j] = previous + cleaned_image
     for i in range(nints):
         if removed_count[i]:
@@ -1179,6 +1253,9 @@ def clean_ramp(
                 f"Integration {i + 1}: removed 1/f noise with an rms of "
                 f"{np.sqrt(removed_power[i] / removed_count[i]):.2f} DN per group difference over the background pixels"
             )
+    if stats is not None:
+        stats["sky_shift"] = [total / n if n else np.nan for total, n in zip(sky_shift_sum, sky_count)]
+        stats["sky_change"] = [total / n if n else np.nan for total, n in zip(sky_change_sum, sky_count)]
 
     if zeroframe is not None and clean_first_group:
         reference = 0.0 if first_group_reference is None else first_group_reference
@@ -1217,6 +1294,48 @@ def clean_ramp(
     if return_spectra:
         return cleaned, spectra
     return cleaned
+
+
+def sky_shift_and_change(sky, removed, response=None):
+    """The mean minus the median of the background pixels of one difference, and the mean removed from them.
+
+    Both are in the flat-fielded units of the difference when ``response``
+    is given: each pixel's value is divided by its response (the flat)
+    first, as the background model is measured, so that the detector's
+    response pattern does not enter the statistics.
+
+    Parameters
+    ----------
+    sky : ndarray
+        The background pixels of the input difference, in DN.
+    removed : ndarray
+        The noise removed from the same pixels, input minus cleaned, in DN.
+    response : ndarray or None
+        The flat at the same pixels, or None for raw units.
+
+    Returns
+    -------
+    shift : float
+        Mean minus median of ``sky`` (divided by the response): the shift a
+        scalar median background imposes on the sky.  NaN without finite
+        pixels.
+    change : float
+        Mean of the cleaned minus the input difference over the pixels, i.e.
+        minus the mean of ``removed`` (divided by the response): negative
+        when the cleaning lowered the sky.  NaN without finite pixels.
+    """
+    sky = np.asarray(sky, dtype=np.float64)
+    removed = np.asarray(removed, dtype=np.float64)
+    if response is not None:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            response = np.asarray(response, dtype=np.float64)
+            sky = sky / response
+            removed = removed / response
+    finite = np.isfinite(sky) & np.isfinite(removed)
+    if not finite.any():
+        return np.nan, np.nan
+    sky = sky[finite]
+    return float(np.mean(sky) - np.median(sky)), float(-np.mean(removed[finite]))
 
 
 def _fixed_for(fixed, integration, group, first_group_scale):

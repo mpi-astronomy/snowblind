@@ -2,25 +2,79 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-03
+
+### Added
+
+- `StreamCleanStep` records what it did to the sky level of each exposure
+  in `meta.snowblind.stream_clean`, which the reset fit carries to the
+  rate file and calwebb_image2 keeps in the `_cal` files:
+  `sky_mean_minus_median`, the masked mean minus the masked median of the
+  background pixels (the shift a scalar median background imposes on the
+  sky), and `sky_change_by_cleaning`, the change of the sky made by the
+  cleaning (negative when lowered), both in DN/s of the flat-fielded sky,
+  averaged over the group differences and integrations, also in the
+  header cards `SKYMNMED` and `SKYCHG`, and with a value per integration.
+  The same numbers are logged. `clean_ramp` takes a `stats` dict that
+  receives them per integration; `sky_shift_and_change` computes them for
+  one difference. A level-matching step can compare its offsets with them.
+- `snowblind.step.META_SCHEMA` defines, once for each step, the names
+  under `meta.snowblind` and the header cards they are also written to;
+  `Step.record` writes them.
+- `PersistenceFlagStep` records in each flagged exposure the time it used
+  (also in the header card `PERSTIME`), whether that time was given,
+  packaged or the 2500 s default, and how many pixels it flagged from how
+  many earlier exposures, in `meta.snowblind.persist`.
+- `ResetRampFitStep` records in the rate and rateints products the scatter
+  of the reset level, the offset of the reset level over its prior and the
+  first-read timing in each output channel, and whether they were anchored
+  to the exposure or taken from the calibration, in
+  `meta.snowblind.reset_rampfit`.
+
 ### Changed
 
 - `PersistenceFlagStep`'s `time` defaults to None: each detector then gets
   the persistence time measured for it and packaged with snowblind
   (`snowblind/data/persistence_<detector>.asdf`), and 2500 s, the former
   default, when it has none. The package holds times for the ten NIRCam
-  imaging detectors, from 2100 s (NRCB1) to 12000 s (NRCB4): long on
+  imaging detectors, from 2200 s (NRCA1) to 12600 s (NRCB4): long on
   purpose, since persistence varies across a detector and with each
   pixel's history of illumination, each is the delay at which a pixel
   persisting twice as much as the detector's typical saturated star falls
   to 0.005 DN/s. Each file also holds `typical_time`, when the typical
-  star itself does (1150 s to 4900 s), to pass as `time` to flag less. A
+  star itself does (1200 s to 5000 s), to pass as `time` to flag less. A
   `time` given still applies to every detector.
   `scripts/measure_persistence.py` measures the persistence of saturated
   stars against the delay in a series of `_rate` files, and
   `scripts/package_persistence_defaults.py` fits it and writes the files.
+  Each detector is also measured with time running backwards, where
+  there can be no persistence, and the forward minus the backward
+  measurement is the persistence: that takes out an excess that does not
+  decay, from the pixels of higher response that the selection favors
+  and a bias that grows with the target's noise.
 - `PersistenceFlagStep` measures `time` from the end of the saturated
   exposure to the middle of the later one, instead of from start to start,
   so an exposure longer than `time` still flags the next one.
+- `ResetRampFitStep` copies into the rate and rateints products all the
+  history entries and the extra primary header cards of the ramp (all but
+  NEXTEND, which counts the ramp file's extensions) and its
+  `meta.snowblind`, not only the snowblind history entries and `S_`
+  cards, as the jwst helpers that build the products leave them out.
+- `snowblind_detector1` runs the reference-pixel step with SIRS
+  (`refpix_algorithm='sirs'`), whose output the stream clean is matched to;
+  the jwst step defaults to a running median. Like the pipeline's jump
+  settings, it takes precedence over the CRDS parameter references and
+  gives way to the caller's (`--steps.refpix.refpix_algorithm=median`).
+- The README is a short overview: what each step does and how it differs
+  from the jwst step it replaces or adds to, installation, and examples.
+  How to run each step and how it works are in the documentation, which
+  has new pages on persistence flagging, with how the packaged times are
+  measured, and on the snowball, jump and open-pixel steps.
+
+### Removed
+
+- `snowblind.step.carry_cal_step`: `ResetRampFitStep` is the only step
+  that builds new models, and copies what it takes itself.
 
 ## [1.2.0] - 2026-11-01
 
@@ -252,7 +306,8 @@ First release.
 - Steps register as stpipe plugins and run with `strun` or as pipeline
   hooks.
 
-[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.2.0...HEAD
+[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.3.0...HEAD
+[1.3.0]: https://github.com/mpi-astronomy/snowblind/compare/1.2.0...1.3.0
 [1.2.0]: https://github.com/mpi-astronomy/snowblind/compare/1.1.0...1.2.0
 [1.1.0]: https://github.com/mpi-astronomy/snowblind/compare/1.0.1...1.1.0
 [1.0.1]: https://github.com/mpi-astronomy/snowblind/compare/1.0.0...1.0.1

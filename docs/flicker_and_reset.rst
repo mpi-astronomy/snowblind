@@ -32,7 +32,9 @@ Summary
   point.
 
 Both work on group data after the jump step and want the reference-pixel
-step run with the SIRS algorithm (``--steps.refpix.refpix_algorithm=sirs``).
+step run with the SIRS algorithm, which ``snowblind_detector1`` does; in the
+jwst pipeline, whose reference-pixel step defaults to a running median, give
+``--steps.refpix.refpix_algorithm=sirs``.
 The stream clean takes full-frame NIRCam and NIRISS exposures and marks
 anything else SKIPPED. The reset fit needs a calibration of the detector's
 reset level; one is packaged for each of the ten NIRCam detectors and for
@@ -46,14 +48,24 @@ steps, parameters and CRDS parameter references, except that
 ``StreamCleanStep`` runs as a post-hook of the jump step (the pipeline's
 own ``clean_flicker_noise`` step is skipped, since some parameter
 references turn it on), ``ResetRampFitStep`` takes the ``ramp_fit`` slot,
-and the superbias step is a subclass of the jwst one (see `Unusable
-zeroframe pixels`_). One run gives the ``_rate`` and ``_rateints``
-products of the cleaned ramp and the reset-anchored fit::
+the superbias step is a subclass of the jwst one (see `Unusable zeroframe
+pixels`_), and the reference-pixel step uses SIRS, whose output the stream
+clean is matched to (``--steps.refpix.refpix_algorithm=median`` gives the
+jwst default back). One run gives the ``_rate`` and ``_rateints`` products
+of the cleaned ramp and the reset-anchored fit::
 
-    strun snowblind_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs
+    strun snowblind_detector1 jw..._uncal.fits
+
+or, in Python:
+
+.. code-block:: python
+
+    from snowblind import Detector1Pipeline
+
+    Detector1Pipeline.call("jw..._uncal.fits", save_results=True)
 
 The pipeline also sets up the jump step for the two. It runs at 7 sigma
-(the three- and four-group thresholds too), flags the four neighbours of
+(the three- and four-group thresholds too), flags the four neighbors of
 jumps above 20 sigma, and leaves the snowball expansion and the flagging
 after jumps to ``SnowblindStep(min_radius=3, after_jumps=5)`` and
 ``JumpPlusStep`` as its first post-hooks. At 7 sigma the jump step flags
@@ -90,13 +102,54 @@ skipped and takes a hook's return value as the data that goes on. In
 Python a hook can be the step class itself, or a step instance with any
 arguments. Both steps also run on their own on a ``_jump`` product
 (``strun stream_clean jw..._jump.fits``, ``strun reset_rampfit
-jw..._jump.fits``). The README has the full recipes.
+jw..._jump.fits``).
+
+In full, the stock pipeline with both hooks::
+
+    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs \
+        --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.clean_flicker_noise.skip=True \
+        --steps.ramp_fit.skip=True --steps.ramp_fit.post_hooks="snowblind.ResetRampFitStep(as_hook=True)",
+
+On the command line a hook string carries one keyword argument at most,
+since the hook list is split on commas, and the trailing comma makes a list
+of one. A pre-hook of ``ramp_fit`` would also run before the skip, but the
+skipped step then marks its output as skipped and the pipeline names it
+``_ramp``; the post-hook form sets the ramp-fit record itself, so the
+product is ``_rate``. This route keeps the jwst superbias step, so the reset
+fit finds the zeroframe at 0 in up to 1% of the pixels and fits those
+without it (see `Unusable zeroframe pixels`_). For the stream clean alone,
+leave ``ramp_fit`` as it is::
+
+    strun calwebb_detector1 jw..._uncal.fits --steps.refpix.refpix_algorithm=sirs \
+        --steps.jump.post_hooks="snowblind.StreamCleanStep", --steps.clean_flicker_noise.skip=True
+
+The same in Python:
+
+.. code-block:: python
+
+    from jwst.pipeline import Detector1Pipeline
+    from snowblind import StreamCleanStep
+
+    Detector1Pipeline.call(
+        "jw..._uncal.fits",
+        steps={
+            "refpix": {"refpix_algorithm": "sirs"},
+            "jump": {"post_hooks": [StreamCleanStep]},
+            "clean_flicker_noise": {"skip": True},
+        },
+        save_results=True,
+    )
 
 A snowblind step run as a hook inside a jwst pipeline sends its log
 messages to the pipeline's handlers, so they appear in the pipeline log
 like jwst's own. At INFO level each step says in plain words what it did:
 the background mask, the rms of the 1/f noise removed, how the reset
-level was anchored.
+level was anchored. What the reset fit used is also kept in the
+``meta.snowblind.reset_rampfit`` metadata of the ``_rate`` and
+``_rateints`` products: the scatter of the reset level, the offset of the
+reset level over its prior and the first-read timing in each output
+channel, and where each came from (this exposure's sky or bright pixels,
+or the calibration).
 
 Choosing the settings
 ---------------------
@@ -152,7 +205,9 @@ Dispersed (WFSS) exposures
 Detectors or epochs the packaged calibration does not cover
    Measure your own reset calibration from dark ramps of the detector
    with ``snowblind-reset-calib`` and give it to the reset fit
-   (``reset_calib``). The file also carries the detector's mean reset
+   (``reset_calib``): ``snowblind-reset-calib jw..._nrca1_uncal.fits -o
+   nrca1_reset_calib.asdf``, then ``strun reset_rampfit jw..._nrca1_jump.fits
+   --reset_calib=nrca1_reset_calib.asdf``. The file also carries the detector's mean reset
    level per pixel, which ``use_pedestal_mean=True`` uses as the prior;
    give the same file to the stream clean (``reset_calib``) so that the
    first read is cleaned against the same prior.
@@ -188,7 +243,7 @@ the read-noise level at short periods and rises as a power law of slope
 close to 1 toward long periods; the two cross at periods of about a
 millisecond, a fifth of a row. Most of the 1/f power is at periods of a
 row and longer, which is the row banding of the rate image (column
-banding on NIRISS). Inter-pixel capacitance correlates neighbouring
+banding on NIRISS). Inter-pixel capacitance correlates neighboring
 samples, and there are weak pickup lines at periods of a few pixels. SIRS
 removes the part of the 1/f that the reference pixels can see; the stream
 clean removes what is left, within and between the output channels.
@@ -214,7 +269,7 @@ Why cleaning group differences can add noise
 A step that estimates the 1/f noise in each group difference, subtracts
 it and rebuilds the groups makes cleaned group j the input group j minus
 the sum of the estimates of differences 1 to j. The true 1/f offsets do
-not accumulate in that sum: the offset of a read enters two neighbouring
+not accumulate in that sum: the offset of a read enters two neighboring
 differences with opposite signs, so only the first and last survive. An
 estimate does the same only if it is a fixed linear function of the
 data, applied identically to every difference; a mean over the same
@@ -279,7 +334,17 @@ bridged from the samples either side, and where the local fraction of
 background pixels is below ``min_density`` (0.2) the estimate tapers off.
 ``anchor_mean`` (on by default) sets each channel's mean removed noise to
 the masked mean of the residual, so a robust estimator such as
-``fit_method='row_median'`` cannot shift the sky.
+``fit_method='row_median'`` cannot shift the sky. What the step did to
+the sky level is recorded in ``meta.snowblind.stream_clean`` of the ASDF
+extension, in DN/s of the flat-fielded sky and averaged over the group
+differences and integrations: ``sky_mean_minus_median``, the masked mean
+minus the masked median of the background pixels (the shift a scalar
+median background imposes), and ``sky_change_by_cleaning``, the change of
+the sky made by the cleaning, negative when lowered. Both are also in
+the primary header, as ``SKYMNMED`` and ``SKYCHG``, and their values for
+each integration are in ``sky_mean_minus_median_per_integration`` and
+``sky_change_by_cleaning_per_integration``. The reset fit carries them to
+the rate file, and calwebb_image2 keeps them in the ``_cal`` files.
 
 The background model
 ~~~~~~~~~~~~~~~~~~~~
@@ -440,7 +505,7 @@ step measures it per output channel from the exposure's own sky
 (``anchor_offset_to_sky``, on by default): the pixels whose
 first-resultant signal is below ``anchor_max_signal`` (50 DN), when a
 channel has at least ``anchor_min_pixels`` (1000) of them; otherwise the
-calibration's offset is kept. This centres the first-difference residual,
+calibration's offset is kept. This centers the first-difference residual,
 and the reset fit then agrees with the likelihood fit without the reset
 point to about 0.1 percent at every brightness. ``reset_offset`` adds a
 fixed number of DN on top.
@@ -586,7 +651,8 @@ What this builds on
 
 * The reference-pixel correction is SIRS, Simple Improved Reference
   Subtraction (Rauscher, Fixsen and Mosby 2022, JATIS 8, 028002,
-  doi:10.1117/1.JATIS.8.2.028002), the Detector1 default for NIRCam.
+  doi:10.1117/1.JATIS.8.2.028002), which ``snowblind_detector1`` uses (the
+  jwst reference-pixel step defaults to a running median).
   ``stream_clean`` removes what SIRS leaves: the 1/f within and between
   the output channels that the reference pixels cannot see, and the
   per-read even-odd and column offsets.

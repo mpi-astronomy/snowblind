@@ -10,8 +10,8 @@ history:
   - !core/history_entry-1.0.0
     description: Persistence time of NRCA4 fitted from persistence_nrca4.ecsv
     software: !core/software-1.0.0 {author: James E. Davies, homepage: 'https://github.com/mpi-astronomy/snowblind',
-      name: snowblind, version: 1.2.1.dev1+ga7967b3ff.d20261102}
-    time: 2026-11-02 15:19:18+00:00
+      name: snowblind, version: 1.2.1.dev6+g9f232d033.d20261102}
+    time: 2026-11-03 05:34:15+00:00
   extensions:
   - !core/extension_metadata-1.0.0
     extension_class: asdf.extension._manifest.ManifestExtension
@@ -24,13 +24,15 @@ description: 'Persistence time of the detector, used by PersistenceFlagStep when
   saturated star falls to the threshold; typical_time is the delay at which the typical
   star itself does; each the longer of the fit''s and the measured bins'''
 detector: NRCA4
-estimates: {time_bins: 2930.8556752727595, time_fit: 2602.437691643203, typical_time_bins: 1466.6242279049352,
-  typical_time_fit: 1483.7271662710598}
+estimates: {time_bins: 3319.1396150120677, time_fit: 3065.2805095375124, typical_time_bins: 1558.5563588256596,
+  typical_time_fit: 1658.7232361276579}
 extrapolated: false
-generated: '2026-11-02T15:19:18+00:00'
+generated: '2026-11-03T05:34:15+00:00'
 longest_delay: 20509.589000701904
 margin: 2.0
 measured:
+  backward: -0.00039141252636909485
+  backward_error: 0.0001230356646701695
   delay_hi: [300.0, 425.0, 600.0, 850.0, 1200.0, 1700.0, 2400.0, 3400.0, 4800.0, 6800.0,
     9600.0, 13600.0, 19200.0, 38400.0]
   delay_lo: [212.0, 300.0, 425.0, 600.0, 850.0, 1200.0, 1700.0, 2400.0, 3400.0, 4800.0,
@@ -39,33 +41,40 @@ measured:
     1079.0679998397827, 1441.1800003051758, 2047.3870010375977, 3027.993999481201,
     4027.4169998168945, 5758.231000900269, 8142.035000324249, 11587.566500663757,
     16366.622999191284, 19708.133499622345]
-  error: [0.003901319577228485, 0.0023136910323053495, 0.0032252107062386423, 0.0007147297546640062,
-    0.0006212370942730917, 0.0004919955851783747, 0.00031241713863165845, 0.00039024649608569896,
-    0.00017426727539143362, 0.00020628572046538097, 0.00023894582224311302, 0.00019789699303219071,
-    0.00016626910933954304, 0.00046512950831092953]
-  n_rows: [58, 83, 39, 62, 139, 160, 220, 265, 418, 537, 624, 772, 866, 138]
-  n_sources: [35, 42, 23, 42, 77, 81, 85, 107, 134, 122, 119, 110, 96, 57]
-  persistence: [0.04346930748578953, 0.034206715101997055, 0.014465890583514628, 0.009292480102666315,
+  error: [0.00304995775510808, 0.0024859008890494275, 0.003115449773228458, 0.000767670723450812,
+    0.0007350794717413548, 0.0005706442711433567, 0.0003763703240756068, 0.00042148561076898355,
+    0.00020547205583063366, 0.0002946681348582946, 0.0003282766854414854, 0.0002390163368647709,
+    0.00022339886428349414, 0.0004109072654713481]
+  forward: [0.04346930748578953, 0.034206715101997055, 0.014465890583514628, 0.009292480102666315,
     0.006454950460465625, 0.005121212136351562, 0.003167199529381795, 0.002446820511249825,
     0.001522119686855242, 0.0011955786418790617, 8.79871076904237e-05, 0.0005575055359966225,
     0.0008285467047244308, 0.0010187382176001037]
-model: {alpha: 1.233596566197082, alpha_error: 0.07336799011355923, amplitude: 0.008134891598629387,
-  amplitude_error: 0.0005199710267626322, form: 'persistence = amplitude * (delay
+  n_rows: [58, 83, 39, 62, 139, 160, 220, 265, 418, 537, 624, 772, 866, 138]
+  n_rows_backward: 4042
+  n_sources: [35, 42, 23, 42, 77, 81, 85, 107, 134, 122, 119, 110, 96, 57]
+  persistence: [0.04386072001215863, 0.03459812762836615, 0.014857303109883722, 0.00968389262903541,
+    0.00684636298683472, 0.005512624662720657, 0.0035586120557508896, 0.00283823303761892,
+    0.0019135322132243367, 0.0015869911682481566, 0.0004793996340595186, 0.0009489180623657174,
+    0.0012199592310935257, 0.0014101507439691985]
+model: {alpha: 1.1287370728058692, alpha_error: 0.0727370459169969, amplitude: 0.008851909905878502,
+  amplitude_error: 0.0005987727009211075, form: 'persistence = amplitude * (delay
     / 1000 s)**-alpha, delay from the end of the saturated exposure to the middle
-    of the later one, persistence in DN/s', n_bins: 14, reduced_chisq: 4.0402380818654775}
+    of the later one, persistence in DN/s', n_bins: 14, reduced_chisq: 4.625716738115978}
 provenance:
   classes: [sat 100k-300k, sat 300k-1000k, sat 60k-100k, sat no rate]
   dataset: 'NEXUS, programs 5105 and 9263: NIRCam imaging, 700 exposures per short-wavelength
     detector and 412 per long-wavelength detector, SHALLOW4 and MEDIUM8, rates from
-    snowblind_detector1 of 2026-11-01'
+    snowblind_detector1 of 2026-11-01; measured forward (2026-11-02) and backward
+    (2026-11-03)'
   first_exposure: jw05105001001_02101_00001_nrca4_rate.fits
   last_exposure: jw09263005004_03201_00002_nrca4_rate.fits
   measurement: scripts/measure_persistence.py
   min_shift_pix: 100.0
   n_exposures: 700
-  pooling: median per delay bin, error from resampling the source exposures
+  pooling: median per delay bin less the median of the backward rows of all delays,
+    errors from resampling the source exposures added in quadrature
   table: persistence_nrca4.ecsv
 threshold: 0.005
-time: 2930.8556752727595
-typical_time: 1483.7271662710598
+time: 3319.1396150120677
+typical_time: 1658.7232361276579
 ...

@@ -22,13 +22,18 @@ since a star of the source may then still be on the same pixels.
 The rows are pooled in bins of delay by their median: a few rows have a null far off (a moved group of the source
 landed on a star of the target), which the median ignores and a mean weighted by the rows' errors does not.  The
 error of a bin's median comes from resampling the source exposures with replacement, since the rows of one source
-share its stars.  The fit, to the bins with at least ``MIN_ROWS`` rows, is
+share its stars: half the range from the 16th to the 84th percentile of the resampled medians.  When the table also
+has at least ``MIN_ROWS`` rows measured with time running backwards (``direction`` "backward", where the source cannot
+have left persistence), a bin's persistence is its forward median minus the median of all the backward rows, with the
+errors added in quadrature: that takes out what does not decay (the pixels of higher response that the classes favor,
+and the bias of the group statistic with the target's noise), and is taken over all delays because it does not decay
+and the backward rows of short delays are few.  The fit, to the bins with at least ``MIN_ROWS`` rows, is
 
     persistence = A (delay / 1000 s)^-alpha
 
 with weights of one over the error squared, the parameter errors scaled by the root of the reduced chi-square when it
 is above one.  The fit reaches a level at ``1000 s (A / level)^(1 / alpha)``; the bins reach it where they first fall
-below it (log-log interpolation between neighbours).  The decay flattens at long delays, where the fit falls faster
+below it (log-log interpolation between neighbors).  The decay flattens at long delays, where the fit falls faster
 than the bins, so each time is the longer of the two: ``typical_time`` at the threshold, ``time`` at the threshold over
 the margin.  A detector with fewer than ``MIN_BINS`` such bins, or
 whose fit fails or gives A or alpha of zero or less, gets no file.  A time beyond the longest delay measured is written
@@ -78,34 +83,56 @@ def model(delay, amplitude, alpha):
 
 
 def median_and_error(values, sources, rng):
-    """Median of ``values`` and its error from resampling the source exposures (``sources``) with replacement."""
+    """Median of ``values`` and its error from resampling the source exposures (``sources``) with replacement.
+
+    The error is half the range from the 16th to the 84th percentile of the resampled medians: their median absolute
+    deviation comes out as zero when a bin has few source exposures.
+    """
     _, inverse = np.unique(sources, return_inverse=True)
     members = [np.nonzero(inverse == k)[0] for k in range(inverse.max() + 1)]
     medians = []
     for _ in range(N_RESAMPLE):
         pick = rng.integers(0, len(members), len(members))
         medians.append(np.median(values[np.concatenate([members[k] for k in pick])]))
-    return float(np.median(values)), float(1.4826 * np.median(np.abs(np.array(medians) - np.median(medians))))
+    low, high = np.percentile(medians, [16, 84])
+    return float(np.median(values)), float((high - low) / 2)
+
+
+def is_forward(rows):
+    """Which rows of a measurement table were measured with time running forward (all, in a table without directions)."""
+    if "direction" not in rows.colnames:
+        return np.ones(len(rows), dtype=bool)
+    return np.asarray(rows["direction"]).astype(str) == "forward"
 
 
 def pooled(rows, rng):
-    """The rows pooled per delay bin: lists of bin edges, median delay, persistence, its error, rows and sources."""
+    """The rows pooled per delay bin, less the backward level when the rows hold enough backward ones.
+
+    Returns lists, per bin, of the edges, median delay, persistence, its error, forward median, rows and sources; and
+    the backward level subtracted (``backward``, 0 without one), its error and its rows.
+    """
     delay = np.asarray(rows["delay_mid"], dtype=float)
-    persistence = np.asarray(rows["excess_groups"] - rows["null_groups"], dtype=float)
+    excess = np.asarray(rows["excess_groups"] - rows["null_groups"], dtype=float)
     sources = np.asarray(rows["source"]).astype(str)
-    out = {"delay_lo": [], "delay_hi": [], "delay_median": [], "persistence": [], "error": [], "n_rows": [],
-           "n_sources": []}
+    forward = is_forward(rows)
+    backward = (~forward).sum() >= MIN_ROWS
+    back, back_error = median_and_error(excess[~forward], sources[~forward], rng) if backward else (0.0, 0.0)
+    out = {"delay_lo": [], "delay_hi": [], "delay_median": [], "persistence": [], "error": [], "forward": [],
+           "n_rows": [], "n_sources": [], "backward": back, "backward_error": back_error,
+           "n_rows_backward": int((~forward).sum()) if backward else 0}
     for low, high in zip(DELAY_EDGES[:-1], DELAY_EDGES[1:]):
-        inside = (delay >= low) & (delay < high)
-        if inside.sum() >= MIN_ROWS:
-            value, error = median_and_error(persistence[inside], sources[inside], rng)
-            out["delay_lo"].append(float(low))
-            out["delay_hi"].append(float(high))
-            out["delay_median"].append(float(np.median(delay[inside])))
-            out["persistence"].append(value)
-            out["error"].append(max(error, ERROR_FLOOR))
-            out["n_rows"].append(int(inside.sum()))
-            out["n_sources"].append(len(set(sources[inside])))
+        ahead = forward & (delay >= low) & (delay < high)
+        if ahead.sum() < MIN_ROWS:
+            continue
+        value, error = median_and_error(excess[ahead], sources[ahead], rng)
+        out["delay_lo"].append(float(low))
+        out["delay_hi"].append(float(high))
+        out["delay_median"].append(float(np.median(delay[ahead])))
+        out["persistence"].append(value - back)
+        out["error"].append(max(float(np.hypot(error, back_error)), ERROR_FLOOR))
+        out["forward"].append(value)
+        out["n_rows"].append(int(ahead.sum()))
+        out["n_sources"].append(len(set(sources[ahead])))
     return out
 
 
@@ -189,7 +216,7 @@ def main(argv=None):
             continue
         typical_fit, typical_bins, typical_time = delay_at(result, bins, args.threshold)
         time_fit, time_bins, time = delay_at(result, bins, args.threshold / args.margin)
-        longest = float(np.max(rows["delay_mid"]))
+        longest = float(np.max(np.asarray(rows["delay_mid"], dtype=float)[is_forward(rows)]))
         exposures = sorted(str(name) for name in set(table["source"]) | set(table["target"]))
         entry = {
             "detector": detector,
@@ -213,7 +240,11 @@ def main(argv=None):
                 "last_exposure": exposures[-1],
                 "classes": sorted(str(cls) for cls in set(rows["cls"])),
                 "min_shift_pix": float(args.min_shift),
-                "pooling": "median per delay bin, error from resampling the source exposures",
+                "pooling": (
+                    "median per delay bin less the median of the backward rows of all delays, errors from resampling "
+                    "the source exposures added in quadrature" if bins["n_rows_backward"] else
+                    "median per delay bin, forward only, error from resampling the source exposures"
+                ),
                 "measurement": "scripts/measure_persistence.py",
                 "table": os.path.basename(path),
             },

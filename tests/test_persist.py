@@ -434,3 +434,64 @@ def test_without_a_packaged_time_leaves_an_image_beyond_2500_s():
     results = PersistenceFlagStep.call(datamodels.ModelContainer([first, later]))
 
     assert results[1].dq[2, 2] == GOOD
+
+
+def flag_one_pair(**parameters):
+    """PersistenceFlagStep.call with ``parameters`` on an image saturated in a 3x3 block and an image 400 s later;
+    returns the later image."""
+    first = make_image(1, start_time=60122.0)
+    saturate(first, 5, 5)
+    later = make_image(2, start_time=60122.0 + 400.0 / 86400.0)
+
+    return PersistenceFlagStep.call(datamodels.ModelContainer([first, later]), **parameters)[1]
+
+
+def test_records_the_time_it_flagged_with():
+    """PersistenceFlagStep.call with time=1000 records meta.snowblind.persist.time 1000 in the later image."""
+    later = flag_one_pair(time=1000.0)
+
+    assert later.meta.snowblind.persist.time == 1000.0
+
+
+def test_records_a_given_time_as_given():
+    """PersistenceFlagStep.call with time=1000 records meta.snowblind.persist.time_origin 'given' in the later image."""
+    later = flag_one_pair(time=1000.0)
+
+    assert later.meta.snowblind.persist.time_origin == "given"
+
+
+def test_records_a_packaged_time_as_packaged(packaged_times):
+    """PersistenceFlagStep.call without time, packaged time 500 s, records time_origin 'packaged' in the later image."""
+    write_packaged_time(packaged_times, "NRCALONG", 500.0)
+    later = flag_one_pair()
+
+    assert later.meta.snowblind.persist.time_origin == "packaged"
+
+
+def test_records_the_default_time_as_default():
+    """PersistenceFlagStep.call without time or a packaged time records time 2500 and time_origin 'default'."""
+    later = flag_one_pair()
+
+    assert (later.meta.snowblind.persist.time, later.meta.snowblind.persist.time_origin) == (2500.0, "default")
+
+
+def test_records_the_number_of_pixels_flagged():
+    """PersistenceFlagStep.call on a 3x3 saturated block and a later image records flagged_pixels 9 in the later image."""
+    later = flag_one_pair(time=1000.0)
+
+    assert later.meta.snowblind.persist.flagged_pixels == 9
+
+
+def test_records_the_number_of_earlier_exposures():
+    """PersistenceFlagStep.call on one earlier image and a later image records earlier_exposures 1 in the later image."""
+    later = flag_one_pair(time=1000.0)
+
+    assert later.meta.snowblind.persist.earlier_exposures == 1
+
+
+def test_writes_the_time_to_the_perstime_card(tmp_path):
+    """PersistenceFlagStep.call with time=1000, the later image saved, has PERSTIME = 1000.0 in its primary header."""
+    later = flag_one_pair(time=1000.0)
+    later.save(tmp_path / "later.fits")
+
+    assert fits.getheader(tmp_path / "later.fits")["PERSTIME"] == 1000.0
