@@ -16,9 +16,9 @@ def test_init():
     assert step.threshold == 4.5
 
 
-def test_call():
+def test_open_pixel_call():
     images = datamodels.ModelContainer()
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(0)
 
     mean = 0.0
     stddev = 0.08
@@ -53,7 +53,7 @@ def test_call():
         assert result.dq[5, 5] == GOOD
 
 
-def test_cal_step_complete_in_fits_header(tmp_path):
+def test_open_pixel_cal_step_complete_in_fits_header(tmp_path):
     """OpenPixelStep.call on three images of one detector: each result saves with S_OPNPIX = COMPLETE."""
     images = datamodels.ModelContainer()
     for i in range(3):
