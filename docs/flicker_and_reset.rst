@@ -144,7 +144,12 @@ A snowblind step run as a hook inside a jwst pipeline sends its log
 messages to the pipeline's handlers, so they appear in the pipeline log
 like jwst's own. At INFO level each step says in plain words what it did:
 the background mask, the rms of the 1/f noise removed, how the reset
-level was anchored.
+level was anchored. What the reset fit used is also kept in the
+``meta.snowblind.reset_rampfit`` metadata of the ``_rate`` and
+``_rateints`` products: the scatter of the reset level, the offset of the
+reset level over its prior and the first-read timing in each output
+channel, and where each came from (this exposure's sky or bright pixels,
+or the calibration).
 
 Choosing the settings
 ---------------------

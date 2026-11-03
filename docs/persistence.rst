@@ -50,6 +50,13 @@ of the last ``time`` seconds, so it handles any number of exposures; a
 ``ModelContainer`` is flagged in memory and returned. The step can also run
 as a pre-hook of ``calwebb_image3``.
 
+Each flagged exposure records, in its ``meta.snowblind.persist`` metadata,
+the time it was flagged with (``time``, also in the header card
+``PERSTIME``), where that time came from (``time_origin``: ``given``,
+``packaged`` or ``default``), and how many pixels it flagged
+(``flagged_pixels``) from how many earlier exposures
+(``earlier_exposures``).
+
 The saturated pixels of an exposure are those with ``SATURATED`` in its
 ``dq`` array; ramp fitting sets it where any group of any integration
 saturated. A subarray exposure is placed on the detector by its subarray

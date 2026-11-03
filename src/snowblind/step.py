@@ -41,6 +41,70 @@ PIPELINE_LOGGER = "stpipe"
 META_SCHEMA = {
     "type": "object",
     "properties": {
+        "persist": {
+            "type": "object",
+            "properties": {
+                "time": {
+                    "type": "number",
+                    "title": "persist: flagging time [s]",
+                    "description": (
+                        "Pixels that saturated in an earlier exposure of the detector which ended less than this many "
+                        "seconds before the middle of this one are flagged."
+                    ),
+                    "fits_keyword": "PERSTIME",
+                },
+                "time_origin": {
+                    "type": "string",
+                    "title": "Where the time came from",
+                    "description": (
+                        "given: the step's time parameter; packaged: the time measured for the detector and packaged "
+                        "with snowblind; default: 2500 s, for a detector without a packaged time."
+                    ),
+                },
+                "flagged_pixels": {"type": "integer", "title": "Pixels flagged in this exposure"},
+                "earlier_exposures": {"type": "integer", "title": "Earlier exposures the flags came from"},
+            },
+        },
+        "reset_rampfit": {
+            "type": "object",
+            "properties": {
+                "unit": {"type": "string", "title": "Unit of reset_offset and reset_level_scatter"},
+                "reset_level_scatter": {
+                    "type": "number",
+                    "title": "Scatter of the reset level the fit assumed (median over pixels)",
+                },
+                "reset_offset": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "title": "Offset of the reset level over the prior, per output channel (or one for all)",
+                    "description": (
+                        "Added to the prior of the reset level (the detector's mean pedestal map, or zero) in each "
+                        "output channel."
+                    ),
+                },
+                "reset_offset_origin": {
+                    "type": "string",
+                    "title": "Where reset_offset came from",
+                    "description": (
+                        "sky: anchored to this exposure's sky pixels, keeping the prior's value in a channel "
+                        "with too few; prior: the reset calibration and the step's reset_offset."
+                    ),
+                },
+                "first_read_time_scale": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "title": "Effective time of the first read over its nominal, per output channel (or one for all)",
+                },
+                "first_read_time_origin": {
+                    "type": "string",
+                    "title": "Where first_read_time_scale came from",
+                    "description": (
+                        "stars: fitted to this exposure's bright pixels, keeping the prior's value in a channel "
+                        "with too few; prior: the reset calibration or the step's t1_scale."
+                    ),
+                },
+            },
+        },
         "stream_clean": {
             "type": "object",
             "properties": {

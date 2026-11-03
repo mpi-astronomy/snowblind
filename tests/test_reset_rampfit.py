@@ -575,6 +575,49 @@ def test_call_puts_the_ramp_history_before_its_own(tmp_path):
     assert _history(out) == ["earlier step", f"snowblind {__version__} ResetRampFitStep: COMPLETE"]
 
 
+def test_call_records_the_reset_level_scatter_in_the_rate(tmp_path):
+    """ResetRampFitStep.call with sigma_b=15 records meta.snowblind.reset_rampfit.reset_level_scatter 15 in the rate."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp()
+
+    out, _ints = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
+
+    assert out.meta.snowblind.reset_rampfit.reset_level_scatter == 15.0
+
+
+def test_call_records_the_reset_level_scatter_in_the_rateints(tmp_path):
+    """ResetRampFitStep.call with sigma_b=15 records meta.snowblind.reset_rampfit.reset_level_scatter 15 in the rateints."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp()
+
+    _out, ints = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
+
+    assert ints.meta.snowblind.reset_rampfit.reset_level_scatter == 15.0
+
+
+def test_call_records_the_reset_offset_as_anchored_to_the_sky(tmp_path):
+    """ResetRampFitStep.call on a 5-group ramp, anchoring on by default, records reset_offset_origin 'sky'."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp()
+
+    out, _ints = ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
+
+    assert out.meta.snowblind.reset_rampfit.reset_offset_origin == "sky"
+
+
+def test_call_without_anchoring_records_the_steps_reset_offset(tmp_path):
+    """ResetRampFitStep.call with sigma_b=15, reset_offset=3 and anchor_offset_to_sky off records reset_offset [3.0]."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp()
+
+    out, _ints = ResetRampFitStep.call(
+        model, sigma_b=15.0, reset_offset=3.0, anchor_offset_to_sky=False, override_readnoise=rn, override_gain=gain,
+        override_superbias=bias,
+    )
+
+    assert list(out.meta.snowblind.reset_rampfit.reset_offset) == [3.0]
+
+
 def test_call_as_hook_returns_the_rate_image_alone(tmp_path):
     """ResetRampFitStep.call with as_hook=True returns one ImageModel marked ramp_fit COMPLETE and writes the rateints."""
     rn, gain, bias = reference_files(tmp_path)

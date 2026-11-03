@@ -227,7 +227,8 @@ class ResetRampFitStep(Step):
             + (f", per channel t1_scale {channel_timing[0]} offsets {channel_timing[1]}" if channel_timing else "")
         )
         blocks = readout.channel_blocks(result.data.shape[-2:], result.meta.subarray.fastaxis, result.meta.subarray.slowaxis)
-        if self.anchor_offset_to_sky and result.data.shape[1] >= 3:
+        anchored = self.anchor_offset_to_sky and result.data.shape[1] >= 3
+        if anchored:
             t1_scales = channel_timing[0] if channel_timing else [t1_scale] * len(blocks)
             # the prior without any scalar offset: the map (or zero); the step's own offset goes on top of the anchored value
             base = np.asarray(reset_level, dtype=np.float32) - np.float32(self._scalar_offset)
@@ -263,6 +264,15 @@ class ResetRampFitStep(Step):
             )
             channel_timing = (t1_scales, [float(b) + self.reset_offset for b in anchored])
             reset_level = base
+        # the offset of the reset level over the prior (the pedestal map, or zero) in each channel, for the record:
+        # anchored, reset_level is the bare prior and the channel offsets are whole; otherwise reset_level carries the
+        # scalar offset and the channel offsets (from the calibration) are relative to it
+        if anchored:
+            offsets_over_prior = list(channel_timing[1])
+        elif channel_timing:
+            offsets_over_prior = [self._scalar_offset + offset for offset in channel_timing[1]]
+        else:
+            offsets_over_prior = [self._scalar_offset]
         if channel_timing:
             t1_scales, offsets = channel_timing
             levels = [np.asarray(reset_level, dtype=np.float32) + np.float32(offset) for offset in offsets]
@@ -291,8 +301,18 @@ class ResetRampFitStep(Step):
             )
             log.info(f"Saved reset diagnostics to {path}")
 
+        fit_record = {
+            "unit": "DN",
+            "reset_level_scatter": float(np.nanmedian(sigma_b)),
+            "reset_offset": [float(offset) for offset in offsets_over_prior],
+            "reset_offset_origin": "sky" if anchored else "prior",
+            "first_read_time_scale": [float(k) for k in (channel_timing[0] if channel_timing else [t1_scale])],
+            "first_read_time_origin": "stars" if anchored and self.anchor_timing_to_stars else "prior",
+        }
+
         out_model = create_image_model(result, image_info)
         _take_records(result, out_model)
+        self.record(out_model, **fit_record)
         out_model.meta.bunit_data = "DN/s"
         out_model.meta.bunit_err = "DN/s"
         out_model.meta.cal_step.ramp_fit = "COMPLETE"
@@ -303,6 +323,7 @@ class ResetRampFitStep(Step):
             int_times_stripe = None
         int_model = create_integration_model(result, integ_info, result.int_times, int_times_stripe)
         _take_records(result, int_model)
+        self.record(int_model, **fit_record)
         int_model.meta.bunit_data = "DN/s"
         int_model.meta.bunit_err = "DN/s"
         int_model.meta.cal_step.ramp_fit = "COMPLETE"

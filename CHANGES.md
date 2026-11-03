@@ -21,6 +21,15 @@
 - `snowblind.step.META_SCHEMA` defines, once for each step, the names
   under `meta.snowblind` and the header cards they are also written to;
   `Step.record` writes them.
+- `PersistenceFlagStep` records in each flagged exposure the time it used
+  (also in the header card `PERSTIME`), whether that time was given,
+  packaged or the 2500 s default, and how many pixels it flagged from how
+  many earlier exposures, in `meta.snowblind.persist`.
+- `ResetRampFitStep` records in the rate and rateints products the scatter
+  of the reset level, the offset of the reset level over its prior and the
+  first-read timing in each output channel, and whether they were anchored
+  to the exposure or taken from the calibration, in
+  `meta.snowblind.reset_rampfit`.
 
 ### Changed
 
