@@ -7,7 +7,8 @@ it, and makes two substitutions: `StreamCleanStep` runs as a post-hook of
 the jump step with the jwst flicker step skipped, and `ResetRampFitStep`
 takes the ramp-fit slot.  The jump step gets its own defaults for these
 two (`JUMP_DEFAULTS`, with `SnowblindStep` and `JumpPlusStep` as its first
-post-hooks).  The superbias slot holds `snowblind.superbias.SuperBiasStep`,
+post-hooks), and the reference-pixel step runs with SIRS
+(`REFPIX_DEFAULTS`), whose output the stream clean is matched to.  The superbias slot holds `snowblind.superbias.SuperBiasStep`,
 the jwst step without the zeroframe zeros its subtraction makes.  It runs
 as ``strun snowblind_detector1`` or through `Detector1Pipeline.call`.
 """
@@ -39,6 +40,18 @@ JUMP_DEFAULTS = {
     "expand_large_events": False,
 }
 
+# The reference-pixel step's parameters: the stream clean is matched to what SIRS leaves (the jwst step's default is
+# the running median).  They take precedence over the CRDS parameter references and give way to the caller's.
+REFPIX_DEFAULTS = {
+    "refpix_algorithm": "sirs",
+}
+
+# the defaults above, by step
+STEP_DEFAULTS = {
+    "refpix": REFPIX_DEFAULTS,
+    "jump": JUMP_DEFAULTS,
+}
+
 # The jump step's post-hooks in place of its expand_large_events, in their order
 SNOWBALL_HOOKS = (
     (SnowblindStep, "snowblind.SnowblindStep(min_radius=3, after_jumps=5)"),
@@ -60,11 +73,12 @@ class Detector1Pipeline(JwstDetector1Pipeline):
     Either substitution is switched off with ``--stream_clean=False`` or
     ``--reset_fit=False``, which gives the jwst step back.
 
-    The jump step runs with `JUMP_DEFAULTS` over the CRDS parameters (7
-    sigma, no large-event expansion or after-jump flagging), and with
+    The reference-pixel step runs with SIRS (`REFPIX_DEFAULTS`) and the jump
+    step with `JUMP_DEFAULTS` (7 sigma, no large-event expansion or
+    after-jump flagging), over the CRDS parameters; with
     ``expand_large_events`` off `SnowblindStep` and `JumpPlusStep` are its
-    first post-hooks; the caller's ``--steps.jump...`` parameters still
-    win, and ``--steps.jump.expand_large_events=True`` gives the jwst
+    first post-hooks; the caller's ``--steps.refpix...`` and
+    ``--steps.jump...`` parameters still win, and ``--steps.jump.expand_large_events=True`` gives the jwst
     snowball flagging back instead of the two hooks.
 
     The ``superbias`` slot holds `snowblind.superbias.SuperBiasStep`, the
@@ -89,9 +103,9 @@ class Detector1Pipeline(JwstDetector1Pipeline):
         *args
             Passed to the jwst pipeline.
         **kwargs
-            Passed to the jwst pipeline.  The ``jump`` entry of the
-            ``steps`` mapping gets each `JUMP_DEFAULTS` parameter it does
-            not hold and, while ``expand_large_events`` is off, a
+            Passed to the jwst pipeline.  The ``refpix`` and ``jump``
+            entries of the ``steps`` mapping get each parameter of
+            `STEP_DEFAULTS` they do not hold, and the ``jump`` entry, while ``expand_large_events`` is off, a
             `SnowblindStep` and a `JumpPlusStep` in ``post_hooks`` unless
             one is there already, ahead of a stream clean listed there.
             ``expand_large_events`` must be a boolean, or the string of
@@ -119,10 +133,12 @@ class Detector1Pipeline(JwstDetector1Pipeline):
         steps = kwargs.get("steps")
         if steps is None:
             steps = kwargs["steps"] = {}
-        jump = steps.setdefault("jump", {})
-        # without CRDS (no input, or its parameter references switched off) the defaults are not in the section yet
-        for key, value in JUMP_DEFAULTS.items():
-            jump.setdefault(key, value)
+        # without CRDS (no input, or its parameter references switched off) the defaults are not in the sections yet
+        for name, defaults in STEP_DEFAULTS.items():
+            section = steps.setdefault(name, {})
+            for key, value in defaults.items():
+                section.setdefault(key, value)
+        jump = steps["jump"]
         hooks = jump.get("post_hooks") or []
         hooks = [hooks] if isinstance(hooks, str) else list(hooks)
         if not _as_bool(jump["expand_large_events"]):
@@ -149,7 +165,7 @@ class Detector1Pipeline(JwstDetector1Pipeline):
 
     @classmethod
     def get_config_from_reference(cls, dataset, disable=None, crds_observatory=None):
-        """The CRDS parameters of the jwst pipeline, with `JUMP_DEFAULTS` over those of the jump step.
+        """The CRDS parameters of the jwst pipeline, with `STEP_DEFAULTS` over those of the refpix and jump steps.
 
         stpipe merges the caller's parameters onto this, so they still win
         over the snowblind defaults.
@@ -170,9 +186,10 @@ class Detector1Pipeline(JwstDetector1Pipeline):
             The parameters for ``steps`` and the pipeline.
         """
         refcfg = super().get_config_from_reference(dataset, disable=disable, crds_observatory=crds_observatory)
-        jump = refcfg.setdefault("steps", {}).setdefault("jump", {})
-        for key, value in JUMP_DEFAULTS.items():
-            jump[key] = value
+        for name, defaults in STEP_DEFAULTS.items():
+            section = refcfg.setdefault("steps", {}).setdefault(name, {})
+            for key, value in defaults.items():
+                section[key] = value
         return refcfg
 
     @classmethod

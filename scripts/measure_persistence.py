@@ -7,7 +7,8 @@ classes of their own.  Each later exposure j of the same detector, starting up t
 of i, is a target: its local background is removed (photutils Background2D, with the bright pixels of i and of j
 masked), and for each class of i the median of the residual rate of j over the pixels of that class is the
 persistence.  Pixels that saturated or collected a lot of signal in any exposure after i, up to and including j,
-are left out, so each measurement follows one exposure's illumination.
+are left out, where that exposure's persistence would add to i's, so each measurement follows one exposure's
+illumination.
 
 When i and j point at the same place (a filter change without a dither), the sources of i are still on the same
 pixels in j; the table records the pointing shift between them in pixels (shift_pix), and the summary uses only
@@ -21,16 +22,31 @@ snowball that saturated partway through the ramp, or a star just at the saturati
 
 The excess of a class is its median residual minus the median residual of the target's other usable pixels (those in
 no class of the source), and the summary bins it by the time from the end of the source to the middle of the target
-(``delay_mid``), the interval PersistenceFlagStep compares with its ``time``.  Neighbouring pixels of one source land
+(``delay_mid``), the interval PersistenceFlagStep compares with its ``time``.  Neighboring pixels of one source land
 together on one patch of the target, so they are not independent: each row also has the excess measured over sources
 (the connected groups of a class's pixels, 8-connected): the median over groups of their mean residual, minus the
 median residual of the rest, and its error from the scatter of the group means (1.25 times their robust sigma over the
 root of their number).  The rest of a crowded target is not a fair reference (the wings of its own stars, the persistence of other
 earlier exposures), so the same group statistic is also measured with the source's groups moved to unrelated places
 in the target (shifted by each of NULL_SHIFTS, leaving out the source's own classed pixels), and the mean of those is
-the null, "null_groups"; "excess_groups - null_groups" is the persistence of the class.  A few nulls are far off (a
+the null, "null_groups"; "excess_groups - null_groups" is the excess of the class.  A few nulls are far off (a
 moved group landing on a star of the target), so the summary takes the median of the pairs of a bin, with its error
-from resampling the source exposures, whose pairs share their stars.
+from resampling the source exposures, whose pairs share their stars: half the range from the 16th to the 84th
+percentile of the resampled medians, which, unlike their median absolute deviation, does not come out as zero when a
+bin has few source exposures.
+
+The excess also holds what does not decay: the source's classes favor the pixels of higher response (the rates are
+not flat-fielded), which show more sky in every exposure, and the group statistic has a bias that grows with the
+target's noise.  So each detector is measured twice, the second time with time running backwards (``direction``
+"backward"): each exposure is then a source for the exposures before it, at the same delays mirrored (from the middle
+of the target to the start of the source), where it cannot have left persistence.  A backward target can still hold
+persistence from the exposures before it: where one of them pointed where the source does, its stars sit
+on the source's pixels.  So a backward target leaves out, and masks for its background, the pixels bright in the
+exposures that ended less than --max_delay seconds before it started, as the forward target does those of the
+exposures before it.  What the backward pass measures does not decay, and the exposures before a short-delay target
+often point where the source does, which leaves few backward pairs at those delays; so the summary's persistence is
+the forward median of a bin minus the backward median of the class over all delays, with the errors added in
+quadrature (the backward median of each bin is shown too).
 
 Each detector runs in a Python process of its own (this script with --one) and writes
 <output_dir>/persistence_<detector>.ecsv, one row per (source, target, class), and its progress to
@@ -98,6 +114,11 @@ def exposure_info(path):
     }
 
 
+def reverse_time(info):
+    """The exposure with time running backwards: its start and end swapped and negated."""
+    return {**info, "start": -info["end"], "end": -info["start"]}
+
+
 def shift_pixels(a, b, scale):
     """Pointing shift between two exposures in pixels, from the separation of their reference points."""
     ra1, dec1, ra2, dec2 = map(np.radians, (a["ra"], a["dec"], b["ra"], b["dec"]))
@@ -150,12 +171,36 @@ def robust_sigma(values):
     return 1.4826 * np.median(np.abs(values - np.median(values)))
 
 
-def measure_detector(paths, max_delay, log):
-    """All (source, target, class) rows of one detector's exposures."""
-    infos = sorted((exposure_info(p) for p in paths), key=lambda info: info["start"])
+def earlier_bright_masks(infos, max_delay):
+    """Per exposure file, the pixels bright in the exposures that ended less than ``max_delay`` s before it started, packed."""
+    masks = {}
+    window = deque()  # (end, bright) of the exposures before the current one
+    for info in sorted(infos, key=lambda info: info["start"]):
+        while window and info["start"] - window[0][0] > max_delay:
+            window.popleft()
+        with fits.open(info["path"]) as hdul:
+            sci = hdul["SCI"].data.astype(np.float32)
+            dq = hdul["DQ"].data
+        bright = classify(sci, dq, info["t_int"])[1]
+        union = np.zeros(bright.shape, dtype=bool)
+        for _, earlier in window:
+            union |= earlier
+        masks[info["file"]] = np.packbits(union)
+        window.append((info["end"], bright))
+    return masks
+
+
+def measure_detector(paths, max_delay, log, direction="forward"):
+    """All (source, target, class) rows of one detector's exposures, with time running ``direction``."""
+    infos = [exposure_info(p) for p in paths]
+    # where a backward target may hold persistence of its own: the bright pixels of the exposures before it
+    earlier_masks = earlier_bright_masks(infos, max_delay) if direction == "backward" else None
+    if direction == "backward":
+        infos = [reverse_time(info) for info in infos]
+    infos.sort(key=lambda info: info["start"])
     detector = infos[0]["detector"]
     scale = PIXEL_SCALE.get(detector, PIXEL_SCALE["long" if detector.endswith("LONG") else "short"])
-    print(f"{detector}: {len(infos)} exposures", file=log, flush=True)
+    print(f"{detector}: {len(infos)} exposures, {direction}", file=log, flush=True)
 
     rows = []
     # (info, classes, bright, groups, moved) of the exposures ending less than max_delay before the current start,
@@ -170,9 +215,14 @@ def measure_detector(paths, max_delay, log):
             dq = hdul["DQ"].data
         classes, bright = classify(sci, dq, target["t_int"])
         bad = ((dq & (DO_NOT_USE | NOT_SKY)) > 0) | ~np.isfinite(sci)
+        if earlier_masks is None:
+            persisting = np.zeros(sci.shape, dtype=bool)
+        else:
+            persisting = np.unpackbits(earlier_masks[target["file"]], count=sci.size).reshape(sci.shape).astype(bool)
 
-        # background of the target with its own bright pixels and those of the recent exposures masked
-        mask = bad | ndimage.binary_dilation(bright, iterations=4)
+        # background of the target with its own bright pixels, those of the recent exposures, and (backward) those of
+        # the exposures before it masked
+        mask = bad | ndimage.binary_dilation(bright, iterations=4) | persisting
         for _, _, earlier_bright, _, _ in recent:
             mask |= earlier_bright
         with warnings.catch_warnings():
@@ -193,8 +243,8 @@ def measure_detector(paths, max_delay, log):
         noise = robust_sigma(sample)
         _, control, _ = sigma_clipped_stats(sample)
 
-        # the pixels bright in an exposure after the source, up to and including the target
-        later_bright = bright.copy()
+        # the pixels bright in an exposure after the source, up to and including the target (and, backward, before it)
+        later_bright = bright | persisting
         for source, source_classes, source_bright, source_groups, source_moved in reversed(recent):  # latest first
             delay = target["start"] - source["end"]
             if delay > 0:
@@ -212,7 +262,7 @@ def measure_detector(paths, max_delay, log):
                             nulls.append(group_excess(resid, moved, moved_groups)[0])
                     null = np.mean(nulls) - rest if nulls else np.nan
                     rows.append({
-                        "detector": detector, "source": source["file"], "target": target["file"],
+                        "detector": detector, "direction": direction, "source": source["file"], "target": target["file"],
                         "filter_source": source["filter"], "filter_target": target["filter"],
                         "readpatt_source": source["readpatt"], "delay_start": delay,
                         "delay_starts": target["start"] - source["start"],
@@ -238,24 +288,40 @@ def measure_detector(paths, max_delay, log):
 
 
 def median_and_error(values, sources, rng, resamplings=300):
-    """Median of ``values`` and its error from resampling the source exposures (``sources``) with replacement."""
+    """Median of ``values`` and its error from resampling the source exposures (``sources``) with replacement.
+
+    The error is half the range from the 16th to the 84th percentile of the resampled medians; NaN for no values.
+    """
+    if len(values) == 0:
+        return np.nan, np.nan
     _, inverse = np.unique(sources, return_inverse=True)
     members = [np.nonzero(inverse == k)[0] for k in range(inverse.max() + 1)]
     medians = []
     for _ in range(resamplings):
         pick = rng.integers(0, len(members), len(members))
         medians.append(np.median(values[np.concatenate([members[k] for k in pick])]))
-    return float(np.median(values)), float(robust_sigma(np.array(medians)))
+    low, high = np.percentile(medians, [16, 84])
+    return float(np.median(values)), float((high - low) / 2)
 
 
 def summary(table, min_shift):
-    """Per detector, class and delay bin: the persistence over the pairs that moved, with its error.
+    """Per detector, class and delay bin: the excess forward and backward over the pairs that moved, and the persistence.
 
-    The persistence of a pair is ``excess_groups - null_groups``; a bin, of ``delay_mid``, holds the median over its
-    pairs, with its error from resampling the source exposures.
+    The excess of a pair is ``excess_groups - null_groups``; a bin, of ``delay_mid``, holds the median over its pairs
+    of each direction, with its error from resampling the source exposures.  The persistence is the forward median
+    minus the backward median of the detector and class over all delays (``backward_all``), with the errors added in
+    quadrature; a table without backward rows (from before the script measured them) gives NaN for the backward
+    excess and the persistence.
     """
     table = table[(table["shift_pix"] > min_shift) & np.isfinite(table["null_groups"]) & (table["excess_groups_err"] > 0)]
+    direction = np.asarray(table["direction"]).astype(str) if "direction" in table.colnames else np.full(len(table), "forward")
     rng = np.random.default_rng(0)
+    net_all = np.asarray(table["excess_groups"] - table["null_groups"], dtype=float)
+    sources_all = np.asarray(table["source"]).astype(str)
+    backward_all = {}
+    for detector, cls in sorted(set(zip(np.asarray(table["detector"]).astype(str), np.asarray(table["cls"]).astype(str)))):
+        behind = (table["detector"] == detector) & (table["cls"] == cls) & (direction == "backward")
+        backward_all[(detector, cls)] = median_and_error(net_all[behind], sources_all[behind], rng)
     rows = []
     groups = defaultdict(list)
     for i, row in enumerate(table):
@@ -264,11 +330,19 @@ def summary(table, min_shift):
     for (detector, cls, k), index in sorted(groups.items()):
         part = table[index]
         net = np.asarray(part["excess_groups"] - part["null_groups"], dtype=float)
-        persistence, error = median_and_error(net, np.asarray(part["source"]).astype(str), rng)
+        sources = np.asarray(part["source"]).astype(str)
+        forward = direction[index] == "forward"
+        if not forward.any():
+            continue
+        excess, error = median_and_error(net[forward], sources[forward], rng)
+        backward = median_and_error(net[~forward], sources[~forward], rng)[0]
+        level, level_error = backward_all[(str(detector), str(cls))]
         rows.append({
             "detector": detector, "cls": cls, "delay_lo": DELAY_EDGES[k], "delay_hi": DELAY_EDGES[k + 1],
-            "pairs": len(part), "ngroups": int(part["ngroups"].sum()), "persistence": persistence, "error": error,
-            "noise": float(np.median(part["noise_target"])),
+            "pairs": int(forward.sum()), "pairs_back": int((~forward).sum()),
+            "ngroups": int(part["ngroups"][forward].sum()), "forward": excess, "backward": backward,
+            "backward_all": level, "persistence": excess - level, "error": float(np.hypot(error, level_error)),
+            "noise": float(np.median(part["noise_target"][forward])),
         })
     return Table(rows=rows) if rows else Table()
 
@@ -283,6 +357,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--min_shift", type=float, default=100.0, help="pointing shift a pair needs for the summary [pix]"
     )
+    parser.add_argument(
+        "--direction", choices=("both", "forward", "backward"), default="both",
+        help="measure with time running forward, backward (where there is no persistence), or both",
+    )
     parser.add_argument("--processes", type=int, default=10, help="detectors run at once")
     parser.add_argument("--one", help=argparse.SUPPRESS)  # the detector of a process started from the main one
     args = parser.parse_args()
@@ -292,8 +370,9 @@ if __name__ == "__main__":
         groups[os.path.basename(path).split("_")[3]].append(path)
 
     if args.one:
+        directions = ("forward", "backward") if args.direction == "both" else (args.direction,)
         with open(os.path.join(args.output_dir, f"persistence_{args.one}.log"), "w") as log:
-            rows = measure_detector(groups[args.one], args.max_delay, log)
+            rows = [row for d in directions for row in measure_detector(groups[args.one], args.max_delay, log, d)]
         Table(rows=rows).write(os.path.join(args.output_dir, f"persistence_{args.one}.ecsv"), overwrite=True)
         sys.exit(0)
 
@@ -305,6 +384,7 @@ if __name__ == "__main__":
         command = [
             sys.executable, os.path.abspath(__file__), "--one", detector, "--input_dir", args.input_dir,
             "--output_dir", args.output_dir, "--pattern", args.pattern, "--max_delay", str(args.max_delay),
+            "--direction", args.direction,
         ]
         proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
         return detector, proc.returncode, proc.stdout
@@ -321,9 +401,9 @@ if __name__ == "__main__":
     tables = [table for table in (Table.read(path) for path in paths if os.path.exists(path)) if len(table)]
     result = summary(vstack(tables), args.min_shift) if tables else Table()
     if len(result) == 0:
-        print(f"no summary: no measured pair of exposures moved by more than {args.min_shift:g} pixels", flush=True)
+        print(f"no summary: no pair measured forward moved by more than {args.min_shift:g} pixels", flush=True)
         sys.exit(0)
     result.write(os.path.join(args.output_dir, "persistence_summary.ecsv"), overwrite=True)
-    for column in ("persistence", "error", "noise"):
+    for column in ("forward", "backward", "backward_all", "persistence", "error", "noise"):
         result[column].format = ".4f"
     result.pprint_all()

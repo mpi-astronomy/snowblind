@@ -26,16 +26,21 @@
   the persistence time measured for it and packaged with snowblind
   (`snowblind/data/persistence_<detector>.asdf`), and 2500 s, the former
   default, when it has none. The package holds times for the ten NIRCam
-  imaging detectors, from 2100 s (NRCB1) to 12000 s (NRCB4): long on
+  imaging detectors, from 2200 s (NRCA1) to 12600 s (NRCB4): long on
   purpose, since persistence varies across a detector and with each
   pixel's history of illumination, each is the delay at which a pixel
   persisting twice as much as the detector's typical saturated star falls
   to 0.005 DN/s. Each file also holds `typical_time`, when the typical
-  star itself does (1150 s to 4900 s), to pass as `time` to flag less. A
+  star itself does (1200 s to 5000 s), to pass as `time` to flag less. A
   `time` given still applies to every detector.
   `scripts/measure_persistence.py` measures the persistence of saturated
   stars against the delay in a series of `_rate` files, and
   `scripts/package_persistence_defaults.py` fits it and writes the files.
+  Each detector is also measured with time running backwards, where
+  there can be no persistence, and the forward minus the backward
+  measurement is the persistence: that takes out an excess that does not
+  decay, from the pixels of higher response that the selection favors
+  and a bias that grows with the target's noise.
 - `PersistenceFlagStep` measures `time` from the end of the saturated
   exposure to the middle of the later one, instead of from start to start,
   so an exposure longer than `time` still flags the next one.
@@ -44,6 +49,16 @@
   NEXTEND, which counts the ramp file's extensions) and its
   `meta.snowblind`, not only the snowblind history entries and `S_`
   cards, as the jwst helpers that build the products leave them out.
+- `snowblind_detector1` runs the reference-pixel step with SIRS
+  (`refpix_algorithm='sirs'`), whose output the stream clean is matched to;
+  the jwst step defaults to a running median. Like the pipeline's jump
+  settings, it takes precedence over the CRDS parameter references and
+  gives way to the caller's (`--steps.refpix.refpix_algorithm=median`).
+- The README is a short overview: what each step does and how it differs
+  from the jwst step it replaces or adds to, installation, and examples.
+  How to run each step and how it works are in the documentation, which
+  has new pages on persistence flagging, with how the packaged times are
+  measured, and on the snowball, jump and open-pixel steps.
 
 ### Removed
 

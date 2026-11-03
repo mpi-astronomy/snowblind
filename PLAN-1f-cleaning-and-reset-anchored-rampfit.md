@@ -5213,3 +5213,167 @@ Reading:
 Packaged with `python scripts/package_persistence_defaults.py
 results/2026-11-02_persistence_nexus --dataset "..."` into
 `src/snowblind/data/persistence_<detector>.asdf`.
+
+### 2026-11-02: F470N comparison, the faint-class floor, and a backward measurement
+
+James ran `scripts/measure_persistence.py` on program 2234 NIRCam
+narrow-band data (F470N, 40 exposures per long-wave detector), to
+compare with NEXUS (F444W). Persistence below is the median over pairs
+of exposures of the excess at the earlier exposure's pixels minus the
+excess at the same groups of pixels moved elsewhere, in mDN/s (0.001
+DN/s), against the delay from the end of the earlier exposure to the
+middle of the later one; NEXUS re-summarized with the same script and
+bins.
+
+- No saturated-star classes (60k DN and up): F470N passes about 20 times
+  less light per star than F444W, so the data do not test the packaged
+  times. `sat no rate` has 3 to 4 groups per pair, too few to read.
+- `sat 0k-60k`, here mostly cosmic rays and snowballs, agrees across
+  the two filters and detectors:
+
+  | delay (s) | F470N A | F470N B | NEXUS A | NEXUS B |
+  |---|---|---|---|---|
+  | 1200-2400 | 2.5 | 2.3 | 1.8 | 1.6 |
+  | 2400-4800 | 1.2 | 1.1 | 0.7 | 1.0 |
+  | 4800-9600 | 0.5 | 0.5 | 0.5 | 0.1 |
+  | 9600-19200 | 0.2 | 0.2 | 0.1 | 0.2 |
+
+  Below 5 mDN/s from the first bin, so on the long-wave detectors
+  saturated transients need no flagging beyond about 1200 s.
+- The 2k-5k DN class on NRCALONG is 0 +- 0.2 mDN/s at all delays in
+  F470N (target noise 6.8 mDN/s), where NEXUS has the 2 to 5 mDN/s
+  floor of the previous entry. In NEXUS, beyond 4800 s, the floor
+  follows the target's noise, not the delay (ranges: the quieter and the
+  noisier half of the pairs):
+
+  | NEXUS target | pairs | noise | NRCALONG | NRCBLONG |
+  |---|---|---|---|---|
+  | 310 s (SHALLOW4) | 1695 | 31-50 | 2.7-3.9 | 0.6-1.6 |
+  | 620 s | 506 | 14-16 | 0.7-1.3 | 0.1-0.3 |
+  | 1060 s | 80 | 13-14 | 0.9 | 0.2-0.8 |
+
+  (730 s targets, 84 pairs: 3.4 to 4.0 on NRCALONG at a noise of 19.)
+  An excess that follows the noise and does not decay is not
+  persistence: the classes favor the pixels of higher response (the
+  rates are not flat-fielded), which show more sky in every exposure,
+  or the group statistic has a bias the moved groups do not take out.
+  NRCALONG's star tail in NEXUS sits at the same 1.4 to 3.6 mDN/s, and
+  its packaged 9563 s comes from the bins (the fit gives 7388 s), so the
+  time is probably too long.
+- The bootstrap error, 1.4826 times the median absolute deviation of
+  the resampled medians, comes out as zero when a bin has few source
+  exposures (in a simulation, 61% of trials with 2 sources, 34% with 3,
+  5% with 40): the F470N table's 0.0000 errors. Both scripts now use
+  half the 16-84 percentile range of the resampled medians. On the
+  NEXUS tables alone that moves the packaged times by at most 5%.
+
+The check: `measure_persistence.py` now measures each detector a second
+time with time running backwards (`direction` "backward"): each exposure
+is a source for the exposures before it, at mirrored delays (from the
+middle of the target to the start of the source), where it cannot have
+left persistence but the selection and noise biases are the same. The
+summary and `package_persistence_defaults.py` take forward minus
+backward. On synthetic rate files (40 NRCALONG exposures, persistence
+0.02 (delay / 1000 s)^-1 DN/s after saturated stars, faint sources near
+the 2k DN edge, a 5% response pattern on a 0.4 DN/s sky): the star class
+forward 79.8/26.4/10.2/5.5/2.8 mDN/s and backward within 0.5 of zero;
+the faint class 11 to 15 forward and backward, difference within 1.5
+of zero (4 for a bin of 6 pairs); the packaged fit gives an amplitude of
+0.0193 DN/s and a slope of 1.03. Next: rerun NEXUS on a node (both
+directions, about twice the time) and repackage.
+
+### 2026-11-03: the first NEXUS run with backward pairs
+
+All ten detectors in both directions (results/2026-11-02_persistence_nexus_both,
+no failures). Forward excess / backward excess in mDN/s, per delay bin:
+
+- The faint-class floor is there backward too: NRCALONG 2k-5k DN
+  forward 4.8/5.4/4.5/5.2/3.3/2.9/2.1/2.0, backward
+  3.2/3.1/3.9/5.2/3.2/3.4/3.6/3.2 at 150 to 19200 s; NRCBLONG about 0.7
+  to 1.2 both ways. Confirmed: not persistence.
+- But on the short-wave detectors the backward star classes were
+  positive at 300 to 1200 s (NRCB4 100k-300k DN: 11.4 and 8.1; NRCB3 10.2
+  and 7.5). Splitting the backward star rows by whether an exposure
+  before the target pointed where the source does (shift under 100
+  pixels): with one, 8 to 41 mDN/s at 300 to 1200 s (NRCB4 14.1 and
+  41.5, NRCB3 13.2 and 30.1, NRCA3 7.9 and 13.7); without, -1.7 to +0.6.
+  The target held real persistence from that earlier exposure, whose
+  stars sit on the source's pixels (NEXUS changes filters at a dither
+  position). The forward pass leaves out the pixels bright in the
+  exposures between source and target; the backward pass left out the
+  same in-between exposures, which cannot affect an earlier target.
+- Fix: a backward target now leaves out, and masks for its background,
+  the pixels bright in the exposures that ended less than --max_delay
+  before it. On synthetic files with two alternating pointings, the
+  backward star excess went from 142 mDN/s (equal to forward, 143) to
+  one clean pair at 0.4.
+- That leaves few backward star pairs at short delays (most have such an
+  earlier exposure), so both scripts now subtract one backward level per
+  detector and class over all delays, which is what a non-decaying
+  excess needs anyway; the summary still shows the backward median per
+  bin.
+- Preview, from these tables with the backward rows that the fix would
+  remove dropped (an earlier exposure at the source's pointing; 1580 to
+  1730 of about 43000 per short-wave detector, none on the long-wave
+  ones), packaged into a scratch folder: the star classes' backward
+  level is 1.35 +- 0.39 mDN/s on NRCALONG, 0.15 +- 0.26 on NRCBLONG, and
+  -0.37 to +0.06 on the short-wave detectors. Times (s), packaged ->
+  preview: A1 2141 -> 2269, A2 2428 -> 2592, A3 10502 -> 11626, A4 2931
+  -> 3298, ALONG 9563 -> 4900, B1 2129 -> 2380, B2 4571 -> 5437, B3 6074
+  -> 6012, B4 12006 -> 12767, BLONG 2250 -> 2213; typical times ALONG
+  3575 -> 2509, the others within 0.97 to 1.11 times. The short-wave
+  rises come from the slightly negative backward level (the target's
+  other persistence raising the null), which the forward measurement
+  has as well.
+- Next: rerun the backward pass alone with the fixed script, merge with
+  the forward rows of this run, and package from that.
+
+### 2026-11-03 (later): times packaged from the forward and fixed backward runs
+
+The backward pass rerun alone with the fixed script (backward targets
+leave out the pixels bright in the exposures before them;
+results/2026-11-03_persistence_nexus_backward, all ten detectors, no
+failures), merged with the forward rows of the first run into
+results/2026-11-03_persistence_nexus_merged (MERGED.txt there), and
+packaged from that.
+
+- The fix removes most of the contamination. Backward star rows with an
+  earlier exposure at the source's pointing, before and after the fix:
+  NRCB4 300-600 s 102 rows at 14.1 mDN/s -> 29 at 1.0, 600-1200 s 39 at
+  41.5 -> 13 at 9.5; NRCB3 131 at 13.2 -> 30 at 2.0, 28 at 30.1 -> 5 at
+  14.7; NRCA3 107 at 7.9 -> 78 at 3.8, 27 at 13.7 -> 19 at 5.7. What is
+  left at 600-1200 s is a few rows, probably persistence from the earlier
+  exposure's light below the 20k DN "bright" cut (the same star through
+  a fainter filter). They are a small part of the backward star rows of
+  a detector, and the level is a median over all of them: the times
+  agree within 3% with the preview, which dropped every such row, and
+  the backward levels within 0.06 mDN/s (NRCBLONG 0.18, within its error
+  of 0.28). Leaving out more of the earlier exposures' light (a lower
+  cut) would take the rest out, not worth another run.
+- Packaged (`python scripts/package_persistence_defaults.py
+  results/2026-11-03_persistence_nexus_merged --dataset "..."`), with the
+  times of the first packaging (2026-11-02 entry) for comparison:
+
+  | detector | time (s) | was | typical_time (s) | was | backward level (mDN/s) | A (DN/s) | alpha | reduced chi-square |
+  |---|---|---|---|---|---|---|---|---|
+  | NRCA1 | 2238 | 2141 | 1416 | 1364 | -0.17 +- 0.10 | 0.0085 | 1.52 | 12.1 |
+  | NRCA2 | 2577 | 2428 | 1568 | 1506 | -0.23 +- 0.13 | 0.0094 | 1.40 | 2.8 |
+  | NRCA3 | 11269 | 10502 | 4845 | 4770 | -0.09 +- 0.11 | 0.0301 | 1.15 | 1.4 |
+  | NRCA4 | 3319 | 2931 | 1659 | 1484 | -0.39 +- 0.12 | 0.0089 | 1.13 | 4.6 |
+  | NRCALONG | 4889 | 9563 | 2507 | 3575 | 1.36 +- 0.42 | 0.0149 | 1.19 | 0.7 |
+  | NRCB1 | 2343 | 2129 | 1441 | 1340 | -0.28 +- 0.14 | 0.0084 | 1.43 | 7.6 |
+  | NRCB2 | 5338 | 4571 | 2561 | 2422 | -0.30 +- 0.14 | 0.0152 | 1.18 | 1.5 |
+  | NRCB3 | 6017 | 6074 | 2970 | 3006 | 0.06 +- 0.13 | 0.0201 | 1.28 | 2.0 |
+  | NRCB4 | 12602 | 12006 | 5042 | 4939 | -0.13 +- 0.13 | 0.0257 | 1.03 | 2.0 |
+  | NRCBLONG | 2258 | 2250 | 1208 | 1145 | -0.03 +- 0.28 | 0.0065 | 1.40 | 1.0 |
+
+  NRCALONG's time halves: its stars carried the same non-decaying excess
+  as its faint pixels. The short-wave times rise by 4 to 17% (NRCB3 -1%)
+  with their slightly negative backward level, which most likely comes
+  from the target's other persistence raising the comparison groups and
+  is in the forward measurement as well. NRCA1 and NRCB1 have reduced
+  chi-squares of 12 and 8, the bins scattering more than their errors;
+  their times come from the fit, longer than the bins'.
+- The figures of docs/persistence.rst come from these files
+  (`python scripts/make_persistence_figures.py`); the decay figure shows
+  NRCALONG only, its faint-pixel panel dropped as too much for user docs.
