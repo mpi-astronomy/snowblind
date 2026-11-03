@@ -42,7 +42,6 @@ spizzle is an optional dependency, ``pip install 'snowblind[spizzle]'``.
 """
 import logging
 
-import numba
 import numpy as np
 from astropy.stats import sigma_clipped_stats
 from jwst.datamodels import ModelLibrary
@@ -58,8 +57,16 @@ from .step import Step
 
 try:
     import spizzle
+    from numba import njit, prange
 except ImportError:
+    # spizzle, which brings numba, is optional: without it this module still imports, its kernels stay plain
+    # Python, and Exposure raises before they would run
     spizzle = None
+    prange = range
+
+    def njit(*args, **kwargs):
+        """Leave the function as it is, numba being missing."""
+        return lambda function: function
 
 __all__ = ["TiledOutlierStep", "Exposure", "predict", "run", "flag_outliers", "sky_level", "weighted_median",
            "clipped_mean"]
@@ -80,7 +87,7 @@ SKY_SAMPLE = 200_000
 REACH = 2.0
 
 
-@numba.njit(cache=True)
+@njit(cache=True)
 def _insert(v, w, s, n, x, weight, sigma):
     """Insert ``x`` with its weight and sigma into the first ``n`` entries of v, w and s, kept sorted by value."""
     q = n
@@ -94,7 +101,7 @@ def _insert(v, w, s, n, x, weight, sigma):
     s[q] = sigma
 
 
-@numba.njit(cache=True)
+@njit(cache=True)
 def _sorted_median(v, w, n):
     """The weighted median of the first ``n`` values of v, sorted: the lowest at which the cumulative weight reaches
     half."""
@@ -109,7 +116,7 @@ def _sorted_median(v, w, n):
     return v[n - 1]
 
 
-@numba.njit(parallel=True, cache=True)
+@njit(parallel=True, cache=True)
 def _combine(n_cols, boxes, ptr_start, indptr, indices, weights, values, sigma, longest, median_only, spread,
              fewest_for_median, out, model2, count):
     """For each fine pixel of a tile, combine the input pixels of every part (exposure) that land on it.
@@ -122,7 +129,7 @@ def _combine(n_cols, boxes, ptr_start, indptr, indices, weights, values, sigma, 
     """
     n_rows = out.size
     n_parts = boxes.shape[0]
-    for c in numba.prange((n_rows + CHUNK - 1) // CHUNK):
+    for c in prange((n_rows + CHUNK - 1) // CHUNK):
         v = np.empty(longest)
         w = np.empty(longest)
         s = np.empty(longest)
@@ -319,6 +326,8 @@ class Exposure:
     """
 
     def __init__(self, model, mosaic_wcs, oversample=2, pixfrac=0.8, tile=1024, halo=4):
+        if spizzle is None:
+            raise ImportError("TiledOutlierStep and outlier_reference need spizzle: pip install 'snowblind[spizzle]'")
         shape = model.data.shape
         ny_m, nx_m = mosaic_wcs.array_shape
         self.n_tiles = (-(-oversample * ny_m // tile), -(-oversample * nx_m // tile))
