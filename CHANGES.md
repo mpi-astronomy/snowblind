@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-03
+
 ### Added
 
 - `StreamCleanStep` records what it did to the sky level of each exposure
@@ -295,7 +297,8 @@ First release.
 - Steps register as stpipe plugins and run with `strun` or as pipeline
   hooks.
 
-[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.2.0...HEAD
+[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.3.0...HEAD
+[1.3.0]: https://github.com/mpi-astronomy/snowblind/compare/1.2.0...1.3.0
 [1.2.0]: https://github.com/mpi-astronomy/snowblind/compare/1.1.0...1.2.0
 [1.1.0]: https://github.com/mpi-astronomy/snowblind/compare/1.0.1...1.1.0
 [1.0.1]: https://github.com/mpi-astronomy/snowblind/compare/1.0.0...1.0.1
