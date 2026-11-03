@@ -88,7 +88,7 @@ recently.
 The persistence of saturated stars against the time since their exposure
 ended, which sets the time `PersistenceFlagStep` flags them for:
 
-![Persistence of saturated stars against the delay, with the packaged fit and times](https://raw.githubusercontent.com/mpi-astronomy/snowblind/main/docs/figures/persistence_decay.png)
+<img src="https://raw.githubusercontent.com/mpi-astronomy/snowblind/main/docs/figures/persistence_decay.png" width="75%">
 
 ## Citing snowblind
 
