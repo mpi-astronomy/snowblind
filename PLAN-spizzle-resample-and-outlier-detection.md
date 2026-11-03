@@ -549,6 +549,325 @@ The simulation's own versions of the first two, in numba, are in the
 script. Methods without drizzle are listed in spizzle's plan too. Leave
 all of this until Parts A and B are done and the user starts it.
 
+Part C, 2026-11-03: the step is to be named `PairwiseOutlierStep` (user).
+Only the name was settled; the method is the one above and in spizzle's
+plan step 6: a reference from all exposures' input pixels on a finer
+grid, predicted onto each exposure with spizzle's `blot`.
+
+Per-exposure predictions, discussed 2026-11-03. The user's idea: to flag
+outliers in one exposure, blot every exposure that overlaps it onto its
+frame, combine them optimally, compare, and repeat for each exposure: low
+peak memory and parallel over exposures. Simulated with
+`scripts/exp_outlier_reference.py --per-exposure` (spizzle's blot only;
+same field as above), against today's scheme and the global fine-grid
+clipped mean. The per-exposure schemes:
+- pairwise: the other exposures blotted onto the exposure, combined by
+  their median, a clipped mean weighted by inverse variance, or a clipped
+  mean weighted toward the nearly aligned exposures (blurred least);
+- leave-one-out: the fine-grid clipped mean of the other exposures' input
+  pixels only, blotted onto the exposure;
+- pairwise on a 2x frame (the user's second idea): the other exposures
+  blotted onto the exposure's own frame sampled twice as finely, their
+  median, averaged 2x2 back onto the exposure's pixels.
+
+Error of the predicted brightest pixel of each star, without noise
+(median over stars):
+
+| prediction | 4 exposures | 8 exposures |
+| --- | ---: | ---: |
+| today | 47% | 47% |
+| global clipped mean, scale 0.5, pixfrac 1 | 17% | 25% |
+| same, plus correction | 5% | 12% |
+| pairwise, median | 22% | 32% |
+| pairwise, inverse variance | 28% | 33% |
+| pairwise, toward aligned exposures | 21% | 27% |
+| pairwise on a 2x frame, averaged back | 36% | 39% |
+| leave-one-out, pixfrac 1 / 0.8 / 0.6 | 21 / 15 / 11% | 28 / 23 / 20% |
+
+With noise and cosmic rays (as above). At jwst's tolerance 1.2 / 0.7 every
+scheme finds the same cosmic rays as today (86-88%, 46-53% near stars);
+star-core pixels flagged: today 15.8% (4 exposures) and 13.9% (8);
+pairwise 1.2% and 0.6%; pairwise on a 2x frame 1.1% and 2.3%;
+leave-one-out 1.0% and 0.1%; global 0.3% and 0.0%. At 0.5 / 0.3 (found / near stars / sky, next to another exposure's
+cosmic ray and wings per 10^4 / cores):
+
+| prediction | 4 exposures | 8 exposures |
+| --- | --- | --- |
+| today | 92.8% / 61% / 2.0, 11, 152 / 41% | 93.3% / 66% / 4.2, 2, 142 / 39% |
+| global clipped mean | 92.9% / 61% / 1.7, 2, 8 / 6.5% | 93.7% / 69% / 4.8, 3, 3 / 5.0% |
+| global, plus correction | 92.7% / 60% / 1.4, 1, 3 / 3.3% | 93.5% / 67% / 3.9, 3, 1 / 0.5% |
+| pairwise (all three combinations) | 93.5% / 61% / 2.5, 18, 14 / 7.6% | 93.6% / 64% / 2.5, 1, 15 / 16% |
+| pairwise on a 2x frame | 93.7% / 62% / 2.3, 21, 16 / 23% | 93.5% / 64% / 2.6, 1, 29 / 27% |
+| leave-one-out, pixfrac 1 | 93.2% / 61% / 3.6, 7, 15 / 9.4% | 94.1% / 69% / 5.4, 3, 5 / 12% |
+| leave-one-out, pixfrac 0.8 | 93.1% / 60% / 2.9, 94, 10 / 7.4% | 93.9% / 68% / 5.2, 3, 4 / 5.9% |
+| leave-one-out, pixfrac 0.6 | 92.7% / 60% / 2.4, 307, 7 / 5.9% | 93.7% / 67% / 5.2, 3, 4 / 4.3% |
+
+What it shows:
+- Pairwise fixes the star cores at jwst's tolerance (1% or less instead of
+  14-16%) at the same cosmic-ray rate, with no new spizzle parts. It does
+  not allow a lower tolerance: cores then go to 8% (4 exposures) and 16%
+  (8). More exposures make it worse, not better: the median of more
+  blurred copies tends to the typical blur. The weighting makes no
+  difference.
+- Finding more cosmic rays, near stars especially, needs the lower
+  tolerance, and there a reference built from the input pixels is better:
+  the global one with the correction step flags 0.5% of cores with 8
+  exposures. Part of its advantage is that it includes the exposure's own
+  pixels.
+- Leave-one-out keeps the per-exposure structure. With 8 exposures it is
+  close to the global reference without the correction (4-6% of cores at
+  pixfrac 0.6-0.8, no leaks); with 4, too few input pixels remain, and
+  below pixfrac 1 other exposures' cosmic rays leak into it (94 and 307
+  per 10^4). Its correction step is not tried.
+- Blotting onto a finer frame adds no information: each blotted copy is
+  the bilinear surface through one exposure's own samples, and averaging
+  2x2 back blurs once more. What locates the flux on a finer grid is the
+  input pixels with their footprints (the drizzle operator), combined per
+  fine pixel: the leave-one-out reference, or with the exposure's own
+  pixels included, the global reference computed over each exposure's
+  footprint.
+- A cubic spline in place of the blot did better for pairwise (1.6% of
+  cores at 0.5 / 0.3 with 4 exposures) but is 52 times slower than
+  spizzle's blot (232 ms against 4.5 ms per NIRCam frame); not in the
+  script.
+- The global reference can also be built tile by tile over the mosaic,
+  which bounds its memory and runs in parallel.
+
+
+Prototype on real data, 2026-11-03 (user: prototype in snowblind, test
+with injected cosmic rays). `src/snowblind/outlier_reference.py`: for each
+exposure, the input pixels of the exposures that overlap it (found from
+their footprints) are drizzled onto its own frame sampled twice as finely
+(pixfrac 0.8), after each one's sky level is subtracted (skymatch's level,
+or the sigma-clipped median); per fine pixel their weighted median, then
+the 3-sigma clipped mean; the result blotted onto the exposure (on that
+frame, the 2x2 mean) and flagged by jwst's rule (stcal's
+`flag_resampled_crs`). Where fewer than three exposures cover a pixel, only
+pixels above the prediction are flagged (user). The fine frame is done in
+strips of 512 rows: 6-7 s and 2.9 GB per NIRCam exposure on the laptop.
+
+The exposure's own pixels have to be left out (leave-one-out). Real
+coverage is low: on 6154 the eight dithers of one detector cover most of
+an exposure only once or twice more, and with all 64 short-wavelength
+exposures 35% of an exposure's pixels are covered by one other exposure
+only. With its own pixels in, the weighted median of two exposures often
+takes the exposure's own value, cosmic ray included: 14 pixels flagged on
+an NRCA1 exposure where jwst flags 1625.
+
+Test: `scripts/exp_injected_outliers.py` on the 16 long-wavelength cal
+files of 6154 (F277W, NRCALONG and NRCBLONG, MAST products), 2000 single-
+pixel cosmic rays injected per exposure, 10-1000 times the local noise,
+half 1-3 px from one of the 300 brightest sources. Coverage of the pixels
+(exposures including the exposure itself): 1: 8.8%, 2: 41.4%, 3: 3.9%, 4:
+45.9%. Flagged "elsewhere" counts the pixels flagged that were not injected
+(more than a pixel from any injected one): real outliers as well as false
+flags, the same for every method.
+
+| method | time | found | near sources | found where 1 / 2 / 3 / 4 cover | not injected, flagged: source cores | wings per 10^4 | elsewhere per 10^4 |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: |
+| jwst's step | 67 s | 63.0% | 39.9% | 31 / 60 / 67 / 72% | 2.23% | 26 | 13.8 |
+| prototype, 1.2 / 0.7 | 96 s | 66.8% | 46.5% | 0 / 73 / 72 / 75% | 0.29% | 25 | 16.1 |
+| prototype, 1.0 / 0.6 | 96 s | 68.7% | 49.7% | 0 / 75 / 74 / 77% | 0.40% | 32 | 18.7 |
+| prototype, 0.8 / 0.5 | 96 s | 71.2% | 54.0% | 0 / 77 / 79 / 80% | 1.19% | 45 | 23.7 |
+| prototype, 0.5 / 0.3 | 96 s | 75.8% | 62.4% | 0 / 83 / 83 / 85% | 6.19% | 88 | 41.9 |
+| prototype with correction, 1.2 / 0.7 | 140 s | 66.7% | 46.4% | 0 / 73 / 72 / 75% | 0.26% | 24 | 15.5 |
+| prototype with correction, 0.5 / 0.3 | 140 s | 75.7% | 62.2% | 0 / 83 / 83 / 85% | 5.12% | 84 | 40.1 |
+
+- Where another exposure covers the pixel, the prototype at jwst's
+  tolerance finds 73-75% of the injected cosmic rays against jwst's
+  60-72%, more near sources, and flags 0.29% of bright-source cores
+  against 2.23%; wings and elsewhere about the same.
+- Where only the exposure itself covers (8.8%), it finds none. jwst finds
+  31% there: its median is then the exposure itself drizzled and blotted,
+  a blurred copy, so it flags pixels that stand out from their neighbors,
+  star cores among them.
+- Lowering the tolerance finds more (85% where four cover, 62% near
+  sources at 0.5 / 0.3) at the cost of more flags at cores, in wings and
+  elsewhere; 1.0 / 0.6 or 0.8 / 0.5 look like the balance. Whether the
+  extra flags elsewhere are false or real outliers is not known.
+- The correction step changes little here, for 45% more time.
+- To do: short-wavelength (64 exposures), the single-coverage pixels, and a
+  look at the extra flags.
+
+
+Course correction, 2026-11-03 (from the spizzle session, user): the
+per-exposure variants are dropped. The design: one global reference from
+all exposures' input pixels on the outlier mosaic's grid sampled twice as
+finely, built in tiles (1024 fine pixels plus a halo of 4) from geometry
+computed once per exposure, never a mosaic-sized array; weighted by overlap
+times ivm; buffered weighted median, clipped mean, correction step; fixed
+defaults (2x, pixfrac 0.8, correction on, snr 5/4, below 3 exposures only
+pixels above the prediction); and a tolerance measured from the data in
+place of `scale * D` if it works for every filter.
+
+Tolerance, simulated with `scripts/exp_outlier_reference.py --part 2
+--defaults` (4 exposures, 160 stpsf stars; NRCA1 for F070W and F150W,
+NRCA5 for F277W and F444W). Found / near stars / sky, wings per 10^4 /
+star cores flagged:
+
+| filter (FWHM) | jwst's step, 1.2 / 0.7 | defaults, `scale * D` 0.5 / 0.3 | defaults, measured | defaults, robust |
+| --- | --- | --- | --- | --- |
+| F070W (1.21 px) | 87.6% / 48% / 0.0, 1 / 15.8% | 92.0% / 60% / 1.3, 1 / 2.8% | 98.8% / 95% / 18.5, 489 / 52% | 88.4% / 57% / 6.6, 34 / 0.8% |
+| F150W (1.76 px) | 86.3% / 49% / 0.0, 0 / 3.1% | 91.8% / 63% / 2.1, 1 / 0.2% | 98.8% / 95% / 14.5, 578 / 39% | 88.4% / 60% / 6.5, 38 / 0.7% |
+| F277W (1.69 px) | 87.2% / 49% / 0.0, 0 / 3.8% | 92.2% / 65% / 1.1, 1 / 0.2% | 98.7% / 96% / 6.8, 549 / 41% | 89.4% / 67% / 2.5, 32 / 0.7% |
+| F444W (2.45 px) | 85.3% / 49% / 0.0, 0 / 0.0% | 90.6% / 60% / 1.8, 0 / 0.0% | 98.6% / 92% / 10.6, 636 / 24% | 88.6% / 61% / 5.5, 35 / 0.6% |
+
+- "measured": the weighted variance of the input pixels kept by the
+  clipping minus their mean err**2. The clipping removes the scatter that
+  structure makes, so it is near zero at star cores: fails everywhere.
+  Taken over all input pixels instead it would include a cosmic ray's own
+  deviation (about 0.43 of its amplitude with 4 exposures) and hide it.
+- "robust": (1.4826 times the weighted MAD of all input pixels about the
+  clipped mean)**2 minus their weighted median err**2. Cores are fine, but
+  it finds fewer cosmic rays than `scale * D` at 0.5 / 0.3 and flags 30
+  times more wing pixels and 2.5-6.6 sky pixels per 10^4 (target 5): on
+  sky the median spread of a few input pixels is often zero, so the
+  prediction's own noise is not counted, which `scale * D` partly is.
+- `scale * D` at 0.5 / 0.3 with the defaults meets the targets on all four
+  filters with the same values: cores 0-2.8%, more cosmic rays found than
+  jwst's step (and 11-16 points more near stars), sky 1.1-2.1 per 10^4.
+  That is the default, then; the robust spread is kept as an option.
+
+Tiled implementation (`src/snowblind/outlier_reference.py`, uncommitted):
+per exposure once, the pixel map onto the 2x grid, its corners (kept as
+float32 offsets from the float64 centers, exact to about 1e-7 fine pixel,
+half the memory), Jacobian, ivm weights, sky level (sigma-clipped median of
+200 000 good pixels when skymatch did not run), and the regions of input
+pixels reaching each tile (from the centers every 8 pixels, widened by 8
+plus a margin of 3). Per tile, the operators of those regions only
+(corners shifted by the tile's origin, `overlap_triplets` and
+`build_operator`), one numba kernel looping over the parts (buffered
+weighted median, clipped mean, robust spread, count of exposures), the
+correction from the blotted residuals, and the predictions of the pixels
+whose centers lie in the tile. Tests: prediction independent of the tile
+size (16 against 1024 fine pixels), cosmic ray flagged, nothing flagged
+without one. On the 8 nrcalong files of 6154: 13.8 s (geometry 2.9 s, 60
+tiles 10.1 s, flags 0.9 s) and 3.2 GB peak, of which about 310 MB per
+exposure; per tile, spizzle's operators take 4.6 s of the 10.1, the
+combination 1.8 s and the correction 1.8 s. Target was under 10 s.
+
+Injected cosmic rays on the 16 long-wavelength files of 6154 (as above;
+coverage 1: 8.8%, 2: 40.2%, 3: 4.9%, 4+: 45.8%):
+
+| method | time | found | near sources | found where 1 / 2 / 3 / 4+ cover | source cores | wings per 10^4 | elsewhere per 10^4 |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: |
+| jwst's step | 67 s | 63.0% | 39.9% | 29 / 60 / 67 / 72% | 2.23% | 26 | 13.8 |
+| tiled, 1.2 / 0.7 | 30 s | 38.6% | 26.0% | 0 / 8 / 60 / 73% | 0.05% | 6 | 5.0 |
+| tiled, 0.8 / 0.5 | 30 s | 41.2% | 29.9% | 0 / 10 / 64 / 77% | 0.17% | 11 | 6.6 |
+| tiled, 0.5 / 0.3 | 30 s | 44.5% | 34.6% | 0 / 13 / 68 / 81% | 0.74% | 19 | 9.7 |
+| tiled, robust | 30 s | 52.6% | 36.6% | 3 / 45 / 61 / 69% | 4.51% | 34 | 13.6 |
+
+- Where 4 or more exposures cover, the tiled reference at 0.5 / 0.3 finds
+  81% against jwst's 72%, with a third of jwst's flags at source cores and
+  fewer in wings and elsewhere.
+- Where 2 cover, it finds 8-13%: the reference includes the exposure's
+  own pixels, and the weighted median of two exposures takes whichever has
+  more weight at that fine pixel, often the one with the cosmic ray. The
+  per-exposure test found 73-83% there by leaving the exposure out.
+- Where 1 covers, nothing can be found; jwst finds 29% by comparing the
+  exposure with a blurred copy of itself.
+
+
+Decisions, 2026-11-03 (user):
+- `scale * D` at 0.5 / 0.3 is the default tolerance; check that it holds
+  for the other NIRCam filters up to F444W, NIRISS and NIRSpec (MIRI
+  eventually).
+- Two exposures: no special handling beyond flagging only pixels above
+  the prediction. Most outliers should be gone after snowblind_detector1;
+  this step is cleanup.
+- Real data: MAST program 2234 (NIRCam F090W short wavelength, F444W with
+  F470N long wavelength, 10 fields, four small-offset dithers each);
+  observation 1's 40 cal files (4.7 GB) in `~/data/jwst_2234/o001`.
+
+
+The default tolerance on more filters, simulated the same way (`--part 2
+--defaults --instrument ... --filter ... --detector ...`; NRCA1 or NRCA5,
+NIS, NRS1). Found / near stars / sky per 10^4 / star cores flagged, jwst's
+step at its tolerance against the defaults at `scale * D` 0.5 / 0.3:
+
+| instrument, filter (FWHM) | jwst's step, 1.2 / 0.7 | defaults, 0.5 / 0.3 |
+| --- | --- | --- |
+| NIRCam F090W (1.30 px) | 88.0% / 47% / 0.0 / 13.4% | 92.0% / 59% / 1.0 / 2.2% |
+| NIRCam F115W (1.46 px) | 87.2% / 44% / 0.0 / 9.2% | 91.1% / 60% / 0.7 / 0.8% |
+| NIRCam F200W (2.23 px) | 86.3% / 52% / 0.0 / 0.3% | 91.1% / 62% / 1.7 / 0.0% |
+| NIRCam F356W (2.05 px) | 86.2% / 51% / 0.2 / 0.8% | 92.6% / 65% / 0.8 / 0.0% |
+| NIRISS F090W (1.24 px) | 87.7% / 44% / 0.0 / 14.5% | 93.5% / 64% / 0.1 / 2.9% |
+| NIRISS F115W (1.26 px) | 88.5% / 45% / 0.0 / 13.6% | 93.4% / 64% / 0.6 / 2.6% |
+| NIRISS F150W (1.30 px) | 87.8% / 45% / 0.0 / 11.9% | 92.5% / 60% / 0.6 / 2.2% |
+| NIRISS F200W (1.40 px) | 87.4% / 46% / 0.0 / 9.5% | 92.1% / 59% / 0.6 / 1.4% |
+| NIRISS F277W (1.65 px) | 87.3% / 54% / 0.0 / 4.9% | 92.0% / 64% / 0.7 / 0.2% |
+| NIRISS F356W (1.97 px) | 86.5% / 53% / 0.5 / 1.2% | 92.4% / 68% / 2.3 / 0.0% |
+| NIRISS F444W (2.33 px) | 86.2% / 52% / 0.6 / 0.0% | 91.5% / 63% / 2.5 / 0.0% |
+| NIRSpec F110W (1.25 px) | 90.1% / 44% / 0.0 / 15.6% | 94.2% / 64% / 0.0 / 2.9% |
+| NIRSpec F140X (1.25 px) | 90.0% / 44% / 0.0 / 15.1% | 94.2% / 64% / 0.0 / 2.8% |
+
+With F070W, F150W, F277W and F444W above, the same defaults meet the
+targets on all 17: star cores 0-2.9% (the most undersampled, NIRISS F090W
+and NIRSpec F110W, are closest to 3%), more cosmic rays than jwst's step
+(4-6 points; 10-20 points near stars), sky 0-2.5 per 10^4, star wings 0-2.
+The robust spread keeps cores under 1% everywhere but flags 16-37 wing
+pixels per 10^4 and 3.6-7.8 sky pixels for the long-wavelength filters.
+MIRI not yet simulated.
+
+
+Program 2234, 2026-11-03: `exp_injected_outliers.py` on observation 1
+(INTRAMODULEBOX, four dithers of about 3 arcsec, MEDIUM8 10 groups, 1052
+s), 2000 cosmic rays per exposure (10-1000 sigma), up to half 1-3 px from
+sources above 20 sigma (`--source-snr 20`: the fields are sparse, with 4
+to 26 sources above 50 sigma per detector; the first injection loop could
+not place 1000 near-source cosmic rays there and never ended; it now
+places as many as fit). Found / near sources / found where 1, 2, 3, 4+
+exposures cover / wings and elsewhere per 10^4:
+
+| set | method | time | found | near sources | by coverage | wings, elsewhere |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| F444W+F470N, 8 (coverage 4+: 83%, 2: 9%) | jwst's step | 25 s | 95.7% | 84.9% | 44 / 83 / 96 / 97.4% | 72, 55.6 |
+| | tiled, 0.5 / 0.3 | 14 s | 88.5% | 83.3% | 2 / 27 / 84 / 95.8% | 80, 55.3 |
+| | tiled, 1.2 / 0.7 | 14 s | 86.2% | 77.7% | 2 / 21 / 80 / 94.1% | 53, 21.3 |
+| F090W, NRCA1-4, 16 (4+: 81%, 2: 15%) | jwst's step | 47 s | 93.2% | 79.5% | 41 / 85 / 91 / 95.4% | 28, 2.7 |
+| | tiled, 0.5 / 0.3 | 28 s | 84.8% | 77.3% | 0 / 20 / 79 / 97.3% | 33, 2.4 |
+| | tiled, 1.2 / 0.7 | 29 s | 83.3% | 70.7% | 0 / 16 / 77 / 96.4% | 22, 1.4 |
+
+- Where four or more exposures cover, the tiled reference finds about as
+  many as jwst's step (97.3% against 95.4% in F090W, 95.8% against 97.4%
+  in the noisy narrowband F470N).
+- Where two cover, jwst finds 83-85%: its median of two images is their
+  mean, so a cosmic ray shows at half its amplitude. The tiled weighted
+  median takes one exposure's value, often the one with the cosmic ray:
+  16-27%. That is most of the difference overall (93-96% against 84-88%).
+  Using the weighted mean of the two exposures where only two reach a fine
+  pixel would match jwst there (asked the user).
+- The "source cores" measure is not usable on these fields: with sources
+  down to 20 sigma many are hot pixels or cosmic-ray remnants, flagged by
+  every method alike (28% in F470N, 11% in F090W). The real-data
+  comparison of star cores is 6154's (0.74% against jwst's 2.23% where four
+  or more cover).
+- 1.7-1.8 times faster than jwst's step; 4.1 GB peak.
+
+
+Two exposures, 2026-11-03 (user: weighted mean): where fewer than three
+exposures land on a fine pixel, the reference is their weighted mean, as
+jwst's median of two images is, which halves a cosmic ray; and the
+correction step is left out there, because with two exposures it pulls
+the reference toward both, the cosmic ray included (a test with two
+exposures failed until then). Rerun at `scale * D` 0.5 / 0.3 (found / near
+sources / found where 2 cover / source cores):
+
+| set | jwst's step | tiled, before | tiled, now |
+| --- | --- | --- | --- |
+| 2234 F444W+F470N, 8 | 95.7% / 84.9% / 82.7% | 88.5% / 83.3% / 27.0% | 92.2% / 86.6% / 68.9% |
+| 2234 F090W NRCA1-4, 16 | 93.2% / 79.5% / 84.6% | 84.8% / 77.3% / 20.4% | 92.1% / 82.1% / 70.8% |
+| 6154 long wavelength, 16 | 63.0% / 39.9% / 60.1% / 2.23% | 44.5% / 34.6% / 12.7% / 0.74% | 62.0% / 47.8% / 54.4% / 0.56% |
+
+Overall now within 1-4 points of jwst's step, 2-8 points more near
+sources, a quarter of its star-core flags in 6154, fewer wing and other
+flags there, and 1.6-2.4 times faster. Where two cover it finds 54-71%
+against jwst's 60-85%: the sharper reference shows the halved cosmic ray
+more steeply, which raises `D`; at 1.2 / 0.7 only 5-16% are found there,
+so 0.5 / 0.3 is the default for this reason too. Where one covers,
+nothing changes (0-5% against 29-44%; 1% of the pixels in 2234, 9% in
+6154).
+
 
 ## 7. Open questions for the user (ask, do not decide)
 
