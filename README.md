@@ -38,13 +38,23 @@ each step works and how to choose its settings.
   the reset likelihood ramp fit and the snowball and jump steps in place,
   and the SIRS reference-pixel correction. It works as a drop-in
   replacement.
+- **`SparseResampleStep`** and **`SparseOutlierDetectionStep`** are the jwst
+  resample and outlier detection steps for images with drizzle replaced by
+  [spizzle](https://github.com/mpi-astronomy/spizzle). The mosaic's
+  variance planes are the exact variance of each pixel, and a noise factor
+  image gives what the correlation between neighboring pixels adds to the
+  noise of a sum over them; both steps are faster than the jwst steps.
+  **`snowblind_image3`** is `calwebb_image3` with both in place.
 
 ## Installation
 
     pip install snowblind
 
 snowblind needs jwst 2.0.0 or later; earlier releases of snowblind work with
-earlier jwst releases.
+earlier jwst releases. The resampling and outlier detection steps need
+spizzle as well:
+
+    pip install 'snowblind[spizzle]'
 
 ## Getting started
 
@@ -77,6 +87,11 @@ PersistenceFlagStep.call(sorted(glob("jw*_cal.fits")), save_results=True, suffix
 This writes each file again in `persist/`, with `DO_NOT_USE` and
 `PERSISTENCE` set where an earlier exposure of the same detector saturated
 recently.
+
+Run Image3 with spizzle's outlier detection and resampling, which saves the
+noise factor as `<product>_nfactor.fits` next to the `_i2d.fits` mosaic:
+
+    strun snowblind_image3 jw..._image3_asn.json
 
 ## Results
 

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 from astropy import coordinates as coord
@@ -8,10 +10,11 @@ from jwst.datamodels import ModelLibrary
 from jwst.resample.resample import ResampleImage
 from jwst.resample.resample_step import GOOD_BITS
 from stdatamodels.jwst.datamodels import ImageModel, dqflags
+from stpipe.exceptions import ValidationError
 
 pytest.importorskip("spizzle")
 
-from snowblind.resample import SparseResampleImage  # noqa: E402
+from snowblind.resample import SparseResampleImage, SparseResampleStep  # noqa: E402
 
 
 SHAPE = (40, 50)
@@ -313,3 +316,82 @@ def test_finalize_without_the_noise_factor_pass_raises():
 
     with pytest.raises(RuntimeError, match="noise factor"):
         resamp.finalize()
+
+
+def test_step_saves_the_noise_factor_file_it_records(tmp_cwd):
+    """SparseResampleStep.call of the dithered exposures with save_results saves the noise factor file named in
+    meta.snowblind.sparse_resample.noise_factor_file."""
+    result = SparseResampleStep.call(dithered_exposures(), save_results=True)
+
+    name = result.meta.instance["snowblind"]["sparse_resample"]["noise_factor_file"]
+    assert (tmp_cwd / name).is_file()
+
+
+def test_step_names_the_noise_factor_file_with_its_suffix(tmp_cwd):
+    """SparseResampleStep.call of the dithered exposures with save_results names the noise factor file with the
+    suffix nfactor."""
+    result = SparseResampleStep.call(dithered_exposures(), save_results=True)
+
+    assert result.meta.instance["snowblind"]["sparse_resample"]["noise_factor_file"].endswith("_nfactor.fits")
+
+
+def test_step_noise_factor_file_holds_the_noise_factor(tmp_cwd):
+    """SparseResampleStep.call of the dithered exposures with save_results saves a noise factor file whose SCI is
+    SparseResampleImage's noise factor."""
+    result = SparseResampleStep.call(dithered_exposures(), save_results=True)
+    resamp = SparseResampleImage(
+        ModelLibrary(dithered_exposures(), on_disk=False), enable_var=True, compute_err="from_var", **RESAMPLE_KWARGS
+    )
+    resamp.resample_many_to_one()
+
+    name = result.meta.instance["snowblind"]["sparse_resample"]["noise_factor_file"]
+    with ImageModel(str(tmp_cwd / name)) as noise_factor:
+        np.testing.assert_allclose(noise_factor.data, resamp.noise_factor, rtol=1e-6)
+
+
+def test_step_without_saving_writes_no_file(tmp_cwd):
+    """SparseResampleStep.call of the dithered exposures without save_results writes no file."""
+    SparseResampleStep.call(dithered_exposures())
+
+    assert list(Path(tmp_cwd).iterdir()) == []
+
+
+def test_step_without_saving_records_no_noise_factor_file():
+    """SparseResampleStep.call of the dithered exposures without save_results records no noise factor file."""
+    result = SparseResampleStep.call(dithered_exposures())
+
+    assert "noise_factor_file" not in result.meta.instance["snowblind"]["sparse_resample"]
+
+
+def test_step_records_the_variance_mode():
+    """SparseResampleStep.call(variance="stcal") of the dithered exposures records variance "stcal"."""
+    result = SparseResampleStep.call(dithered_exposures(), variance="stcal")
+
+    assert result.meta.instance["snowblind"]["sparse_resample"]["variance"] == "stcal"
+
+
+def test_step_sets_its_cal_step():
+    """SparseResampleStep.call of the dithered exposures sets meta.cal_step.sparse_resample to COMPLETE."""
+    result = SparseResampleStep.call(dithered_exposures())
+
+    assert result.meta.cal_step.instance["sparse_resample"] == "COMPLETE"
+
+
+def test_step_has_no_context_by_default():
+    """SparseResampleStep.call of the dithered exposures makes no context array."""
+    result = SparseResampleStep.call(dithered_exposures())
+
+    assert "con" not in result.instance
+
+
+def test_step_rejects_the_kernel_parameter():
+    """SparseResampleStep.call(kernel="square") raises ValidationError: the step has no kernel parameter."""
+    with pytest.raises(ValidationError, match="kernel"):
+        SparseResampleStep.call(dithered_exposures(), kernel="square")
+
+
+def test_step_single_gives_one_image_per_group():
+    """SparseResampleStep.call(single=True) of the four dithered exposures gives a library of four images."""
+    result = SparseResampleStep.call(dithered_exposures(), single=True)
+
+    assert len(result) == 4

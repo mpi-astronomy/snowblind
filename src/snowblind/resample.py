@@ -1,6 +1,7 @@
 """Resampling of images with spizzle in place of drizzle.
 
-`SparseResampleImage` is jwst's `~jwst.resample.resample.ResampleImage`
+`SparseResampleStep` is jwst's resample step for images, and
+`SparseResampleImage` the class that does the work.  `SparseResampleImage` is jwst's `~jwst.resample.resample.ResampleImage`
 with drizzle's square kernel replaced by spizzle's sparse operator: the
 pixel map, the operator of each exposure, and the sums of the science data,
 the weights and the variance planes, in float64.  The weights are stcal's
@@ -31,18 +32,26 @@ spizzle is an optional dependency, ``pip install 'snowblind[spizzle]'``;
 without it this module imports, and `SparseResampleImage` raises.
 """
 import logging
+from pathlib import Path
 
 import numpy as np
+from jwst.datamodels import ImageModel, ModelContainer, ModelLibrary
+from jwst.lib.pipe_utils import match_nans_and_flags
 from jwst.resample.resample import ResampleImage, copy_asn_info_from_library
+from jwst.resample.resample_step import GOOD_BITS, ResampleStep
+from jwst.resample.resample_utils import load_custom_wcs
 from stcal.resample import Resample
 from stcal.resample.utils import build_driz_weight, get_tmeasure, is_imaging_wcs, resample_range
+from stdatamodels import filetype
+
+from .step import Step
 
 try:
     import spizzle
 except ImportError:
     spizzle = None
 
-__all__ = ["SparseResampleImage", "VARIANCE_MODES"]
+__all__ = ["SparseResampleStep", "SparseResampleImage", "VARIANCE_MODES"]
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +59,9 @@ log = logging.getLogger(__name__)
 STCAL_CHECKED_VERSION = "1.20.0"
 
 VARIANCE_MODES = ("exact", "stcal")
+
+# suffix of the noise factor file that SparseResampleStep saves next to the mosaic
+NOISE_FACTOR_SUFFIX = "nfactor"
 
 
 class _SpizzleResample(Resample):
@@ -301,3 +313,164 @@ class SparseResampleImage(ResampleImage, _SpizzleResample):
         self.output_jwst_model.meta.filename = self.output_filename
         copy_asn_info_from_library(self.input_models, self.output_jwst_model)
         return self.output_jwst_model
+
+
+class SparseResampleStep(Step):
+    """Resample images onto a regular grid with spizzle's square kernel.
+
+    jwst's ``ResampleStep`` for images with `SparseResampleImage` in place of
+    drizzle.  The parameters are jwst's, with these differences:
+
+    - no ``kernel``: the square kernel only;
+    - no ``propagate_dq``: the DQ array is not resampled;
+    - ``weight_type`` is "ivm" unless given: the step does not read jwst's
+      step parameters from CRDS, which ask for "exptime" for some
+      instruments;
+    - ``enable_ctx`` is off by default;
+    - ``pixmap_stepsize`` 16 and ``pixmap_order`` 3: the pixel map is
+      interpolated with splines between the pixels where the WCS is
+      evaluated;
+    - ``variance``: "exact" for the exact variance planes and the noise
+      factor, "stcal" for the jwst step's variance planes and ERR.
+
+    With the exact variance, the noise factor is saved as an image next to
+    the mosaic, with the suffix ``nfactor``, whenever the results are saved,
+    and its file name is recorded in the mosaic as
+    ``meta.snowblind.sparse_resample.noise_factor_file`` (``NFACFILE``).
+    """
+
+    class_alias = "sparse_resample"
+    fits_keyword = "S_SPARSE"
+    fits_comment = "Resampling: snowblind.SparseResampleStep"
+
+    spec = """
+        pixfrac = float(min=0.0, max=1.0, default=1.0)  # Pixel shrinkage factor
+        fillval = string(default='NAN')  # Output value for pixels with no weight, a number
+        weight_type = option('ivm', 'exptime', default='ivm')  # Input image weighting type
+        output_shape = int_list(min=2, max=2, default=None)  # [x, y] order
+        crpix = float_list(min=2, max=2, default=None)  # 0-based image coordinates of the reference pixel
+        crval = float_list(min=2, max=2, default=None)  # world coordinates of the reference pixel
+        rotation = float(default=None)  # Output image Y-axis PA relative to North
+        pixel_scale_ratio = float(default=1.0)  # Ratio of output to input pixel scale.
+        pixel_scale = float(default=None)  # Absolute pixel scale in arcsec
+        output_wcs = string(default='')  # Custom output WCS. Overrides other WCS parameters if provided.
+        single = boolean(default=False)  # Resample each input to its own output grid
+        blendheaders = boolean(default=True)  # Blend metadata from inputs into output
+        in_memory = boolean(default=True)  # Keep images in memory
+        enable_ctx = boolean(default=False)  # Compute and report the context array
+        enable_err = boolean(default=True)  # Compute and report the err array
+        report_var = boolean(default=True)  # Report the variance array
+        variance = option('exact', 'stcal', default='exact')  # Exact variance and noise factor, or stcal's variance
+        pixmap_stepsize = integer(min=1, default=16)  # Spacing in pixels of the WCS evaluations for the pixel map
+        pixmap_order = integer(default=3)  # Spline order of the pixel map between them, 1 or 3
+    """  # noqa: E501
+
+    reference_file_types: list = []
+
+    def process(self, input_data):
+        """Resample the input images, as jwst's ResampleStep does.
+
+        Parameters
+        ----------
+        input_data : str, `~stdatamodels.jwst.datamodels.ImageModel`, or any \
+                     association-type input loadable into `~jwst.datamodels.library.ModelLibrary`
+            An image file or model, or an association of them.
+
+        Returns
+        -------
+        `~stdatamodels.jwst.datamodels.ImageModel` or `~jwst.datamodels.library.ModelLibrary`
+            The mosaic, or with ``single`` a library of one resampled image per group.
+        """
+        input_model = self.prepare_output(input_data, open_models=False)
+        if isinstance(input_model, ModelLibrary):
+            input_models = input_model
+        elif isinstance(input_model, ImageModel) or (
+            isinstance(input_model, str) and filetype.check(input_model) in ["fits", "asdf"]
+        ):
+            input_models = ModelLibrary([input_model], on_disk=not self.in_memory)
+            self.blendheaders = False
+        elif isinstance(input_model, (str, dict, list, ModelContainer)):
+            input_models = ModelLibrary(input_model, on_disk=not self.in_memory)
+        else:
+            raise TypeError(f"Input {input_data} is not a 2D image.")
+
+        try:
+            output = input_models.asn["products"][0]["name"]
+        except KeyError:
+            output = None
+
+        with input_models:
+            for model in input_models:
+                if model.data.ndim != 2:
+                    raise RuntimeError(f"Input {model.meta.filename} is not a 2D image.")
+                # make NaN and DO_NOT_USE agree in all inputs, as the jwst step does
+                match_nans_and_flags(model)
+                input_models.shelve(model)
+
+        kwargs = self._resample_kwargs()
+        if self.single:
+            resamp = SparseResampleImage(
+                input_models, output=output, enable_ctx=self.enable_ctx, enable_var=False, compute_err="driz_err",
+                **kwargs,
+            )
+            return resamp.resample_many_to_many(in_memory=self.in_memory)
+
+        resamp = SparseResampleImage(
+            input_models,
+            output=output,
+            variance=self.variance,
+            enable_ctx=self.enable_ctx,
+            enable_var=self.enable_err,
+            report_var=self.enable_err and self.report_var,
+            compute_err="from_var" if self.enable_err else None,
+            **kwargs,
+        )
+        result = resamp.resample_many_to_one()
+        if self.enable_err:
+            self.record(result, variance=self.variance)
+        self._save_noise_factor(result, resamp.noise_factor)
+        self.set_cal_step(result, "COMPLETE")
+        return result
+
+    def _resample_kwargs(self):
+        """The SparseResampleImage parameters from the step parameters, as jwst's ResampleStep.get_drizpars."""
+        output_shape = ResampleStep.check_list_pars(self.output_shape, "output_shape", min_vals=[1, 1])
+        return {
+            "pixfrac": self.pixfrac,
+            "fillval": self.fillval,
+            "weight_type": self.weight_type,
+            "good_bits": GOOD_BITS,
+            "blendheaders": self.blendheaders,
+            "pixmap_stepsize": self.pixmap_stepsize,
+            "pixmap_order": self.pixmap_order,
+            "output_wcs": load_custom_wcs(self.output_wcs, output_shape),
+            "wcs_pars": {
+                "crpix": ResampleStep.check_list_pars(self.crpix, "crpix"),
+                "crval": ResampleStep.check_list_pars(self.crval, "crval"),
+                "rotation": self.rotation,
+                "pixel_scale": self.pixel_scale,
+                "pixel_scale_ratio": self.pixel_scale_ratio,
+                "output_shape": None if output_shape is None else output_shape[::-1],
+            },
+        }
+
+    def _save_noise_factor(self, result, noise_factor):
+        """Save the noise factor as an image next to the mosaic, if results are saved, and record its file name.
+
+        Parameters
+        ----------
+        result : `~stdatamodels.jwst.datamodels.ImageModel`
+            The mosaic, whose primary header and WCS the noise factor image gets.
+        noise_factor : ndarray or None
+            The noise factor; None saves nothing.
+        """
+        if noise_factor is None:
+            return
+        with ImageModel(noise_factor) as model:
+            model.update(result, only="PRIMARY")
+            model.meta.wcs = result.meta.wcs
+            model.meta.wcsinfo = result.meta.wcsinfo
+            path = self.save_model(model, suffix=NOISE_FACTOR_SUFFIX)
+        if path is not None:
+            log.info(f"Saved the noise factor in {path}")
+            self.record(result, noise_factor_file=Path(path).name)

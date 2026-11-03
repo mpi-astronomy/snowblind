@@ -141,6 +141,30 @@ META_SCHEMA = {
                 },
             },
         },
+        "sparse_resample": {
+            "type": "object",
+            "properties": {
+                "variance": {
+                    "type": "string",
+                    "title": "Variance planes: exact or stcal",
+                    "description": (
+                        "exact: the variance of each output pixel, without the correlation between neighboring "
+                        "output pixels, which the noise factor gives; ERR is the root of their sum times the noise "
+                        "factor. stcal: the variance planes and ERR of the jwst resample step."
+                    ),
+                    "fits_keyword": "VARTYPE",
+                },
+                "noise_factor_file": {
+                    "type": "string",
+                    "title": "File of the noise factor of the variance",
+                    "description": (
+                        "The noise factor of each output pixel, about the variance of a sum over a large aperture "
+                        "over the sum of the pixel variances in it, saved next to the mosaic."
+                    ),
+                    "fits_keyword": "NFACFILE",
+                },
+            },
+        },
     },
 }
 

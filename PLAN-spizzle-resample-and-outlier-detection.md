@@ -1,8 +1,9 @@
 # Plan: spizzle in place of drizzle in ResampleStep and OutlierDetectionStep
 
-Status: handed off 2026-11-02 for implementation in `snowblind`. Part A was
-implemented on 2026-11-03, uncommitted on the branch `feature-resample-spizzle`
-(section 3, "Done"); Parts B and C are not started. The plan is written for an implementing agent
+Status: handed off 2026-11-02 for implementation in `snowblind`. Parts A and
+B were implemented on 2026-11-03 on the branch `feature-resample-spizzle`
+(Part A committed as e72a8fa; sections 3 and 4, "Done"); Part C is not
+started. The plan is written for an implementing agent
 working in `~/dev/snowblind`, with `~/dev/spizzle`, `~/dev/jwst` and
 `~/dev/stcal` checked out beside it.
 
@@ -351,6 +352,50 @@ Done (2026-11-03, uncommitted on `feature-resample-spizzle`):
     the exact one 2.25 (1.49-3.29); over the exact one times the noise
     factor 0.967 (0.838-1.040); jwst's ERR over the new ERR 0.984
     (0.915-1.020). As section 5.1 expects.
+
+Done (2026-11-03, Part B, uncommitted on `feature-resample-spizzle`):
+
+- `SparseResampleStep` (`sparse_resample`, in `resample.py`): its own spec
+  (jwst's without `kernel` and `propagate_dq`; `weight_type` ivm or exptime;
+  `enable_ctx` False; `variance`; `pixmap_stepsize` integer 16 and
+  `pixmap_order` 3) and its own `process`, jwst's input handling with
+  `SparseResampleImage`. The noise factor is saved with
+  `self.save_model(..., suffix="nfactor")`, as source_catalog saves
+  `_segm.fits`, when results are saved; `Step.record` writes `variance`
+  (`VARTYPE`) and `noise_factor_file` (`NFACFILE`) under
+  `meta.snowblind.sparse_resample`, and `set_cal_step` `S_SPARSE`.
+- `SparseOutlierDetectionStep` (`sparse_outlier_detection`, in
+  `outlier_detection.py`): jwst's imaging `detect_outliers` copied with
+  `SparseResampleImage` and a `flag_resampled_model_crs` that blots with
+  spizzle; raises for modes other than imaging; `S_SPOUTL`.
+- Neither step subclasses jwst's: stpipe merges the specs of all classes
+  in a step's hierarchy (`config_parser.get_merged_spec_file`), so a
+  subclass would accept jwst's `kernel` and the IFU and TSO parameters
+  again. The outlier step calls jwst's `_guess_mode` and `_get_asn_id`
+  unbound; `_flag_resampled_model_crs` and `_fileio.save_blot` come
+  through `_jwst_imports.py` (both exist from jwst 2.0.0).
+- `Image3Pipeline` (`snowblind_image3`, in `image3.py`): jwst's with the two
+  slots replaced. On synthetic exposures it writes `<product>_i2d.fits`,
+  `<product>_nfactor.fits` and the `_crf` files.
+- In imaging mode jwst blots once per exposure, not twice: it passes no
+  median error, so the flagging uses the exposure's own ERR (section 2's
+  two `gwcs_blot` calls are the spectral path).
+- Measured 2026-11-03 with `scripts/compare_sparse_outlier_detection.py`
+  (the `snowblind` env, no CRDS step parameters), 8 exposures of 6154, M3
+  Pro. Time / pixels newly flagged OUTLIER / flagged by only one of it and
+  jwst:
+  - NRCALONG: jwst 21.2 s / 48647; sparse, every pixel's WCS 13.2 s /
+    48649 / 16; sparse defaults 9.2 s / 48649 / 16;
+  - NRCA1: jwst 28.2 s / 13259; sparse, every pixel's WCS 19.8 s / 13263 /
+    10; sparse defaults 15.9 s / 13263 / 10.
+
+  About one pixel in 2-3 million differs (drizzle 2.2.0's single-precision
+  blot, as expected); the median and the flagging are jwst's code, which
+  limits the speed-up.
+- Tests: `tests/test_resample.py` (step), `tests/test_outlier_detection.py`
+  (flags the injected cosmic ray and nothing else; same flags as jwst with
+  every pixel's WCS), `tests/test_image3.py` (an end-to-end run). Docs:
+  `docs/resampling.rst`, README, CHANGES.
 
 
 ## 5. Things learned that matter here

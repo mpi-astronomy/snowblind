@@ -5,7 +5,10 @@ from astropy.io import fits
 from stdatamodels.jwst import datamodels
 
 from snowblind import __version__
-from snowblind import JumpPlusStep, OpenPixelStep, PersistenceFlagStep, ResetRampFitStep, SnowblindStep, StreamCleanStep
+from snowblind import (
+    JumpPlusStep, OpenPixelStep, PersistenceFlagStep, ResetRampFitStep, SnowblindStep, SparseOutlierDetectionStep,
+    SparseResampleStep, StreamCleanStep,
+)
 from snowblind.step import META_SCHEMA, Step, _history
 
 
@@ -18,8 +21,11 @@ def test_step_names_the_snowblind_logger_after_the_jwst_ones():
 
 
 def test_every_step_uses_the_shared_base_class():
-    """All six snowblind steps are subclasses of snowblind.step.Step."""
-    for cls in (SnowblindStep, JumpPlusStep, OpenPixelStep, PersistenceFlagStep, StreamCleanStep, ResetRampFitStep):
+    """All eight snowblind steps are subclasses of snowblind.step.Step."""
+    for cls in (
+        SnowblindStep, JumpPlusStep, OpenPixelStep, PersistenceFlagStep, StreamCleanStep, ResetRampFitStep,
+        SparseResampleStep, SparseOutlierDetectionStep,
+    ):
         assert issubclass(cls, Step)
 
 
