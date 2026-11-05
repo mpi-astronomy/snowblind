@@ -28,6 +28,7 @@ dynamic = ['version']
 [project.optional-dependencies]
 spizzle = [
     "spizzle>=0.2.1",
+    "numba>=0.58",
 ]
 docs = [
     "sphinx",

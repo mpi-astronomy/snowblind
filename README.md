@@ -50,7 +50,7 @@ each step works and how to choose its settings.
   near stars and flags far fewer star cores than the jwst step, with the
   same settings for every filter, and never allocates a mosaic-sized array.
 - **`snowblind_image3`** is `calwebb_image3` with `TiledOutlierStep` and
-  `SparseResampleStep` in place (`--tiled_outliers=False` uses
+  `SparseResampleStep` in place (`--outlier_step=sparse_outlier` uses
   `SparseOutlierDetectionStep` for the outliers).
 
 ## Installation

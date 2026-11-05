@@ -23,7 +23,12 @@
   `ResampleImage` with stcal's drizzle calls replaced.
 - `SparseOutlierDetectionStep` (`sparse_outlier_detection`): the jwst
   outlier detection for images, its method unchanged, drizzling with
-  `SparseResampleImage` and blotting with spizzle. Images only.
+  `SparseResampleImage` and blotting with spizzle. Images only; no
+  `resample_data`.
+- None of these steps has jwst's `good_bits`: each names the DQ flags of
+  the pixels it leaves out (resampling: DO_NOT_USE and NON_SCIENCE; the
+  outlier steps: DO_NOT_USE), through `snowblind.resample.drizzle_weights`,
+  which gives stcal's weights from them.
 - `TiledOutlierStep` (`tiled_outlier`): outlier detection for images
   against one reference built from the input pixels of all the exposures on
   the outlier mosaic's grid sampled twice as finely (pixfrac 0.8, weighted
@@ -34,11 +39,12 @@
   above it are flagged. The grid is processed in tiles, so no mosaic-sized
   array is allocated. `snowblind.outlier_reference` holds the method.
 - `snowblind_image3` (`snowblind.Image3Pipeline`): `calwebb_image3` with
-  `TiledOutlierStep` in its `outlier_detection` slot and
-  `SparseResampleStep` in its `resample` slot; `tiled_outliers=False` puts
-  `SparseOutlierDetectionStep` in the outlier slot, with jwst's `scale`.
-- The optional extra `snowblind[spizzle]` installs spizzle, which these
-  steps need.
+  jwst's `outlier_detection` slot replaced by `tiled_outlier`
+  (`TiledOutlierStep`) and `sparse_outlier` (`SparseOutlierDetectionStep`),
+  `outlier_step` naming the one that runs (`tiled_outlier` by default),
+  and `SparseResampleStep` in its `resample` slot.
+- The optional extra `snowblind[spizzle]` installs spizzle and numba, which
+  these steps need; snowblind imports without them.
 - `scripts/compare_sparse_resample.py` and
   `scripts/compare_sparse_outlier_detection.py` compare the steps with the
   jwst steps on a set of `_cal` files; `scripts/exp_injected_outliers.py`

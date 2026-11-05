@@ -39,7 +39,6 @@ from snowblind.resample import SparseResampleImage
 PLANES = ["data", "wht", "var_rnoise", "var_flat", "var_poisson", "err"]
 KWARGS = {
     "weight_type": "ivm",
-    "good_bits": GOOD_BITS,
     "blendheaders": False,
     "enable_ctx": True,
     "enable_var": True,
@@ -80,7 +79,10 @@ def main():
     library = ModelLibrary([datamodels.open(f) for f in args.files], on_disk=False)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        jwst_out, _, t_jwst = timed(ResampleImage, library, pixmap_stepsize=1, pixmap_order=1, **KWARGS)
+        # jwst's class names the flags it keeps (good_bits); SparseResampleImage leaves out DO_NOT_USE and NON_SCIENCE,
+        # the same pixels
+        jwst_out, _, t_jwst = timed(ResampleImage, library, good_bits=GOOD_BITS, pixmap_stepsize=1, pixmap_order=1,
+                                    **KWARGS)
         stcal_out, _, t_stcal = timed(
             SparseResampleImage, library, variance="stcal", pixmap_stepsize=1, pixmap_order=1, **KWARGS
         )

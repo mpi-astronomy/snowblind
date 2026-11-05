@@ -14,7 +14,7 @@ from stpipe.exceptions import ValidationError
 
 pytest.importorskip("spizzle")
 
-from snowblind.resample import SparseResampleImage, SparseResampleStep  # noqa: E402
+from snowblind.resample import SparseResampleImage, SparseResampleStep, drizzle_weights  # noqa: E402
 
 
 SHAPE = (40, 50)
@@ -24,7 +24,7 @@ CRVAL = (53.1, -27.8)
 # x and y offsets in pixels and rotations in degrees of the dithered exposures
 DITHERS = [(0.0, 0.0, 0.0), (3.3, 1.7, 0.0), (-2.6, 4.1, 0.4), (5.2, -3.4, -0.3)]
 PLANES = ["data", "wht", "var_rnoise", "var_flat", "var_poisson", "err"]
-RESAMPLE_KWARGS = {"weight_type": "ivm", "good_bits": GOOD_BITS, "blendheaders": False}
+RESAMPLE_KWARGS = {"weight_type": "ivm", "blendheaders": False}
 
 
 def tan_wcs(shape, crpix, crval, scale, angle=0.0):
@@ -125,7 +125,9 @@ def jwst_and_stcal_mode():
     """jwst's ResampleImage and SparseResampleImage with stcal's variance and every pixel's WCS, of the dithered
     exposures with the variance planes, ERR from them, and context."""
     kwargs = dict(RESAMPLE_KWARGS, enable_ctx=True, enable_var=True, compute_err="from_var")
-    jwst_output = ResampleImage(ModelLibrary(dithered_exposures(), on_disk=False), **kwargs).resample_many_to_one()
+    jwst_output = ResampleImage(
+        ModelLibrary(dithered_exposures(), on_disk=False), good_bits=GOOD_BITS, **kwargs
+    ).resample_many_to_one()
     sparse_output = SparseResampleImage(
         ModelLibrary(dithered_exposures(), on_disk=False), variance="stcal", pixmap_stepsize=1, pixmap_order=1, **kwargs
     ).resample_many_to_one()
@@ -174,7 +176,9 @@ def test_stcal_mode_err_with_exptime_weights_matches_jwst_inside_the_frame():
     """SparseResampleImage(variance="stcal", weight_type="exptime", pixmap_stepsize=1) of the dithered exposures
     gives jwst's ERR to float32 round-off (2e-6 relative), inside the outermost ring of the output frame."""
     kwargs = dict(RESAMPLE_KWARGS, weight_type="exptime", enable_var=True, compute_err="from_var")
-    jwst_output = ResampleImage(ModelLibrary(dithered_exposures(), on_disk=False), **kwargs).resample_many_to_one()
+    jwst_output = ResampleImage(
+        ModelLibrary(dithered_exposures(), on_disk=False), good_bits=GOOD_BITS, **kwargs
+    ).resample_many_to_one()
     sparse_output = SparseResampleImage(
         ModelLibrary(dithered_exposures(), on_disk=False), variance="stcal", pixmap_stepsize=1, pixmap_order=1, **kwargs
     ).resample_many_to_one()
@@ -187,7 +191,9 @@ def test_driz_err_matches_jwst_inside_the_frame():
     """SparseResampleImage(compute_err="driz_err", pixmap_stepsize=1) of the dithered exposures gives jwst's
     drizzled ERR to float32 round-off (2e-6 relative), inside the outermost ring of the output frame."""
     kwargs = dict(RESAMPLE_KWARGS, enable_var=False, compute_err="driz_err")
-    jwst_output = ResampleImage(ModelLibrary(dithered_exposures(), on_disk=False), **kwargs).resample_many_to_one()
+    jwst_output = ResampleImage(
+        ModelLibrary(dithered_exposures(), on_disk=False), good_bits=GOOD_BITS, **kwargs
+    ).resample_many_to_one()
     sparse_output = SparseResampleImage(
         ModelLibrary(dithered_exposures(), on_disk=False), pixmap_stepsize=1, pixmap_order=1, **kwargs
     ).resample_many_to_one()
@@ -303,8 +309,8 @@ def test_unknown_variance_mode_is_rejected():
 
 
 def test_indef_fill_value_is_rejected():
-    """SparseResampleImage(fillval="INDEF") raises ValueError: fill values are numbers."""
-    with pytest.raises(ValueError):
+    """SparseResampleImage(fillval="INDEF") raises ValueError saying the fill value must be a number."""
+    with pytest.raises(ValueError, match="fillval must be a number"):
         SparseResampleImage(ModelLibrary([uniform_exposure()], on_disk=False), fillval="INDEF", **RESAMPLE_KWARGS)
 
 
@@ -347,6 +353,15 @@ def test_step_noise_factor_file_holds_the_noise_factor(tmp_cwd):
     name = result.meta.instance["snowblind"]["sparse_resample"]["noise_factor_file"]
     with ImageModel(str(tmp_cwd / name)) as noise_factor:
         np.testing.assert_allclose(noise_factor.data, resamp.noise_factor, rtol=1e-6)
+
+
+def test_step_records_only_the_noise_factor_file_name(tmp_cwd):
+    """SparseResampleStep.call of the dithered exposures saving into output_dir "out" records the noise factor file's
+    name without its directory."""
+    result = SparseResampleStep.call(dithered_exposures(), save_results=True, output_dir=str(tmp_cwd / "out"))
+
+    name = result.meta.instance["snowblind"]["sparse_resample"]["noise_factor_file"]
+    assert Path(name).name == name
 
 
 def test_step_without_saving_writes_no_file(tmp_cwd):
@@ -395,3 +410,67 @@ def test_step_single_gives_one_image_per_group():
     result = SparseResampleStep.call(dithered_exposures(), single=True)
 
     assert len(result) == 4
+
+
+def test_good_bits_are_refused():
+    """SparseResampleImage(good_bits=...) raises ValueError: the flags to leave out are given as rejected."""
+    with pytest.raises(ValueError, match="rejected"):
+        SparseResampleImage(ModelLibrary([uniform_exposure()], on_disk=False), good_bits=GOOD_BITS, **RESAMPLE_KWARGS)
+
+
+def test_many_to_many_with_the_exact_variance_gives_one_image_per_group():
+    """SparseResampleImage(enable_var=True).resample_many_to_many of the four dithered exposures gives four images:
+    each group gets its own second pass for the noise factor."""
+    resamp = SparseResampleImage(
+        ModelLibrary(dithered_exposures(), on_disk=False), enable_var=True, compute_err="from_var", **RESAMPLE_KWARGS
+    )
+
+    assert len(resamp.resample_many_to_many()) == 4
+
+
+def test_step_single_outputs_record_its_status():
+    """SparseResampleStep.call(single=True) of the dithered exposures sets meta.cal_step.sparse_resample to COMPLETE
+    in each image."""
+    result = SparseResampleStep.call(dithered_exposures(), single=True)
+
+    statuses = []
+    with result:
+        for model in result:
+            statuses.append(model.meta.cal_step.instance["sparse_resample"])
+            result.shelve(model, modify=False)
+    assert statuses == ["COMPLETE"] * 4
+
+
+def test_drizzle_weights_are_the_inverse_read_noise_variance():
+    """drizzle_weights of an empty dq with VAR_RNOISE 0.25 and ivm weights gives 4 everywhere."""
+    weights = drizzle_weights(np.zeros((3, 3), dtype=np.uint32), "ivm", dqflags.pixel["DO_NOT_USE"],
+                              var_rnoise=np.full((3, 3), 0.25, dtype=np.float32))
+
+    np.testing.assert_array_equal(weights, 4.0)
+
+
+def test_drizzle_weights_are_zero_where_a_rejected_flag_is_set():
+    """drizzle_weights rejecting DO_NOT_USE gives 0 at a pixel with DO_NOT_USE."""
+    dq = np.zeros((3, 3), dtype=np.uint32)
+    dq[1, 1] = dqflags.pixel["DO_NOT_USE"]
+
+    weights = drizzle_weights(dq, "ivm", dqflags.pixel["DO_NOT_USE"], var_rnoise=np.ones((3, 3), dtype=np.float32))
+
+    assert weights[1, 1] == 0.0
+
+
+def test_drizzle_weights_keep_a_pixel_with_a_flag_not_rejected():
+    """drizzle_weights rejecting DO_NOT_USE gives 1 at a pixel with JUMP_DET only."""
+    dq = np.zeros((3, 3), dtype=np.uint32)
+    dq[1, 1] = dqflags.pixel["JUMP_DET"]
+
+    weights = drizzle_weights(dq, "ivm", dqflags.pixel["DO_NOT_USE"], var_rnoise=np.ones((3, 3), dtype=np.float32))
+
+    assert weights[1, 1] == 1.0
+
+
+def test_drizzle_weights_without_var_rnoise_are_one():
+    """drizzle_weights with ivm weights and no VAR_RNOISE gives 1 everywhere, as stcal's build_driz_weight does."""
+    weights = drizzle_weights(np.zeros((3, 3), dtype=np.uint32), "ivm", dqflags.pixel["DO_NOT_USE"])
+
+    np.testing.assert_array_equal(weights, 1.0)

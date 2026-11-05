@@ -884,6 +884,62 @@ default in `snowblind_image3`'s outlier slot; `tiled_outliers=False` puts
 not set (ConfigObj marks values that came from the defaults).
 
 
+Code review, 2026-11-05 (fixes on `feature-resample-spizzle`, user's
+directions):
+- `snowblind_image3` replaces jwst's `outlier_detection` slot by
+  `tiled_outlier` and `sparse_outlier`; `outlier_step` (default
+  `tiled_outlier`) names the one `process` hands to jwst's pipeline as its
+  outlier step. Each slot is checked against its own step's spec, so
+  `build_config` accepts the sparse step's parameters and saved parameters
+  reload; the runtime class switch, the section pruning and the copying of
+  defaults are gone.
+- No `good_bits` anywhere in snowblind (user: legacy of HST drizzlepac;
+  name what is rejected, not what is kept). `resample.drizzle_weights` gives
+  stcal's weights with the rejected DQ flags named: `RESAMPLE_REJECTED`
+  (DO_NOT_USE, NON_SCIENCE) for resampling, `OUTLIER_REJECTED` (DO_NOT_USE)
+  for both outlier steps; `SparseResampleImage` takes `rejected` and
+  refuses `good_bits`. `SparseOutlierDetectionStep` lost `good_bits` and
+  `resample_data` (jwst's path without drizzling stays with jwst's step).
+  `TiledOutlierStep` uses `drizzle_weights` too, so it runs without
+  VAR_RNOISE (weight 1, as stcal).
+- The noise-factor pass runs in `SparseResampleImage.finalize`, over the
+  library indices that `resample_group` or `resample_many_to_one` added, and
+  only with the exact variance (`enable_var` on, `variance="exact"`); outlier
+  detection and `single=True` resample with `enable_var=False` and skip it.
+  `resample_many_to_one` keeps its short override only so that jwst does not
+  write unchanged models back to an on-disk library.
+- Tiles: pixel centers off the fine grid get no prediction whatever the
+  tiles' extent (before, a last tile reaching past the grid gave some; 20
+  pixels differed between tilings with exposures rotated by up to 63
+  degrees); tiles must be larger than twice the halo plus reach (12 fine
+  pixels); the regions also sample every pixel of each exposure's edges
+  (the reviewer's sliver case could not be reproduced in 200 random
+  geometries; the fix costs about 8000 points per detector).
+- Private jwst methods (`_guess_mode`, `_get_asn_id`) go through
+  `_jwst_imports.py`, which also checks at import the stcal `Resample`
+  methods `_SpizzleResample` relies on (`STCAL_CHECKED_VERSION` 1.20.0).
+- `_spizzle.py`: one optional import of spizzle and numba, numba's
+  fallbacks and `require()`; numba is in the `spizzle` extra.
+- Both outlier steps set their status in the flagging loop; `single=True`
+  outputs get `S_SPARSE` and the history entry (`on_output` hook);
+  `fillval` is checked up front; `NFACFILE` has no comment (a product file
+  name fills the card; META_SCHEMA entries may give `fits_comment`).
+- Left for the next branch: memory (~310 MB per exposure, corner offsets
+  37%), and the simulation script's own copies of the kernels.
+
+
+For a future session (user, 2026-11-05): use an array library or storage
+format that chunks out of the box (a numpy-like chunked-array API, or a
+tiling-native format; dask, zarr or parquet-like storage are candidates),
+instead of the hand-rolled tiles of `outlier_reference`. Chunking array
+operations is a solved problem and should not be solved again in
+snowblind. The aim is to keep the outlier step from taking all of a
+laptop's memory: today the per-exposure geometry (about 310 MB per NIRCam
+detector, mostly the corner offsets) dominates, not the tiles (about 150 MB
+for a 1024-pixel tile with 8 overlapping exposures, estimated). Tiny tiles
+are only a unit-test case; real tiles are large.
+
+
 ## 7. Open questions for the user (ask, do not decide)
 
 Most are answered in section 0 (2026-11-03); the pixel maps use spizzle's

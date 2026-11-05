@@ -37,7 +37,8 @@ PIPELINE_LOGGER = "stpipe"
 
 # The schema of ``meta.snowblind``: one object per step, by ``class_alias``, with what
 # the step measures.  An entry with a ``fits_keyword`` is also written to that card of
-# the primary header, with its ``title`` (at most 47 characters) as the comment.
+# the primary header, with its ``title`` (at most 47 characters) as the comment, or its
+# ``fits_comment`` when it has one (empty for a long value such as a file name).
 META_SCHEMA = {
     "type": "object",
     "properties": {
@@ -162,6 +163,8 @@ META_SCHEMA = {
                         "over the sum of the pixel variances in it, saved next to the mosaic."
                     ),
                     "fits_keyword": "NFACFILE",
+                    # a product file name fills most of the card
+                    "fits_comment": "",
                 },
             },
         },
@@ -226,7 +229,8 @@ class Step(JwstStep):
             Each measurement by its name in `META_SCHEMA` for this step: a string,
             a number or a list of numbers.  One with a ``fits_keyword`` there is
             also written to that card of the primary header, through
-            ``model.extra_fits``, with the entry's ``title`` as the comment.
+            ``model.extra_fits``, with the entry's ``fits_comment``, or else its
+            ``title``, as the comment.
 
         Raises
         ------
@@ -239,7 +243,7 @@ class Step(JwstStep):
             entry = entries[name]
             block[name] = value
             if "fits_keyword" in entry:
-                _set_card(model, entry["fits_keyword"], value, entry["title"])
+                _set_card(model, entry["fits_keyword"], value, entry.get("fits_comment", entry["title"]))
 
     def set_cal_step(self, model, status):
         """Record the status of this step in ``meta.cal_step``, the FITS header and the history.

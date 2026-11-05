@@ -20,6 +20,8 @@ EXPOSURE_SHAPE = (40, 50)
 SCALE = 0.06 / 3600
 CRVAL = (53.1, -27.8)
 DITHERS = [(0.0, 0.0, 0.0), (3.3, 1.7, 0.0), (-2.6, 4.1, 0.4), (5.2, -3.4, -0.3)]
+# the same offsets with large rotations, which reach past the mosaic's edge
+ROTATED_DITHERS = [(0.0, 0.0, 0.0), (3.3, 1.7, 27.0), (-2.6, 4.1, 41.0), (5.2, -3.4, 63.0)]
 # the exposure and the pixel (y, x) that dithered_exposures hits with a cosmic ray
 HIT_EXPOSURE, HIT_PIXEL = 1, (20, 25)
 
@@ -157,18 +159,19 @@ def tan_wcs(shape, crpix, crval, angle=0.0):
     return wcs
 
 
-def dithered_exposures():
-    """The four exposures at DITHERS, of data 1 plus noise of 0.1 and error 0.1, HIT_EXPOSURE with a cosmic ray of 5
-    at HIT_PIXEL."""
+def dithered_exposures(dithers=DITHERS, with_var_rnoise=True):
+    """The four exposures at ``dithers``, of data 1 plus noise of 0.1 and error 0.1, VAR_RNOISE 0.01 unless
+    ``with_var_rnoise`` is off, HIT_EXPOSURE with a cosmic ray of 5 at HIT_PIXEL."""
     rng = np.random.default_rng(3)
     exposures = []
-    for i, (dx, dy, angle) in enumerate(DITHERS):
+    for i, (dx, dy, angle) in enumerate(dithers):
         model = ImageModel(EXPOSURE_SHAPE)
         crval = (CRVAL[0] + dx * SCALE / np.cos(np.deg2rad(CRVAL[1])), CRVAL[1] + dy * SCALE)
         model.meta.wcs = tan_wcs(EXPOSURE_SHAPE, (24.5, 19.5), crval, angle)
         model.data = rng.normal(1.0, 0.1, EXPOSURE_SHAPE).astype(np.float32)
         model.err = np.full(EXPOSURE_SHAPE, 0.1, dtype=np.float32)
-        model.var_rnoise = np.full(EXPOSURE_SHAPE, 0.01, dtype=np.float32)
+        if with_var_rnoise:
+            model.var_rnoise = np.full(EXPOSURE_SHAPE, 0.01, dtype=np.float32)
         model.dq = np.zeros(EXPOSURE_SHAPE, dtype=np.uint32)
         # what jwst reads to make the outlier mosaic's grid and to group the exposures
         model.meta.filename = f"exposure{i}_cal.fits"
@@ -189,6 +192,30 @@ def dithered_exposures():
 def mosaic_wcs():
     """A TAN grid of 60 x 70 pixels at SCALE around CRVAL, which holds every dithered exposure."""
     return tan_wcs((60, 70), (34.5, 29.5), CRVAL)
+
+
+def test_prediction_of_rotated_exposures_does_not_depend_on_the_tile_size():
+    """predict of the dithered exposures rotated by up to 63 degrees with tiles of 24 fine pixels gives the
+    predictions of tiles of 1024, also for the pixels that land just off the mosaic, which get none either way."""
+    small = outlier_reference.predict(dithered_exposures(ROTATED_DITHERS), mosaic_wcs(), tile=24)
+    whole = outlier_reference.predict(dithered_exposures(ROTATED_DITHERS), mosaic_wcs(), tile=1024)
+
+    for a, b in zip(small, whole):
+        np.testing.assert_allclose(a.prediction, b.prediction, rtol=1e-6, equal_nan=True)
+
+
+def test_tiles_too_small_for_the_halo_are_refused():
+    """predict with tiles of 12 fine pixels, no more than twice the halo and reach, raises ValueError."""
+    with pytest.raises(ValueError, match="tile must be larger"):
+        outlier_reference.predict(dithered_exposures(), mosaic_wcs(), tile=12)
+
+
+def test_flags_the_cosmic_ray_without_var_rnoise():
+    """flag_outliers of HIT_EXPOSURE, predicted from the four dithered exposures without VAR_RNOISE, flags HIT_PIXEL:
+    the exposures then get the weight 1."""
+    exposures = outlier_reference.predict(dithered_exposures(with_var_rnoise=False), mosaic_wcs())
+
+    assert outlier_reference.flag_outliers(exposures[HIT_EXPOSURE])[HIT_PIXEL]
 
 
 def test_prediction_does_not_depend_on_the_tile_size():

@@ -11,8 +11,8 @@ resample and outlier detection steps for images with drizzle replaced by
 reference, built from the input pixels of all the exposures at once.  The
 ``snowblind_image3`` pipeline is ``calwebb_image3`` with
 ``TiledOutlierStep`` and ``SparseResampleStep`` in place
-(``--tiled_outliers=False`` puts ``SparseOutlierDetectionStep`` in the
-outlier slot instead).
+(``--outlier_step=sparse_outlier`` runs ``SparseOutlierDetectionStep``
+for the outliers instead).
 spizzle computes drizzle's square kernel as a sparse matrix for each
 exposure, applies it to the science data, the weights and the variance
 planes in double precision, and so gives the exact variance of each output
@@ -52,10 +52,12 @@ Run Image3 with the snowblind steps in place:
 
     strun snowblind_image3 jw..._image3_asn.json
 
-The steps take their parameters in the jwst pipeline's slots, e.g.
-``--steps.resample.pixel_scale=0.03`` or
-``--steps.outlier_detection.scale="0.5 0.3"``. Each step also runs on its
-own:
+The pipeline replaces jwst's ``outlier_detection`` slot by two,
+``tiled_outlier`` and ``sparse_outlier``, and ``outlier_step`` names the one
+that runs. Each step takes its parameters in its own slot, e.g.
+``--steps.tiled_outlier.scale="0.5 0.3"``,
+``--steps.sparse_outlier.pixfrac=0.8`` or
+``--steps.resample.pixel_scale=0.03``. Each step also runs on its own:
 
 .. code-block:: python
 
@@ -106,6 +108,11 @@ How the parameters differ from the jwst steps
 
 * Only the square kernel: there is no ``kernel`` parameter.
 * No ``propagate_dq``: the DQ array is not resampled.
+* No ``good_bits``: each step names the DQ flags of the pixels it leaves
+  out. Resampling leaves out the pixels with DO_NOT_USE or NON_SCIENCE, and
+  both outlier steps those with DO_NOT_USE, as the jwst steps do by default.
+* No ``resample_data`` in ``SparseOutlierDetectionStep``: it always
+  drizzles, which is what it replaces.
 * ``weight_type`` is ``ivm`` (inverse variance) unless given. The steps do
   not read the jwst steps' parameters from CRDS, which ask for exposure-time
   weights for some instruments.
@@ -146,7 +153,8 @@ twice as finely:
 1. each exposure's input pixels are drizzled onto that grid (pixfrac 0.8)
    after its sky level is subtracted (skymatch's level, or the sigma-clipped
    median of its good pixels), weighted by their overlap and their inverse
-   read-noise variance;
+   read-noise variance (1 without VAR_RNOISE), the pixels with DO_NOT_USE
+   left out;
 2. for each fine pixel, the input pixels that land on it are combined by
    their weighted median, then their weighted mean within 3 sigma of it;
 3. the exposures' residuals from the reference are combined the same way

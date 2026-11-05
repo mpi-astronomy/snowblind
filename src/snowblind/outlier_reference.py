@@ -13,7 +13,9 @@ grid sampled ``oversample`` times more finely:
 1. each exposure's input pixels are drizzled onto that grid with spizzle's
    operator (square kernel, ``pixfrac``), after its sky level is
    subtracted, weighted by their overlap times their inverse read-noise
-   variance (zero for DO_NOT_USE);
+   variance (`~snowblind.resample.drizzle_weights`; zero where DQ has
+   DO_NOT_USE, the flag the outlier steps reject, or the data or error is
+   not finite);
 2. for each fine pixel, the input pixels that land on it are combined:
    their weighted median, then their weighted mean within 3 sigma of it,
    three times; where fewer than three exposures land, their weighted mean
@@ -46,27 +48,17 @@ import numpy as np
 from astropy.stats import sigma_clipped_stats
 from jwst.datamodels import ModelLibrary
 from jwst.lib.pipe_utils import match_nans_and_flags
-from jwst.outlier_detection.outlier_detection_step import OutlierDetectionStep
 from jwst.resample.resample_utils import resampled_wcs_from_models
 from jwst.stpipe.utilities import record_step_status
 from scipy import ndimage
 from stcal.outlier_detection.utils import flag_resampled_crs
 from stdatamodels.jwst.datamodels import dqflags
 
+from ._jwst_imports import add_asn_id, guess_mode
+from ._spizzle import njit, prange, require, spizzle
+from .outlier_detection import OUTLIER_REJECTED
+from .resample import drizzle_weights
 from .step import Step
-
-try:
-    import spizzle
-    from numba import njit, prange
-except ImportError:
-    # spizzle, which brings numba, is optional: without it this module still imports, its kernels stay plain
-    # Python, and Exposure raises before they would run
-    spizzle = None
-    prange = range
-
-    def njit(*args, **kwargs):
-        """Leave the function as it is, numba being missing."""
-        return lambda function: function
 
 __all__ = ["TiledOutlierStep", "Exposure", "predict", "run", "flag_outliers", "sky_level", "weighted_median",
            "clipped_mean"]
@@ -296,16 +288,17 @@ def sky_level(model):
 
 
 def _good(model):
-    """The pixels that are used: finite data and error, without DO_NOT_USE."""
-    return np.isfinite(model.data) & np.isfinite(model.err) & ((model.dq & DO_NOT_USE) == 0)
+    """The pixels that are used: finite data and error, without the flags of OUTLIER_REJECTED."""
+    return np.isfinite(model.data) & np.isfinite(model.err) & ((model.dq & OUTLIER_REJECTED) == 0)
 
 
-def _tile_ids(x, y, tile, n_tiles):
-    """The flat index of the tile holding each fine position, -1 off the fine grid or without a position."""
-    ix = np.floor((x + 0.5) / tile)
-    iy = np.floor((y + 0.5) / tile)
-    valid = (ix >= 0) & (ix < n_tiles[1]) & (iy >= 0) & (iy < n_tiles[0])
-    return np.where(valid, iy * n_tiles[1] + ix, -1).astype(np.int64)
+def _tile_ids(x, y, tile, n_tiles, fine_shape):
+    """The flat index of the tile holding each fine position, -1 off the fine grid (whatever the tiles' extent) or
+    without a position."""
+    i = np.floor(x + 0.5)
+    j = np.floor(y + 0.5)
+    valid = (i >= 0) & (i < fine_shape[1]) & (j >= 0) & (j < fine_shape[0])
+    return np.where(valid, (j // tile) * n_tiles[1] + i // tile, -1).astype(np.int64)
 
 
 class Exposure:
@@ -326,8 +319,10 @@ class Exposure:
     """
 
     def __init__(self, model, mosaic_wcs, oversample=2, pixfrac=0.8, tile=1024, halo=4):
-        if spizzle is None:
-            raise ImportError("TiledOutlierStep and outlier_reference need spizzle: pip install 'snowblind[spizzle]'")
+        require("outlier_reference.Exposure")
+        if tile <= 2 * (halo + REACH):
+            # the reach of a pixel center then spans more than two tiles along an axis, and its corners miss some
+            raise ValueError(f"tile must be larger than {2 * (halo + REACH):g} fine pixels, not {tile}")
         shape = model.data.shape
         ny_m, nx_m = mosaic_wcs.array_shape
         self.n_tiles = (-(-oversample * ny_m // tile), -(-oversample * nx_m // tile))
@@ -340,39 +335,42 @@ class Exposure:
         # the corners as offsets from the center: small, so float32 keeps them to about 1e-7 fine pixel
         self.offsets = (corners - self.centers[:, :, None, :]).astype(np.float32)
         del corners
-        good = _good(model)
-        var_rnoise = model.var_rnoise
-        weighted = good & np.isfinite(var_rnoise) & (var_rnoise > 0)
-        self.weights = np.zeros(shape, dtype=np.float32)
-        self.weights[weighted] = 1.0 / var_rnoise[weighted]
+        weights = drizzle_weights(model.dq, "ivm", OUTLIER_REJECTED, var_rnoise=model.var_rnoise)
+        self.weights = np.where(_good(model), weights, 0.0).astype(np.float32)
+        weighted = self.weights > 0
         self.sky = sky_level(model)
         # the pixels used, with their data and error; NaN for the others
         self.data = np.where(weighted, model.data, np.nan).astype(np.float32)
         self.err = np.where(weighted, model.err, np.nan).astype(np.float32)
         # the tile of each pixel center, which gives the pixel its prediction
-        self.tile_of = _tile_ids(self.centers[..., 0], self.centers[..., 1], tile, self.n_tiles).astype(np.int32)
+        self.tile_of = _tile_ids(
+            self.centers[..., 0], self.centers[..., 1], tile, self.n_tiles, self.fine_shape
+        ).astype(np.int32)
         # the input pixels drizzled into each tile and its halo: the box of the centers within its reach, from the
-        # centers every SAMPLING pixels (and the last row and column), widened by SAMPLING and MARGIN
-        rows = np.r_[0:shape[0]:SAMPLING, shape[0] - 1]
-        cols = np.r_[0:shape[1]:SAMPLING, shape[1] - 1]
-        sampled = self.centers[np.ix_(rows, cols)]
+        # centers every SAMPLING pixels and every pixel along the exposure's edges, where any small overlap of the
+        # exposure with a tile lies, widened by SAMPLING and MARGIN
+        ny, nx = shape
+        lattice_rows, lattice_cols = np.meshgrid(np.r_[0:ny:SAMPLING, ny - 1], np.r_[0:nx:SAMPLING, nx - 1], indexing="ij")
+        rows = np.concatenate([lattice_rows.ravel(), np.zeros(nx, int), np.full(nx, ny - 1), np.arange(ny), np.arange(ny)])
+        cols = np.concatenate([lattice_cols.ravel(), np.arange(nx), np.arange(nx), np.zeros(ny, int), np.full(ny, nx - 1)])
+        sampled = self.centers[rows, cols]
         reach = halo + REACH
         boxes = {}
         for dx in (-reach, reach):
             for dy in (-reach, reach):
-                ids = _tile_ids(sampled[..., 0] + dx, sampled[..., 1] + dy, tile, self.n_tiles)
+                ids = _tile_ids(sampled[:, 0] + dx, sampled[:, 1] + dy, tile, self.n_tiles, self.fine_shape)
                 for t in np.unique(ids[ids >= 0]).tolist():
-                    r, c = np.nonzero(ids == t)
-                    box = boxes.get(t, (shape[0], 0, shape[1], 0))
-                    boxes[t] = (min(box[0], rows[r.min()]), max(box[1], rows[r.max()]),
-                                min(box[2], cols[c.min()]), max(box[3], cols[c.max()]))
+                    r, c = rows[ids == t], cols[ids == t]
+                    box = boxes.get(t, (ny, 0, nx, 0))
+                    boxes[t] = (min(box[0], r.min()), max(box[1], r.max()), min(box[2], c.min()), max(box[3], c.max()))
         pad = SAMPLING + MARGIN
         self.regions = {
             t: (slice(max(0, r0 - pad), min(shape[0], r1 + 1 + pad)), slice(max(0, c0 - pad), min(shape[1], c1 + 1 + pad)))
             for t, (r0, r1, c0, c1) in boxes.items()
         }
         self.prediction = np.full(shape, np.nan, dtype=np.float32)
-        self.spread = np.full(shape, np.nan, dtype=np.float32)
+        # made by the first tile that measures the spread, if any
+        self.spread = None
         self.n_exposures = np.zeros(shape, dtype=np.uint8)
 
     def pixels(self, t, region):
@@ -426,6 +424,8 @@ def _tile(exposures, t, tile, halo, correct, spread):
         positions = exposure.centers.reshape(-1, 2)[pix][:, None, :] - origin
         exposure.prediction.flat[pix] = spizzle.blot(reference, positions)[:, 0] + exposure.sky
         if spread:
+            if exposure.spread is None:
+                exposure.spread = np.full(exposure.prediction.shape, np.nan, dtype=np.float32)
             exposure.spread.flat[pix] = np.sqrt(spizzle.blot(model2, positions)[:, 0])
         i = np.clip(np.floor(positions[:, 0, 0]).astype(np.int64), 0, shape[1] - 2)
         j = np.clip(np.floor(positions[:, 0, 1]).astype(np.int64), 0, shape[0] - 2)
@@ -459,8 +459,8 @@ def predict(models, mosaic_wcs, oversample=2, pixfrac=0.8, correct=True, tile=10
     -------
     list of `Exposure`
         One per model, with its ``prediction`` (the sky added back),
-        ``spread`` and ``n_exposures`` (the fewest exposures covering the
-        fine pixels its prediction comes from).
+        ``spread`` (None without ``spread``) and ``n_exposures`` (the fewest
+        exposures covering the fine pixels its prediction comes from).
     """
     exposures = [Exposure(m, mosaic_wcs, oversample, pixfrac, tile, halo) for m in models]
     run(exposures, correct, tile, halo, spread)
@@ -508,6 +508,8 @@ def flag_outliers(exposure, snr=(5.0, 4.0), scale=(0.5, 0.3)):
     good = np.isfinite(data)
     prediction = exposure.prediction
     if scale is None:
+        if exposure.spread is None:
+            raise ValueError("The measured tolerance needs the spread: predict with spread=True")
         diff = np.abs(data - prediction)
         noise = np.sqrt(np.nan_to_num(err) ** 2 + np.nan_to_num(exposure.spread) ** 2)
         first = ndimage.binary_dilation(diff > snr[0] * noise, np.ones((3, 3), dtype=bool))
@@ -560,15 +562,14 @@ class TiledOutlierStep(Step):
         `~jwst.datamodels.library.ModelLibrary`
             The images with their outliers flagged.
         """
-        # jwst's mode, from the pipeline's ``mode`` attribute or the exposure type, and the association ID of the
-        # output names; both are private methods of jwst's step
-        mode = OutlierDetectionStep._guess_mode(self, input_data)
+        require("TiledOutlierStep")
+        mode = guess_mode(self, input_data)
         if mode != "imaging":
             raise ValueError(f"TiledOutlierStep supports images only, not mode {mode!r}")
         library = self.prepare_output(input_data, open_models=False)
         if not isinstance(library, ModelLibrary):
             library = ModelLibrary(library, on_disk=not self.in_memory)
-        OutlierDetectionStep._get_asn_id(self, input_data)
+        add_asn_id(self, input_data)
         if len(library) < 2:
             log.warning(f"Input only contains {len(library)} exposures; outlier detection is skipped")
             record_step_status(library, "outlier_detection", False)

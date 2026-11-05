@@ -4,9 +4,10 @@
 `SparseResampleImage` the class that does the work.  `SparseResampleImage` is jwst's `~jwst.resample.resample.ResampleImage`
 with drizzle's square kernel replaced by spizzle's sparse operator: the
 pixel map, the operator of each exposure, and the sums of the science data,
-the weights and the variance planes, in float64.  The weights are stcal's
-(``build_driz_weight``), and everything else, from the output grid to the
-metadata, is jwst's and stcal's.
+the weights and the variance planes, in float64.  The weights are
+`drizzle_weights`, stcal's weights from the DQ flags each caller rejects,
+and everything else, from the output grid to the metadata, is jwst's and
+stcal's.
 
 The variance planes, by ``variance``:
 
@@ -25,8 +26,8 @@ Only the drizzle layer is replaced.  `_SpizzleResample` overrides the
 methods of stcal's `~stcal.resample.Resample` that call drizzle
 (``reset_arrays``, ``add_model`` and ``finalize``) and sits between jwst's
 class and stcal's in the method resolution order, so the jwst methods,
-which call ``super()``, reach it.  It uses private attributes of stcal's
-class and was checked against stcal 1.20.0 and jwst 3.0.0.
+which call ``super()``, reach it.  It uses private parts of stcal's class,
+checked in `snowblind._jwst_imports`.
 
 spizzle is an optional dependency, ``pip install 'snowblind[spizzle]'``;
 without it this module imports, and `SparseResampleImage` raises.
@@ -38,37 +39,78 @@ import numpy as np
 from jwst.datamodels import ImageModel, ModelContainer, ModelLibrary
 from jwst.lib.pipe_utils import match_nans_and_flags
 from jwst.resample.resample import ResampleImage, copy_asn_info_from_library
-from jwst.resample.resample_step import GOOD_BITS, ResampleStep
+from jwst.resample.resample_step import ResampleStep
 from jwst.resample.resample_utils import load_custom_wcs
 from stcal.resample import Resample
-from stcal.resample.utils import build_driz_weight, get_tmeasure, is_imaging_wcs, resample_range
+from stcal.resample.utils import get_tmeasure, is_imaging_wcs, resample_range
 from stdatamodels import filetype
+from stdatamodels.jwst.datamodels import dqflags
 
+from . import _jwst_imports  # noqa: F401  (checks the stcal internals used here)
+from ._spizzle import require, spizzle
 from .step import Step
 
-try:
-    import spizzle
-except ImportError:
-    spizzle = None
-
-__all__ = ["SparseResampleStep", "SparseResampleImage", "VARIANCE_MODES"]
+__all__ = ["SparseResampleStep", "SparseResampleImage", "drizzle_weights", "VARIANCE_MODES", "RESAMPLE_REJECTED"]
 
 log = logging.getLogger(__name__)
 
-# the stcal release whose Resample internals _SpizzleResample was checked against
-STCAL_CHECKED_VERSION = "1.20.0"
-
 VARIANCE_MODES = ("exact", "stcal")
+
+DO_NOT_USE = dqflags.pixel["DO_NOT_USE"]
+NON_SCIENCE = dqflags.pixel["NON_SCIENCE"]
+# the DQ flags of the pixels left out of a mosaic, as jwst's resample step leaves them out
+RESAMPLE_REJECTED = DO_NOT_USE | NON_SCIENCE
 
 # suffix of the noise factor file that SparseResampleStep saves next to the mosaic
 NOISE_FACTOR_SUFFIX = "nfactor"
 
 
+def drizzle_weights(dq, weight_type, rejected, var_rnoise=None, exposure_time=None):
+    """The drizzle weight of each pixel of an exposure, zero where its DQ has any of the ``rejected`` flags.
+
+    The weights of stcal's ``build_driz_weight``, with the pixels to leave
+    out named by their flags.
+
+    Parameters
+    ----------
+    dq : ndarray of uint32
+        The exposure's DQ array.
+    weight_type : {"ivm", "exptime"}
+        "ivm": the inverse of ``var_rnoise``, zero where that is not finite,
+        and 1 everywhere, with a warning, when ``var_rnoise`` is missing or of
+        another shape.  "exptime": ``exposure_time`` everywhere.
+    rejected : int
+        The DQ flags of the pixels left out, such as ``DO_NOT_USE |
+        NON_SCIENCE``.
+    var_rnoise : ndarray or None
+        The read-noise variance, for "ivm".
+    exposure_time : float or None
+        The measurement or exposure time, for "exptime".
+
+    Returns
+    -------
+    ndarray of float32, the shape of ``dq``
+    """
+    if weight_type == "ivm":
+        if var_rnoise is None or var_rnoise.shape != dq.shape:
+            log.warning("No VAR_RNOISE of the exposure's shape: its pixels get the weight 1")
+            weights = np.ones(dq.shape, dtype=np.float32)
+        else:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                weights = 1.0 / var_rnoise
+            weights[~np.isfinite(weights)] = 0.0
+    elif weight_type == "exptime":
+        weights = np.full(dq.shape, exposure_time, dtype=np.float32)
+    else:
+        raise ValueError(f"weight_type must be 'ivm' or 'exptime', not {weight_type!r}")
+    return np.where((dq & rejected) == 0, weights, 0.0).astype(np.float32)
+
+
 class _SpizzleResample(Resample):
     """stcal's Resample with spizzle's sums in place of drizzle's.
 
-    ``variance`` must be set before ``Resample.__init__`` runs, as
-    `SparseResampleImage` does.
+    ``variance`` and ``rejected`` must be set before ``Resample.__init__``
+    runs, as `SparseResampleImage` does.
     """
 
     def reset_arrays(self, n_input_models=None):
@@ -162,7 +204,7 @@ class _SpizzleResample(Resample):
         if self._exact_variance() and self._noise is None:
             raise RuntimeError(
                 "The exact variance needs the noise factor: add every model again with add_noise_factor "
-                "before finalize, as resample_many_to_one does."
+                "before finalize, as resample_group and resample_many_to_one do."
             )
         self._finalized = True
         self._output_model["pointings"] = len(self.group_ids)
@@ -213,13 +255,15 @@ class _SpizzleResample(Resample):
         return [model[name] if self._check_var_array(model, name) else None for name in self.variance_array_names]
 
     def _operator(self, model):
-        """spizzle's operator of one exposure onto the output grid, with stcal's weights and input range."""
+        """spizzle's operator of one exposure onto the output grid, with its `drizzle_weights` and stcal's input
+        range."""
         shape = model["data"].shape
         pixmap = spizzle.pixel_map(
             model["wcs"], self.output_wcs, shape=shape, stepsize=max(1, int(self.pixmap_stepsize)), order=self.pixmap_order
         )
-        weights = build_driz_weight(
-            model, weight_type=self.weight_type, good_bits=self.good_bits, flag_name_map=self.dq_flag_name_map
+        weights = drizzle_weights(
+            model["dq"], self.weight_type, self.rejected, var_rnoise=model.get("var_rnoise"),
+            exposure_time=get_tmeasure(model)[0],
         )
         xmin, xmax, ymin, ymax = resample_range(shape, model["wcs"].bounding_box)
         return spizzle.drizzle_operator(
@@ -249,24 +293,42 @@ class SparseResampleImage(ResampleImage, _SpizzleResample):
     enable_ctx : bool
         Make the context, one int32 plane of the output size per 32
         exposures; off by default, unlike jwst's class.
+    rejected : int
+        The DQ flags of the input pixels left out (weight 0); by default
+        `RESAMPLE_REJECTED`, DO_NOT_USE and NON_SCIENCE.
+    on_output : callable or None
+        Called with each output model once it is finalized, the mosaic or
+        each group's image.
     **kwargs
         The other parameters of jwst's ``ResampleImage``.  ``kernel`` must be
-        "square", and ``propagate_dq`` is not supported.  ``fillval`` must be
-        a number or a string of one, such as "NAN".
+        "square", ``propagate_dq`` is not supported, ``fillval`` must be a
+        number or a string of one, such as "NAN", and ``good_bits`` is
+        replaced by ``rejected``.
     """
 
     def __init__(
-        self, input_models, variance="exact", pixmap_stepsize=16, pixmap_order=3, enable_ctx=False, **kwargs
+        self, input_models, variance="exact", pixmap_stepsize=16, pixmap_order=3, enable_ctx=False,
+        rejected=RESAMPLE_REJECTED, on_output=None, **kwargs,
     ):
-        if spizzle is None:
-            raise ImportError("SparseResampleImage needs spizzle: pip install 'snowblind[spizzle]'")
+        require("SparseResampleImage")
         if variance not in VARIANCE_MODES:
             raise ValueError(f"variance must be one of {VARIANCE_MODES}, not {variance!r}")
         if (kernel := kwargs.get("kernel", "square")) != "square":
             raise ValueError(f"SparseResampleImage has only the square kernel, not {kernel!r}")
         if kwargs.get("propagate_dq", False):
             raise ValueError("SparseResampleImage does not propagate DQ")
+        if "good_bits" in kwargs:
+            raise ValueError("SparseResampleImage takes the DQ flags it leaves out as rejected, not good_bits")
+        fillval = kwargs.get("fillval", "NAN")
+        try:
+            float(fillval)
+        except (TypeError, ValueError):
+            raise ValueError(f"fillval must be a number or a string of one, such as 'NAN', not {fillval!r}") from None
         self.variance = variance
+        self.rejected = rejected
+        self.on_output = on_output
+        # the library indices of the exposures added, for the second pass of the exact variance
+        self._noise_factor_indices = None
         super().__init__(
             input_models, pixmap_stepsize=pixmap_stepsize, pixmap_order=pixmap_order, enable_ctx=enable_ctx, **kwargs
         )
@@ -290,8 +352,47 @@ class SparseResampleImage(ResampleImage, _SpizzleResample):
             self.input_model_to_dict(model, weight_type=self.weight_type, enable_var=True, compute_err=None)
         )
 
+    def finalize(self):
+        """Finalize the output as jwst's class does, after the second pass for the exact variance's noise factor.
+
+        The second pass runs only with the exact variance (``enable_var`` on,
+        ``variance="exact"``), over the exposures that `resample_group` or
+        `resample_many_to_one` added; then ``on_output`` gets the output.
+        """
+        if self.is_finalized():
+            return
+        if self._exact_variance() and self._noise is None and self._noise_factor_indices is not None:
+            log.info("Computing the noise factor in a second pass over the exposures")
+            with self.input_models:
+                for index in self._noise_factor_indices:
+                    model = self.input_models.borrow(index)
+                    self.add_noise_factor(model)
+                    self.input_models.shelve(model, index, modify=False)
+        self._noise_factor_indices = None
+        super().finalize()
+        if self.on_output is not None:
+            self.on_output(self.output_jwst_model)
+
+    def resample_group(self, indices):
+        """jwst's, with the second pass for the exact variance's noise factor (see `finalize`).
+
+        Parameters
+        ----------
+        indices : list of int
+            The library indices of the models of one group.
+
+        Returns
+        -------
+        `~stdatamodels.jwst.datamodels.ImageModel`
+        """
+        self._noise_factor_indices = list(indices)
+        return super().resample_group(indices)
+
     def resample_many_to_one(self):
-        """Resample and co-add all the input models to one output, with a second pass for the noise factor.
+        """Resample and co-add all the input models to one output, as jwst's class does.
+
+        The models are not written back to the library, being unchanged, and
+        `finalize` makes the second pass for the exact variance's noise factor.
 
         Returns
         -------
@@ -299,16 +400,11 @@ class SparseResampleImage(ResampleImage, _SpizzleResample):
             The resampled and co-added image.
         """
         log.info("Resampling science and variance data with spizzle")
+        self._noise_factor_indices = range(len(self.input_models))
         with self.input_models:
             for model in self.input_models:
                 self.add_model(model)
                 self.input_models.shelve(model, modify=False)
-            if self._exact_variance():
-                log.info("Computing the noise factor in a second pass over the exposures")
-                for model in self.input_models:
-                    self.add_noise_factor(model)
-                    self.input_models.shelve(model, modify=False)
-
         self.finalize()
         self.output_jwst_model.meta.filename = self.output_filename
         copy_asn_info_from_library(self.input_models, self.output_jwst_model)
@@ -323,6 +419,8 @@ class SparseResampleStep(Step):
 
     - no ``kernel``: the square kernel only;
     - no ``propagate_dq``: the DQ array is not resampled;
+    - no ``good_bits``: the pixels with DO_NOT_USE or NON_SCIENCE are left
+      out (`RESAMPLE_REJECTED`), as by jwst's step;
     - ``weight_type`` is "ivm" unless given: the step does not read jwst's
       step parameters from CRDS, which ask for "exptime" for some
       instruments;
@@ -429,8 +527,11 @@ class SparseResampleStep(Step):
         if self.enable_err:
             self.record(result, variance=self.variance)
         self._save_noise_factor(result, resamp.noise_factor)
-        self.set_cal_step(result, "COMPLETE")
         return result
+
+    def _mark_complete(self, model):
+        """Record this step's status in an output model."""
+        self.set_cal_step(model, "COMPLETE")
 
     def _resample_kwargs(self):
         """The SparseResampleImage parameters from the step parameters, as jwst's ResampleStep.get_drizpars."""
@@ -439,7 +540,8 @@ class SparseResampleStep(Step):
             "pixfrac": self.pixfrac,
             "fillval": self.fillval,
             "weight_type": self.weight_type,
-            "good_bits": GOOD_BITS,
+            "rejected": RESAMPLE_REJECTED,
+            "on_output": self._mark_complete,
             "blendheaders": self.blendheaders,
             "pixmap_stepsize": self.pixmap_stepsize,
             "pixmap_order": self.pixmap_order,

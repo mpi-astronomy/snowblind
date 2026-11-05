@@ -87,39 +87,64 @@ def write_exposures():
     return f"{PRODUCT}_asn.json"
 
 
-@pytest.fixture(scope="module")
-def pipeline_run(tmp_path_factory):
-    """The folder in which Image3Pipeline ran on the association of the four exposures, with tweakreg, skymatch
-    and source_catalog skipped, saving its results, without CRDS step parameters."""
-    folder = tmp_path_factory.mktemp("image3")
+def run_pipeline(folder, **parameters):
+    """Run Image3Pipeline in ``folder`` on the association of the four exposures, with tweakreg, skymatch and
+    source_catalog skipped, saving its results, without CRDS step parameters; returns ``folder``."""
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(folder)
         patch.setenv("STPIPE_DISABLE_CRDS_STEPPARS", "True")
         patch.setattr(crds_client, "get_context_used", lambda observatory: "jwst_0000.pmap")
-        Image3Pipeline.call(write_exposures(), save_results=True, steps=SKIPPED)
+        Image3Pipeline.call(write_exposures(), save_results=True, steps=SKIPPED, **parameters)
     return folder
 
 
-def test_outlier_detection_slot_holds_the_tiled_step():
-    """Image3Pipeline().outlier_detection is a TiledOutlierStep."""
-    assert isinstance(Image3Pipeline().outlier_detection, TiledOutlierStep)
+@pytest.fixture(scope="module")
+def pipeline_run(tmp_path_factory):
+    """The folder in which Image3Pipeline ran with its defaults (run_pipeline)."""
+    return run_pipeline(tmp_path_factory.mktemp("image3"))
 
 
-def test_outlier_detection_slot_without_tiled_outliers_holds_the_sparse_step():
-    """Image3Pipeline(tiled_outliers=False).outlier_detection is a SparseOutlierDetectionStep."""
-    assert isinstance(Image3Pipeline(tiled_outliers=False).outlier_detection, SparseOutlierDetectionStep)
+@pytest.fixture(scope="module")
+def sparse_outlier_run(tmp_path_factory):
+    """The folder in which Image3Pipeline ran with outlier_step "sparse_outlier" (run_pipeline)."""
+    return run_pipeline(tmp_path_factory.mktemp("image3_sparse"), outlier_step="sparse_outlier")
+
+
+def test_tiled_outlier_slot_holds_the_tiled_step():
+    """Image3Pipeline().tiled_outlier is a TiledOutlierStep."""
+    assert isinstance(Image3Pipeline().tiled_outlier, TiledOutlierStep)
+
+
+def test_sparse_outlier_slot_holds_the_sparse_step():
+    """Image3Pipeline().sparse_outlier is a SparseOutlierDetectionStep."""
+    assert isinstance(Image3Pipeline().sparse_outlier, SparseOutlierDetectionStep)
+
+
+def test_the_tiled_outlier_step_runs_by_default():
+    """Image3Pipeline().outlier_step is "tiled_outlier"."""
+    assert Image3Pipeline().outlier_step == "tiled_outlier"
 
 
 def test_sparse_outlier_step_keeps_jwsts_scale():
-    """Image3Pipeline(tiled_outliers=False).outlier_detection.scale is jwst's "1.2 0.7", not the tiled step's."""
-    assert Image3Pipeline(tiled_outliers=False).outlier_detection.scale == "1.2 0.7"
+    """Image3Pipeline().sparse_outlier.scale is jwst's "1.2 0.7", not the tiled step's."""
+    assert Image3Pipeline().sparse_outlier.scale == "1.2 0.7"
 
 
-def test_sparse_outlier_step_takes_a_scale_given():
-    """Image3Pipeline(tiled_outliers=False) with steps.outlier_detection.scale "0.5 0.3" keeps that scale."""
-    pipeline = Image3Pipeline(tiled_outliers=False, steps={"outlier_detection": {"scale": "0.5 0.3"}})
+def test_config_takes_the_sparse_steps_own_parameters():
+    """Image3Pipeline.build_config with steps.sparse_outlier.pixfrac 0.8, a parameter only that step has, keeps 0.8."""
+    config, _ = Image3Pipeline.build_config(None, outlier_step="sparse_outlier", steps={"sparse_outlier": {"pixfrac": 0.8}})
 
-    assert pipeline.outlier_detection.scale == "0.5 0.3"
+    assert config["steps"]["sparse_outlier"]["pixfrac"] == 0.8
+
+
+def test_saved_parameters_build_the_config_again():
+    """Image3Pipeline.build_config of the parameters of Image3Pipeline(outlier_step="sparse_outlier") keeps
+    outlier_step."""
+    parameters = Image3Pipeline(outlier_step="sparse_outlier").get_pars()
+
+    config, _ = Image3Pipeline.build_config(None, **parameters)
+
+    assert config["outlier_step"] == "sparse_outlier"
 
 
 def test_resample_slot_holds_the_sparse_step():
@@ -148,3 +173,27 @@ def test_flags_the_cosmic_ray_in_the_crf_file(pipeline_run):
 
     with ImageModel(str(crf)) as model:
         assert model.dq[HIT_PIXEL] & dqflags.pixel["OUTLIER"]
+
+
+def test_tiled_outlier_step_flagged_the_crf_files(pipeline_run):
+    """Image3Pipeline of the association records TiledOutlierStep's status in the crf files."""
+    [crf] = pipeline_run.glob(f"exposure{HIT_EXPOSURE}_*_crf.fits")
+
+    assert fits.getval(crf, "S_TILOUT") == "COMPLETE"
+
+
+def test_sparse_outlier_step_flags_the_cosmic_ray_in_the_crf_file(sparse_outlier_run):
+    """Image3Pipeline(outlier_step="sparse_outlier") of the association flags HIT_PIXEL as OUTLIER in the crf file of
+    HIT_EXPOSURE."""
+    [crf] = sparse_outlier_run.glob(f"exposure{HIT_EXPOSURE}_*_crf.fits")
+
+    with ImageModel(str(crf)) as model:
+        assert model.dq[HIT_PIXEL] & dqflags.pixel["OUTLIER"]
+
+
+def test_sparse_outlier_step_flagged_the_crf_files(sparse_outlier_run):
+    """Image3Pipeline(outlier_step="sparse_outlier") of the association records SparseOutlierDetectionStep's status
+    in the crf files."""
+    [crf] = sparse_outlier_run.glob(f"exposure{HIT_EXPOSURE}_*_crf.fits")
+
+    assert fits.getval(crf, "S_SPOUTL") == "COMPLETE"
