@@ -1,11 +1,15 @@
 import logging
+import warnings
 
 import pytest
 from astropy.io import fits
 from stdatamodels.jwst import datamodels
 
 from snowblind import __version__
-from snowblind import JumpPlusStep, OpenPixelStep, PersistenceFlagStep, ResetRampFitStep, SnowblindStep, StreamCleanStep
+from snowblind import (
+    JumpPlusStep, OpenPixelStep, PersistenceFlagStep, ResetRampFitStep, SnowblindStep, SparseOutlierDetectionStep,
+    SparseResampleStep, StreamCleanStep, TiledOutlierStep,
+)
 from snowblind.step import META_SCHEMA, Step, _history
 
 
@@ -18,8 +22,11 @@ def test_step_names_the_snowblind_logger_after_the_jwst_ones():
 
 
 def test_every_step_uses_the_shared_base_class():
-    """All six snowblind steps are subclasses of snowblind.step.Step."""
-    for cls in (SnowblindStep, JumpPlusStep, OpenPixelStep, PersistenceFlagStep, StreamCleanStep, ResetRampFitStep):
+    """All nine snowblind steps are subclasses of snowblind.step.Step."""
+    for cls in (
+        SnowblindStep, JumpPlusStep, OpenPixelStep, PersistenceFlagStep, StreamCleanStep, ResetRampFitStep,
+        SparseResampleStep, SparseOutlierDetectionStep, TiledOutlierStep,
+    ):
         assert issubclass(cls, Step)
 
 
@@ -84,7 +91,10 @@ def test_run_returns_the_borrowed_handlers_afterwards():
     assert handler not in logging.getLogger("snowblind").handlers
 
 
-STEPS = [SnowblindStep, JumpPlusStep, OpenPixelStep, PersistenceFlagStep, StreamCleanStep, ResetRampFitStep]
+STEPS = [
+    SnowblindStep, JumpPlusStep, OpenPixelStep, PersistenceFlagStep, StreamCleanStep, ResetRampFitStep,
+    SparseResampleStep, SparseOutlierDetectionStep, TiledOutlierStep,
+]
 
 
 @pytest.mark.parametrize("cls", STEPS)
@@ -98,8 +108,21 @@ def test_fits_card_is_a_plain_card_with_whole_comment(cls):
 
 
 def test_fits_keywords_are_distinct():
-    """The six steps have six different fits_keyword values."""
-    assert len({cls.fits_keyword for cls in STEPS}) == 6
+    """The nine steps have nine different fits_keyword values."""
+    assert len({cls.fits_keyword for cls in STEPS}) == 9
+
+
+def test_noise_factor_file_card_fits_a_long_product_name():
+    """SparseResampleStep.record of a 57-character noise_factor_file writes a NFACFILE card that astropy formats
+    without warning, so without cutting a comment short."""
+    model = datamodels.ImageModel((4, 4))
+    name = "jw01345-o001_t021_nircam_clear-f200w-sub640_nfactor.fits"
+    SparseResampleStep().record(model, noise_factor_file=name)
+    [card] = [card for card in model._instance["extra_fits"]["PRIMARY"]["header"] if card[0] == "NFACFILE"]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        str(fits.Card(*card))
 
 
 def test_set_cal_step_adds_version_history_entry():

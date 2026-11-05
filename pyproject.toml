@@ -3,7 +3,7 @@ name = "snowblind"
 authors = [
     {name = "James Davies", email = "jdavies@mpia.de"},
 ]
-description = "Mask cosmic ray showers (snowballs) in JWST data"
+description = "Algorithms for cleaning JWST data"
 readme = "README.md"
 license = {file = "LICENSE"}
 classifiers = [
@@ -26,12 +26,17 @@ dependencies = [
 dynamic = ['version']
 
 [project.optional-dependencies]
+spizzle = [
+    "spizzle>=0.2.1",
+    "numba>=0.58",
+]
 docs = [
     "sphinx",
     "sphinx-automodapi",
     "numpydoc",
 ]
 test = [
+    "snowblind[spizzle]",
     "pytest",
     "flake8",
     "flake8-pyproject",

@@ -7,6 +7,10 @@ from .persist import PersistenceFlagStep
 from .stream_clean import StreamCleanStep
 from .reset_rampfit import ResetRampFitStep
 from .pipeline import Detector1Pipeline
+from .resample import SparseResampleStep
+from .outlier_detection import SparseOutlierDetectionStep
+from .outlier_reference import TiledOutlierStep
+from .image3 import Image3Pipeline
 
 
 try:
@@ -24,6 +28,10 @@ __all__ = [
     'StreamCleanStep',
     'ResetRampFitStep',
     'Detector1Pipeline',
+    'SparseResampleStep',
+    'SparseOutlierDetectionStep',
+    'TiledOutlierStep',
+    'Image3Pipeline',
 ]
 
 
@@ -45,4 +53,8 @@ def _get_steps():
         ("snowblind.StreamCleanStep", 'stream_clean', False),
         ("snowblind.ResetRampFitStep", 'reset_rampfit', False),
         ("snowblind.Detector1Pipeline", 'snowblind_detector1', True),
+        ("snowblind.SparseResampleStep", 'sparse_resample', False),
+        ("snowblind.SparseOutlierDetectionStep", 'sparse_outlier_detection', False),
+        ("snowblind.TiledOutlierStep", 'tiled_outlier', False),
+        ("snowblind.Image3Pipeline", 'snowblind_image3', True),
     ]

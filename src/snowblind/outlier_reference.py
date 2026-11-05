@@ -1,0 +1,668 @@
+"""Outlier detection against one reference built from all exposures' input pixels, in tiles.
+
+`TiledOutlierStep` flags outliers in a set of images this way, as jwst's
+outlier detection does for images with its own reference.
+
+jwst's outlier detection drizzles each exposure alone, takes the median of
+those images and blots it back: JWST PSFs are undersampled, so that blurs
+star cores, and its threshold is loosened near stars (``scale * D``), which
+hides cosmic rays there.  Here the reference is built from the input pixels
+of all exposures together, at their true positions, on the outlier mosaic's
+grid sampled ``oversample`` times more finely:
+
+1. each exposure's input pixels are drizzled onto that grid with spizzle's
+   operator (square kernel, ``pixfrac``), after its sky level is
+   subtracted, weighted by their overlap times their inverse read-noise
+   variance (`~snowblind.resample.drizzle_weights`; zero where DQ has
+   DO_NOT_USE, the flag the outlier steps reject, or the data or error is
+   not finite);
+2. for each fine pixel, the input pixels that land on it are combined:
+   their weighted median, then their weighted mean within 3 sigma of it,
+   three times; where fewer than three exposures land, their weighted mean
+   instead, since a median of two exposures takes one of them, outlier and
+   all, while their mean halves an outlier, as jwst's median of two images
+   does;
+3. the exposures' residuals (an input pixel minus the reference blotted at
+   its center) are combined by their weighted median and added once
+   (``correct``), where at least three exposures land: with two, the
+   correction pulls the reference toward both, an outlier included;
+4. the reference is blotted onto every exposure pixel with spizzle's
+   ``blot``, and the exposure is compared with it by jwst's two-pass rule.
+   Where fewer than three exposures cover a pixel, only pixels above the
+   prediction are flagged: a median of two cannot tell which one holds the
+   outlier, and cosmic rays are positive.
+
+The fine grid is never allocated: it is processed in tiles of ``tile``
+fine pixels with a halo of ``halo``.  For each tile, only the input pixels
+landing in it and its halo are drizzled, from geometry computed once per
+exposure, and each exposure pixel whose center lies in the tile gets its
+prediction; then the tile is dropped.  Memory is one tile's input pixels
+plus each exposure's own arrays.  The tile builder and the combinations
+are planned for spizzle once the method is settled.
+
+spizzle is an optional dependency, ``pip install 'snowblind[spizzle]'``.
+"""
+import logging
+
+import numpy as np
+from astropy.stats import sigma_clipped_stats
+from jwst.lib.pipe_utils import match_nans_and_flags
+from jwst.resample.resample_utils import resampled_wcs_from_models
+from jwst.stpipe.utilities import record_step_status
+from scipy import ndimage
+from stcal.outlier_detection.utils import flag_resampled_crs
+from stdatamodels.jwst.datamodels import dqflags
+
+from ._spizzle import njit, prange, require, spizzle
+from .outlier_detection import _prepare_outlier_inputs, _float_pair
+from .resample import drizzle_weights
+from .step import Step
+
+__all__ = ["TiledOutlierStep", "Exposure", "predict", "run", "flag_outliers", "sky_level", "weighted_median",
+           "clipped_mean"]
+
+log = logging.getLogger(__name__)
+
+DO_NOT_USE = dqflags.pixel["DO_NOT_USE"]
+OUTLIER = dqflags.pixel["OUTLIER"]
+# rows of fine pixels each thread combines with one buffer
+CHUNK = 4096
+# input pixels of margin around the pixels of a tile, for the footprints that reach its halo
+MARGIN = 3
+# spacing in input pixels of the centers sampled to find the input pixels that reach each tile
+SAMPLING = 8
+# good pixels sampled for the sky level
+SKY_SAMPLE = 200_000
+# fine pixels beyond a tile's halo within which an input pixel center may still drop into the halo
+REACH = 2.0
+
+
+@njit(cache=True)
+def _insert(v, w, s, n, x, weight, sigma):
+    """Insert ``x`` with its weight and sigma into the first ``n`` entries of v, w and s, kept sorted by value."""
+    q = n
+    while q > 0 and v[q - 1] > x:
+        v[q] = v[q - 1]
+        w[q] = w[q - 1]
+        s[q] = s[q - 1]
+        q -= 1
+    v[q] = x
+    w[q] = weight
+    s[q] = sigma
+
+
+@njit(cache=True)
+def _sorted_median(v, w, n):
+    """The weighted median of the first ``n`` values of v, sorted: the lowest at which the cumulative weight reaches
+    half."""
+    total = 0.0
+    for q in range(n):
+        total += w[q]
+    cum = 0.0
+    for q in range(n):
+        cum += w[q]
+        if cum >= 0.5 * total:
+            return v[q]
+    return v[n - 1]
+
+
+@njit(cache=True)
+def _operator_row(p, oy, ox, boxes, ptr_start):
+    """The row in ``indptr`` of part ``p``'s operator for fine pixel (oy, ox) of the tile, -1 outside its box."""
+    by, bx, bny, bnx = boxes[p, 0], boxes[p, 1], boxes[p, 2], boxes[p, 3]
+    if oy < by or oy >= by + bny or ox < bx or ox >= bx + bnx:
+        return -1
+    return ptr_start[p] + (oy - by) * bnx + (ox - bx)
+
+
+@njit(cache=True)
+def _gather_inputs(o, n_cols, boxes, ptr_start, indptr, indices, weights, values, sigma, v, w, s):
+    """Collect into v, w and s, sorted by value, the input pixels of every part that land on fine pixel ``o``.
+
+    Returns their number, and the number of parts with an input pixel there.
+    """
+    oy = o // n_cols
+    ox = o - oy * n_cols
+    n = 0
+    reached = 0
+    for p in range(boxes.shape[0]):
+        r = _operator_row(p, oy, ox, boxes, ptr_start)
+        if r < 0 or indptr[r + 1] == indptr[r]:
+            continue
+        reached += 1
+        for e in range(indptr[r], indptr[r + 1]):
+            x = values[indices[e]]
+            if not np.isnan(x) and weights[e] > 0.0:
+                _insert(v, w, s, n, x, weights[e], sigma[indices[e]])
+                n += 1
+    return n, reached
+
+
+@njit(cache=True)
+def _weighted_mean(v, w, n):
+    """The weighted mean of the first ``n`` values of v."""
+    num = 0.0
+    den = 0.0
+    for q in range(n):
+        num += w[q] * v[q]
+        den += w[q]
+    return num / den
+
+
+@njit(cache=True)
+def _sigma_clipped_mean(v, w, s, n, est):
+    """The weighted mean of the first ``n`` values of v within 3 sigma of the estimate, three times from ``est``."""
+    for _ in range(3):
+        num = 0.0
+        den = 0.0
+        for q in range(n):
+            if abs(v[q] - est) <= 3.0 * s[q]:
+                num += w[q] * v[q]
+                den += w[q]
+        if den > 0.0:
+            est = num / den
+    return est
+
+
+@njit(cache=True)
+def _combined_value(v, w, s, n, reached, median_only, fewest_for_median):
+    """The combination of the first ``n`` (> 0) values of v from ``reached`` parts: their weighted mean from fewer
+    than ``fewest_for_median`` parts, else their weighted median, clipped unless ``median_only``."""
+    if reached < fewest_for_median:
+        return _weighted_mean(v, w, n)
+    est = _sorted_median(v, w, n)
+    return est if median_only else _sigma_clipped_mean(v, w, s, n, est)
+
+
+@njit(cache=True)
+def _robust_spread(v, w, s, n, est, dv, dw, ds):
+    """(1.4826 * the weighted median absolute deviation of the first ``n`` values of v from ``est``)**2 minus the
+    weighted median of their sigma**2, zero if negative; dv, dw and ds are scratch buffers."""
+    for q in range(n):
+        _insert(dv, dw, ds, q, abs(v[q] - est), w[q], 0.0)
+    mad = _sorted_median(dv, dw, n)
+    for q in range(n):
+        _insert(dv, dw, ds, q, s[q] * s[q], w[q], 0.0)
+    return max(0.0, (1.4826 * mad) ** 2 - _sorted_median(dv, dw, n))
+
+
+@njit(parallel=True, cache=True)
+def _combine(n_cols, boxes, ptr_start, indptr, indices, weights, values, sigma, longest, median_only, spread,
+             fewest_for_median, out, model2, count):
+    """For each fine pixel of a tile, combine the input pixels of every part (exposure) that land on it.
+
+    Part ``p`` covers the box ``boxes[p] = (y0, x0, ny, nx)`` of the tile; its rows start at ``ptr_start[p]`` in
+    ``indptr``, whose values index ``indices`` and ``weights``, and ``indices`` index ``values`` and ``sigma``.
+    ``out`` gets `_combined_value`, ``model2`` with ``spread`` (and not ``median_only``) the `_robust_spread` around it,
+    and ``count`` the number of parts with an input pixel there.  Each thread works on CHUNK fine pixels at a time
+    with one set of buffers.
+    """
+    n_rows = out.size
+    for c in prange((n_rows + CHUNK - 1) // CHUNK):
+        v = np.empty(longest)
+        w = np.empty(longest)
+        s = np.empty(longest)
+        dv = np.empty(longest)
+        dw = np.empty(longest)
+        ds = np.empty(longest)
+        for o in range(c * CHUNK, min((c + 1) * CHUNK, n_rows)):
+            n, reached = _gather_inputs(o, n_cols, boxes, ptr_start, indptr, indices, weights, values, sigma, v, w, s)
+            count[o] = reached
+            out[o] = np.nan
+            model2[o] = np.nan
+            if n == 0:
+                continue
+            out[o] = _combined_value(v, w, s, n, reached, median_only, fewest_for_median)
+            if spread and not median_only:
+                model2[o] = _robust_spread(v, w, s, n, out[o], dv, dw, ds)
+
+
+def _combine_parts(parts, shape, values, sigma, median_only, spread=False, fewest_for_median=3):
+    """Combine the input pixels of ``parts`` (spizzle operators on a tile of ``shape``) by fine pixel.
+
+    ``values`` and ``sigma`` hold the parts' input pixels one after the other, in their operators' column order.
+    Where fewer than ``fewest_for_median`` parts land, their weighted mean is taken instead.  Returns the
+    combination, the spread squared (NaN without ``spread``) and the count of parts, each of ``shape``.
+    """
+    boxes = np.zeros((len(parts), 4), dtype=np.int64)
+    indptrs, indices, weights = [], [], []
+    ptr_start = np.zeros(len(parts), dtype=np.int64)
+    n_ptr = n_entries = n_values = longest = 0
+    for p, op in enumerate(parts):
+        (ys, xs) = op.box
+        boxes[p] = (ys.start, xs.start, ys.stop - ys.start, xs.stop - xs.start)
+        m = op.matrix
+        ptr_start[p] = n_ptr
+        indptrs.append(m.indptr.astype(np.int64) + n_entries)
+        indices.append(m.indices.astype(np.int64) + n_values)
+        weights.append(m.data)
+        n_ptr += m.indptr.size
+        n_entries += m.data.size
+        n_values += m.shape[1]
+        longest += int(np.diff(m.indptr).max()) if m.indptr.size > 1 else 0
+    out = np.empty(shape[0] * shape[1])
+    model2 = np.empty_like(out)
+    count = np.zeros(out.size, dtype=np.int32)
+    if parts:
+        _combine(
+            shape[1], boxes, ptr_start, np.concatenate(indptrs), np.concatenate(indices), np.concatenate(weights),
+            np.asarray(values, dtype=np.float64), np.asarray(sigma, dtype=np.float64), max(1, longest),
+            median_only, spread, fewest_for_median, out, model2, count,
+        )
+    else:
+        out[:] = np.nan
+        model2[:] = np.nan
+    return out.reshape(shape), model2.reshape(shape), count.reshape(shape)
+
+
+class _Whole:
+    """One spizzle-like operator part covering a whole sparse array, for the public combinations."""
+
+    def __init__(self, matrix):
+        self.matrix = matrix
+        self.box = (slice(0, matrix.shape[0]), slice(0, 1))
+
+
+def weighted_median(W, values):
+    """For each row of the sparse array ``W``, the median of the ``values`` it lists, weighted by its entries.
+
+    Parameters
+    ----------
+    W : scipy.sparse.csr_array, shape (n_out, n_in)
+        Row ``o`` lists the input values that land on output pixel ``o``, with their weights.
+    values : ndarray, shape (n_in,)
+        The input values; NaN ones are left out.
+
+    Returns
+    -------
+    ndarray, shape (n_out,)
+        The lowest value at which the cumulative weight reaches half of the row's; NaN for a row without values.
+    """
+    out, _, _ = _combine_parts([_Whole(W)], (W.shape[0], 1), values, np.ones(W.shape[1]), median_only=True,
+                               fewest_for_median=0)
+    return out.ravel()
+
+
+def clipped_mean(W, values, sigma):
+    """For each row of ``W``, the weighted mean of its values within 3 sigma of the estimate, three times from their
+    weighted median.
+
+    Parameters
+    ----------
+    W : scipy.sparse.csr_array, shape (n_out, n_in)
+        As for `weighted_median`.
+    values, sigma : ndarray, shape (n_in,)
+        The input values and their noise.
+
+    Returns
+    -------
+    ndarray, shape (n_out,)
+    """
+    out, _, _ = _combine_parts([_Whole(W)], (W.shape[0], 1), values, sigma, median_only=False, fewest_for_median=0)
+    return out.ravel()
+
+
+def sky_level(model):
+    """The sky level of an exposure, to subtract before combining it with others.
+
+    ``meta.background.level`` when the skymatch step measured it without
+    subtracting it, zero when it subtracted it, and otherwise the
+    sigma-clipped median of SKY_SAMPLE good pixels, evenly spaced.
+
+    Parameters
+    ----------
+    model : `~stdatamodels.jwst.datamodels.ImageModel`
+
+    Returns
+    -------
+    float
+    """
+    background = model.meta.background
+    if background.level is not None:
+        return 0.0 if background.subtracted else float(background.level)
+    data = model.data[_good(model)]
+    return float(sigma_clipped_stats(data[::max(1, data.size // SKY_SAMPLE)], sigma=3.0, maxiters=5)[1])
+
+
+def _good(model):
+    """The pixels that are used: finite data and error, without DO_NOT_USE, as jwst's outlier detection uses them."""
+    return np.isfinite(model.data) & np.isfinite(model.err) & ((model.dq & DO_NOT_USE) == 0)
+
+
+def _tile_ids(x, y, tile, n_tiles, fine_shape):
+    """The flat index of the tile holding each fine position, -1 off the fine grid (whatever the tiles' extent) or
+    without a position."""
+    i = np.floor(x + 0.5)
+    j = np.floor(y + 0.5)
+    valid = (i >= 0) & (i < fine_shape[1]) & (j >= 0) & (j < fine_shape[0])
+    return np.where(valid, (j // tile) * n_tiles[1] + i // tile, -1).astype(np.int64)
+
+
+class Exposure:
+    """What the reference needs of one exposure, computed once, and the prediction it gets.
+
+    Parameters
+    ----------
+    model : `~stdatamodels.jwst.datamodels.ImageModel`
+        The exposure.
+    mosaic_wcs : gwcs.wcs.WCS
+        The outlier mosaic's WCS, with its ``array_shape``.
+    oversample : int
+        Fine pixels per mosaic pixel along each axis.
+    pixfrac : float
+        Size of the drizzled input pixels relative to their own.
+    tile, halo : int
+        Fine pixels on a side of a tile, and of its halo.
+    """
+
+    def __init__(self, model, mosaic_wcs, oversample=2, pixfrac=0.8, tile=1024, halo=4):
+        require("outlier_reference.Exposure")
+        if tile <= 2 * (halo + REACH):
+            # the reach of a pixel center then spans more than two tiles along an axis, and its corners miss some
+            raise ValueError(f"tile must be larger than {2 * (halo + REACH):g} fine pixels, not {tile}")
+        shape = model.data.shape
+        ny_m, nx_m = mosaic_wcs.array_shape
+        self.n_tiles = (-(-oversample * ny_m // tile), -(-oversample * nx_m // tile))
+        self.fine_shape = (oversample * ny_m, oversample * nx_m)
+        pixmap = spizzle.pixel_map(model.meta.wcs, mosaic_wcs, shape=shape)
+        self.centers = oversample * (pixmap + 0.5) - 0.5
+        del pixmap
+        corners = spizzle.corners(self.centers, pixfrac)
+        self.jacobian = spizzle.jacobian(corners).astype(np.float32)
+        # the corners as offsets from the center: small, so float32 keeps them to about 1e-7 fine pixel
+        self.offsets = (corners - self.centers[:, :, None, :]).astype(np.float32)
+        del corners
+        weights = drizzle_weights(model.dq, "ivm", DO_NOT_USE, var_rnoise=model.var_rnoise)
+        self.weights = np.where(_good(model), weights, 0.0).astype(np.float32)
+        weighted = self.weights > 0
+        self.sky = sky_level(model)
+        # the pixels used, with their data and error; NaN for the others
+        self.data = np.where(weighted, model.data, np.nan).astype(np.float32)
+        self.err = np.where(weighted, model.err, np.nan).astype(np.float32)
+        # the tile of each pixel center, which gives the pixel its prediction
+        self.tile_of = _tile_ids(
+            self.centers[..., 0], self.centers[..., 1], tile, self.n_tiles, self.fine_shape
+        ).astype(np.int32)
+        self.regions = self._tile_regions(tile, halo)
+        self.prediction = np.full(shape, np.nan, dtype=np.float32)
+        # made by the first tile that measures the spread, if any
+        self.spread = None
+        self.n_exposures = np.zeros(shape, dtype=np.uint8)
+
+    def _tile_regions(self, tile, halo):
+        """The input pixels drizzled into each tile and its halo, as a dict of tile to region (pair of slices).
+
+        Each region is the box of the centers within the tile's reach, found
+        from the centers every SAMPLING pixels and every pixel along the
+        exposure's edges, where any small overlap of the exposure with a tile
+        lies, widened by SAMPLING and MARGIN.
+        """
+        ny, nx = self.centers.shape[:2]
+        lattice_rows, lattice_cols = np.meshgrid(np.r_[0:ny:SAMPLING, ny - 1], np.r_[0:nx:SAMPLING, nx - 1], indexing="ij")
+        rows = np.concatenate([lattice_rows.ravel(), np.zeros(nx, int), np.full(nx, ny - 1), np.arange(ny), np.arange(ny)])
+        cols = np.concatenate([lattice_cols.ravel(), np.arange(nx), np.arange(nx), np.zeros(ny, int), np.full(ny, nx - 1)])
+        sampled = self.centers[rows, cols]
+        reach = halo + REACH
+        boxes = {}
+        for dx, dy in ((-reach, -reach), (-reach, reach), (reach, -reach), (reach, reach)):
+            ids = _tile_ids(sampled[:, 0] + dx, sampled[:, 1] + dy, tile, self.n_tiles, self.fine_shape)
+            for t in np.unique(ids[ids >= 0]).tolist():
+                r, c = rows[ids == t], cols[ids == t]
+                box = boxes.get(t, (ny, 0, nx, 0))
+                boxes[t] = (min(box[0], r.min()), max(box[1], r.max()), min(box[2], c.min()), max(box[3], c.max()))
+        pad = SAMPLING + MARGIN
+        return {
+            t: (slice(max(0, r0 - pad), min(ny, r1 + 1 + pad)), slice(max(0, c0 - pad), min(nx, c1 + 1 + pad)))
+            for t, (r0, r1, c0, c1) in boxes.items()
+        }
+
+    def pixels(self, t, region):
+        """The flat indices of the pixels whose centers lie in tile ``t``, all within ``region``."""
+        local = np.flatnonzero(self.tile_of[region] == t)
+        width = region[1].stop - region[1].start
+        return (region[0].start + local // width) * self.tile_of.shape[1] + region[1].start + local % width
+
+    def operator(self, region, origin, shape):
+        """The spizzle operator of the input pixels of ``region`` onto a tile of ``shape`` at fine ``origin``."""
+        corners = (self.centers[region][:, :, None, :] + self.offsets[region]) - origin
+        triplets = spizzle.overlap_triplets(corners, shape)
+        if triplets[0].size == 0:
+            return None
+        return spizzle.build_operator(triplets, self.jacobian[region], shape, self.weights[region])
+
+    def write_prediction(self, t, region, origin, reference, model2, count):
+        """Write the prediction of the pixels whose centers lie in tile ``t``, from the tile's reference.
+
+        Parameters
+        ----------
+        t : int
+            The tile.
+        region : pair of slice
+            The exposure's region for the tile, which holds those pixels.
+        origin : ndarray
+            The fine (x, y) of the tile's first pixel, halo included.
+        reference, model2, count : ndarray
+            From `_tile_reference`; ``model2`` None leaves the spread alone.
+        """
+        pix = self.pixels(t, region)
+        if pix.size == 0:
+            return
+        positions = self.centers.reshape(-1, 2)[pix][:, None, :] - origin
+        self.prediction.flat[pix] = spizzle.blot(reference, positions)[:, 0] + self.sky
+        if model2 is not None:
+            if self.spread is None:
+                self.spread = np.full(self.prediction.shape, np.nan, dtype=np.float32)
+            self.spread.flat[pix] = np.sqrt(spizzle.blot(model2, positions)[:, 0])
+        self.n_exposures.flat[pix] = np.minimum(_min_count_under_blot(count, positions[:, 0]), 255)
+
+
+def _min_count_under_blot(count, positions):
+    """The fewest of the counts of the 2x2 fine pixels that a blot at each position (x, y) reads."""
+    i = np.clip(np.floor(positions[:, 0]).astype(np.int64), 0, count.shape[1] - 2)
+    j = np.clip(np.floor(positions[:, 1]).astype(np.int64), 0, count.shape[0] - 2)
+    return np.minimum(np.minimum(count[j, i], count[j, i + 1]), np.minimum(count[j + 1, i], count[j + 1, i + 1]))
+
+
+def _tile(exposures, t, tile, halo, correct, spread):
+    """Build the reference of tile ``t`` and write the predictions of the exposure pixels whose centers lie in it."""
+    origin, shape = _tile_origin_and_shape(exposures[0], t, tile, halo)
+    users = _exposures_on_tile(exposures, t, origin, shape)
+    if not users:
+        return
+    reference, model2, count = _tile_reference(users, origin, shape, correct, spread)
+    for exposure, region, _ in users:
+        exposure.write_prediction(t, region, origin, reference, model2 if spread else None, count)
+
+
+def _tile_origin_and_shape(exposure, t, tile, halo):
+    """The fine (x, y) of tile ``t``'s first pixel, halo included, and the tile's shape with its halo."""
+    ty, tx = divmod(t, exposure.n_tiles[1])
+    origin = np.array([tx * tile - halo, ty * tile - halo], dtype=np.float64)
+    ny, nx = exposure.fine_shape
+    return origin, (min(tile, ny - ty * tile) + 2 * halo, min(tile, nx - tx * tile) + 2 * halo)
+
+
+def _exposures_on_tile(exposures, t, origin, shape):
+    """The exposures with input pixels on tile ``t``, each with its region and its operator onto the tile."""
+    users = []
+    for exposure in exposures:
+        region = exposure.regions.get(t)
+        op = None if region is None else exposure.operator(region, origin, shape)
+        if op is not None:
+            users.append((exposure, region, op))
+    return users
+
+
+def _tile_reference(users, origin, shape, correct, spread):
+    """The reference of a tile from its users' input pixels, the spread squared and the count of exposures.
+
+    With ``correct``, the users' residuals from the reference, combined by
+    their weighted median, are added where at least three exposures land:
+    with two, the correction would pull the reference toward both, an
+    outlier included.
+    """
+    parts = [op for _, _, op in users]
+    values = np.concatenate([(e.data[r] - e.sky).ravel() for e, r, _ in users])
+    sigma = np.concatenate([e.err[r].ravel() for e, r, _ in users])
+    reference, model2, count = _combine_parts(parts, shape, values, sigma, median_only=False, spread=spread)
+    if correct:
+        residuals = np.concatenate([
+            (e.data[r] - e.sky - spizzle.blot(reference, e.centers[r] - origin)).ravel() for e, r, _ in users
+        ])
+        correction, _, _ = _combine_parts(parts, shape, residuals, sigma, median_only=True)
+        reference += np.where(count >= 3, np.nan_to_num(correction), 0.0)
+    return reference, model2, count
+
+
+def predict(models, mosaic_wcs, oversample=2, pixfrac=0.8, correct=True, tile=1024, halo=4, spread=False):
+    """The prediction of every exposure from the reference of all of them, tile by tile.
+
+    Parameters
+    ----------
+    models : list of `~stdatamodels.jwst.datamodels.ImageModel`
+        The exposures.
+    mosaic_wcs : gwcs.wcs.WCS
+        The outlier mosaic's WCS, with its ``array_shape``: the grid that
+        the reference samples ``oversample`` times more finely.
+    oversample : int
+        Fine pixels per mosaic pixel along each axis.
+    pixfrac : float
+        Size of the drizzled input pixels relative to their own.
+    correct : bool
+        Add the exposures' residuals, combined by their weighted median, once, where at least three exposures land.
+    tile, halo : int
+        Fine pixels on a side of a tile, and of its halo.
+    spread : bool
+        Also measure the robust spread of the input pixels of each fine
+        pixel, for the measured tolerance of `flag_outliers`.
+
+    Returns
+    -------
+    list of `Exposure`
+        One per model, with its ``prediction`` (the sky added back),
+        ``spread`` (None without ``spread``) and ``n_exposures`` (the fewest
+        exposures covering the fine pixels its prediction comes from).
+    """
+    exposures = [Exposure(m, mosaic_wcs, oversample, pixfrac, tile, halo) for m in models]
+    run(exposures, correct, tile, halo, spread)
+    return exposures
+
+
+def run(exposures, correct=True, tile=1024, halo=4, spread=False):
+    """Build the reference tile by tile and write each exposure's prediction, as `predict` does.
+
+    Parameters
+    ----------
+    exposures : list of `Exposure`
+        Made with the same mosaic WCS, ``oversample``, ``tile`` and ``halo``.
+    correct, tile, halo, spread
+        As for `predict`.
+    """
+    tiles = sorted(set().union(*(e.regions for e in exposures)))
+    log.info(f"Reference of {len(exposures)} exposures in {len(tiles)} tiles of {tile} fine pixels")
+    for t in tiles:
+        _tile(exposures, t, tile, halo, correct, spread)
+
+
+def flag_outliers(exposure, snr=(5.0, 4.0), scale=(0.5, 0.3)):
+    """The outliers of one exposure against its prediction, by jwst's two-pass rule.
+
+    Where fewer than three exposures cover a pixel, only pixels above the
+    prediction are flagged.
+
+    Parameters
+    ----------
+    exposure : `Exposure`
+        From `predict`.
+    snr : pair of float
+        Thresholds in noise of the two passes.
+    scale : pair of float or None
+        jwst's ``scale`` of the two passes; None uses the measured spread in
+        its place, ``|data - prediction| > snr * sqrt(err**2 + spread**2)``
+        (`predict` with ``spread``).
+
+    Returns
+    -------
+    ndarray of bool, the exposure's shape
+    """
+    data, err = exposure.data, exposure.err
+    good = np.isfinite(data)
+    prediction = exposure.prediction
+    if scale is None:
+        if exposure.spread is None:
+            raise ValueError("The measured tolerance needs the spread: predict with spread=True")
+        diff = np.abs(data - prediction)
+        noise = np.sqrt(np.nan_to_num(err) ** 2 + np.nan_to_num(exposure.spread) ** 2)
+        first = ndimage.binary_dilation(diff > snr[0] * noise, np.ones((3, 3), dtype=bool))
+        flags = first & (diff > snr[1] * noise)
+    else:
+        flags = flag_resampled_crs(data, err, prediction, snr[0], snr[1], scale[0], scale[1], 0.0)
+    flags &= (exposure.n_exposures >= 3) | (data > prediction)
+    return flags & good & np.isfinite(prediction)
+
+
+class TiledOutlierStep(Step):
+    """Flag outliers in images against one reference built from all their input pixels, in tiles.
+
+    The reference, the prediction of each exposure and the flags are those
+    of this module (`predict` and `flag_outliers`), on the outlier mosaic's
+    grid that jwst's outlier detection uses (the input pixel scale, from
+    ``resampled_wcs_from_models``) sampled twice as finely, with pixfrac 0.8
+    and the correction step.  The outliers get DO_NOT_USE and OUTLIER in
+    ``dq``, and NaN in the data, error and variance arrays, as jwst's step
+    sets them.
+
+    The parameters are jwst's ``snr`` and ``scale``; ``scale`` is 0.5 / 0.3,
+    which the sharper reference allows for every NIRCam, NIRISS and NIRSpec
+    imaging filter simulated.  The grid, pixfrac and the correction step are
+    fixed.  The step does not read jwst's step parameters from CRDS, and runs
+    on images only: it raises for spectra, coronagraphy and time series.
+    """
+
+    class_alias = "tiled_outlier"
+    fits_keyword = "S_TILOUT"
+    fits_comment = "Outliers: snowblind.TiledOutlierStep"
+
+    spec = """
+        snr = string(default='5.0 4.0')  # Thresholds in noise of the two passes
+        scale = string(default='0.5 0.3')  # Factors of the prediction's largest difference from its neighbors added to them
+        search_output_file = boolean(default=False)
+        in_memory = boolean(default=True)  # in_memory flag ignored if run within the pipeline; set at pipeline level instead
+    """  # noqa: E501
+
+    def process(self, input_data):
+        """Flag the outliers of every input image.
+
+        Parameters
+        ----------
+        input_data : asn file or `~jwst.datamodels.library.ModelLibrary`
+            The images.
+
+        Returns
+        -------
+        `~jwst.datamodels.library.ModelLibrary`
+            The images with their outliers flagged.
+        """
+        require("TiledOutlierStep")
+        library, enough = _prepare_outlier_inputs(self, input_data)
+        if not enough:
+            return library
+        mosaic_wcs = resampled_wcs_from_models(library, pixel_scale_ratio=1.0)[0]
+        exposures = []
+        with library:
+            for model in library:
+                exposures.append(Exposure(model, mosaic_wcs))
+                library.shelve(model, modify=False)
+        run(exposures)
+
+        snr, scale = _float_pair(self.snr), _float_pair(self.scale)
+        with library:
+            for model, exposure in zip(library, exposures):
+                flags = flag_outliers(exposure, snr=snr, scale=scale)
+                model.dq[flags] |= np.uint32(DO_NOT_USE | OUTLIER)
+                log.info(f"{np.count_nonzero(flags)} pixels marked as outliers in {model.meta.filename}")
+                match_nans_and_flags(model)
+                self.set_cal_step(model, "COMPLETE")
+                library.shelve(model, modify=True)
+        record_step_status(library, "outlier_detection", True)
+        return library

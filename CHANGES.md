@@ -2,6 +2,55 @@
 
 ## [Unreleased]
 
+### Added
+
+- `SparseResampleStep` (`sparse_resample`): the jwst resample step for
+  images with drizzle replaced by spizzle, which builds each exposure's
+  square-kernel weights once as a sparse matrix and sums in double
+  precision. The variance planes are the exact variance of each output
+  pixel; the noise factor, what the correlation between neighboring output
+  pixels adds to the noise of a sum over many of them, is computed in a
+  second pass over the exposures and saved next to the mosaic as
+  `<product>_nfactor.fits` (header card `NFACFILE`); ERR is the root of the
+  summed variance planes times the noise factor. `variance="stcal"` gives
+  the jwst step's variance planes and ERR instead (header card `VARTYPE`).
+  There is no `kernel` (square only) or `propagate_dq`; `weight_type` is
+  `ivm` unless given, as the step does not read the jwst step's parameters
+  from CRDS; the context array is made only with `enable_ctx`; the pixel
+  map is interpolated with splines between the pixels where the WCS is
+  evaluated (`pixmap_stepsize` 16, `pixmap_order` 3).
+  `snowblind.resample.SparseResampleImage` is the class behind it, jwst's
+  `ResampleImage` with stcal's drizzle calls replaced.
+- `SparseOutlierDetectionStep` (`sparse_outlier_detection`): the jwst
+  outlier detection for images, its method unchanged, drizzling with
+  `SparseResampleImage` and blotting with spizzle. Images only; no
+  `resample_data`.
+- None of these steps has jwst's `good_bits`: each names the DQ flags of
+  the pixels it leaves out (resampling: DO_NOT_USE and NON_SCIENCE; the
+  outlier steps: DO_NOT_USE), through `snowblind.resample.drizzle_weights`,
+  which gives stcal's weights from them.
+- `TiledOutlierStep` (`tiled_outlier`): outlier detection for images
+  against one reference built from the input pixels of all the exposures on
+  the outlier mosaic's grid sampled twice as finely (pixfrac 0.8, weighted
+  by overlap and inverse read-noise variance, weighted median then clipped
+  mean, one correction step), blotted onto each exposure and compared by
+  jwst's two-pass rule with `scale` 0.5 / 0.3. Where fewer than three
+  exposures overlap, the reference is their weighted mean and only pixels
+  above it are flagged. The grid is processed in tiles, so no mosaic-sized
+  array is allocated. `snowblind.outlier_reference` holds the method.
+- `snowblind_image3` (`snowblind.Image3Pipeline`): `calwebb_image3` with
+  jwst's `outlier_detection` slot replaced by `tiled_outlier`
+  (`TiledOutlierStep`) and `sparse_outlier` (`SparseOutlierDetectionStep`),
+  `outlier_step` naming the one that runs (`tiled_outlier` by default),
+  and `SparseResampleStep` in its `resample` slot.
+- The optional extra `snowblind[spizzle]` installs spizzle and numba, which
+  these steps need; snowblind imports without them.
+- `scripts/compare_sparse_resample.py` and
+  `scripts/compare_sparse_outlier_detection.py` compare the steps with the
+  jwst steps on a set of `_cal` files; `scripts/exp_injected_outliers.py`
+  injects cosmic rays into `_cal` files and compares jwst's outlier
+  detection with `TiledOutlierStep`'s method.
+
 ## [1.3.0] - 2026-11-03
 
 ### Added
