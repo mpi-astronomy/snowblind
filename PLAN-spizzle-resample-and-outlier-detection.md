@@ -895,9 +895,9 @@ directions):
   defaults are gone.
 - No `good_bits` anywhere in snowblind (user: legacy of HST drizzlepac;
   name what is rejected, not what is kept). `resample.drizzle_weights` gives
-  stcal's weights with the rejected DQ flags named: `RESAMPLE_REJECTED`
-  (DO_NOT_USE, NON_SCIENCE) for resampling, `OUTLIER_REJECTED` (DO_NOT_USE)
-  for both outlier steps; `SparseResampleImage` takes `rejected` and
+  stcal's weights with the rejected DQ flags named (`DO_NOT_USE |
+  NON_SCIENCE` for resampling, `DO_NOT_USE` for both outlier steps, the
+  standard module constants from `dqflags.pixel`); `SparseResampleImage` takes `rejected` and
   refuses `good_bits`. `SparseOutlierDetectionStep` lost `good_bits` and
   `resample_data` (jwst's path without drizzling stays with jwst's step).
   `TiledOutlierStep` uses `drizzle_weights` too, so it runs without
@@ -938,6 +938,18 @@ laptop's memory: today the per-exposure geometry (about 310 MB per NIRCam
 detector, mostly the corner offsets) dominates, not the tiles (about 150 MB
 for a 1024-pixel tile with 8 overlapping exposures, estimated). Tiny tiles
 are only a unit-test case; real tiles are large.
+
+
+Complexity, 2026-11-05 (user's request): every function the branch adds or
+changes is at radon grade B (cyclomatic complexity 10 or less) or better,
+at most 50 lines, and nested at most three blocks deep. The split ones were
+`outlier_reference._combine` (was D 24), `_tile`, `_SpizzleResample.add_model`
+and `finalize`, `SparseResampleStep.process`, and the scripts' `report`,
+`inject`, `part2` and `_clipped_mean`. A step's `process` stays its entry
+and exit point and shows the step's algorithm, calling helpers only for
+side work (user). Outputs did not change: the tiled reference, its flags
+and spread, and `SparseResampleImage`'s planes on 4 NRCALONG exposures were
+bitwise equal, as were the three injection reports and the F070W simulation.
 
 
 ## 7. Open questions for the user (ask, do not decide)

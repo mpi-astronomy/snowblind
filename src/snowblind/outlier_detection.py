@@ -24,13 +24,11 @@ from ._spizzle import require, spizzle
 from .resample import SparseResampleImage
 from .step import Step
 
-__all__ = ["SparseOutlierDetectionStep", "flag_resampled_model_crs", "OUTLIER_REJECTED"]
+__all__ = ["SparseOutlierDetectionStep", "flag_resampled_model_crs"]
 
 log = logging.getLogger(__name__)
 
-# the DQ flags of the pixels left out of the drizzled images and their median, as jwst's outlier detection leaves
-# them out
-OUTLIER_REJECTED = dqflags.pixel["DO_NOT_USE"]
+DO_NOT_USE = dqflags.pixel["DO_NOT_USE"]
 
 
 class SparseOutlierDetectionStep(Step):
@@ -86,41 +84,12 @@ class SparseOutlierDetectionStep(Step):
             The input images with DQ flags set for the outliers found.
         """
         require("SparseOutlierDetectionStep")
-        mode = guess_mode(self, input_data)
-        if mode != "imaging":
-            raise ValueError(f"SparseOutlierDetectionStep supports images only, not mode {mode!r}")
-        library = self.prepare_output(input_data, open_models=False)
-        if not isinstance(library, ModelLibrary):
-            library = ModelLibrary(library, on_disk=not self.in_memory)
-        log.info(f"Outlier Detection mode: {mode}")
-        add_asn_id(self, input_data)
-        if len(library) < 2:
-            log.warning(f"Input only contains {len(library)} exposures; outlier detection is skipped")
-            record_step_status(library, "outlier_detection", False)
+        library, enough = _prepare_outlier_inputs(self, input_data)
+        if not enough:
             return library
-
-        snr1, snr2 = [float(v) for v in self.snr.split()]
-        scale1, scale2 = [float(v) for v in self.scale.split()]
-        resamp = SparseResampleImage(
-            library,
-            blendheaders=False,
-            weight_type=self.weight_type,
-            pixfrac=self.pixfrac,
-            fillval=self.fillval,
-            rejected=OUTLIER_REJECTED,
-            enable_ctx=False,
-            enable_var=False,
-            compute_err=None,
-            pixmap_stepsize=self.pixmap_stepsize,
-            pixmap_order=self.pixmap_order,
-        )
-        median_data, median_wcs = median_with_resampling(
-            library,
-            resamp,
-            self.maskpt,
-            save_intermediate_results=self.save_intermediate_results,
-            make_output_path=self.make_output_path,
-        )
+        median_data, median_wcs = self._resampled_median(library)
+        snr1, snr2 = _float_pair(self.snr)
+        scale1, scale2 = _float_pair(self.scale)
         with library:
             for model in library:
                 flag_resampled_model_crs(
@@ -141,6 +110,72 @@ class SparseOutlierDetectionStep(Step):
                 library.shelve(model, modify=True)
         record_step_status(library, "outlier_detection", True)
         return library
+
+    def _resampled_median(self, library):
+        """The median of the groups drizzled onto a common grid with SparseResampleImage, and its WCS, as jwst's
+        ``median_with_resampling`` makes it."""
+        resamp = SparseResampleImage(
+            library,
+            blendheaders=False,
+            weight_type=self.weight_type,
+            pixfrac=self.pixfrac,
+            fillval=self.fillval,
+            # left out of the drizzled images and their median, as jwst's outlier detection leaves them out
+            rejected=DO_NOT_USE,
+            enable_ctx=False,
+            enable_var=False,
+            compute_err=None,
+            pixmap_stepsize=self.pixmap_stepsize,
+            pixmap_order=self.pixmap_order,
+        )
+        return median_with_resampling(
+            library,
+            resamp,
+            self.maskpt,
+            save_intermediate_results=self.save_intermediate_results,
+            make_output_path=self.make_output_path,
+        )
+
+
+def _prepare_outlier_inputs(step, input_data):
+    """The images an outlier step flags, as a ModelLibrary, after jwst's checks, and whether there are enough.
+
+    jwst's mode must be imaging (the pipeline's ``mode`` attribute, or the
+    exposure type); the output names get the association ID; with fewer
+    than two exposures the step is recorded as skipped.
+
+    Parameters
+    ----------
+    step : `~snowblind.step.Step`
+        The outlier step, with ``in_memory``.
+    input_data : asn file or `~jwst.datamodels.library.ModelLibrary`
+        Its input.
+
+    Returns
+    -------
+    library : `~jwst.datamodels.library.ModelLibrary`
+    enough : bool
+        False when there are fewer than two exposures.
+    """
+    mode = guess_mode(step, input_data)
+    if mode != "imaging":
+        raise ValueError(f"{type(step).__name__} supports images only, not mode {mode!r}")
+    library = step.prepare_output(input_data, open_models=False)
+    if not isinstance(library, ModelLibrary):
+        library = ModelLibrary(library, on_disk=not step.in_memory)
+    log.info(f"Outlier Detection mode: {mode}")
+    add_asn_id(step, input_data)
+    if len(library) < 2:
+        log.warning(f"Input only contains {len(library)} exposures; outlier detection is skipped")
+        record_step_status(library, "outlier_detection", False)
+        return library, False
+    return library, True
+
+
+def _float_pair(text):
+    """The two numbers of a parameter such as ``snr = '5.0 4.0'``."""
+    first, second = (float(value) for value in text.split())
+    return first, second
 
 
 def flag_resampled_model_crs(

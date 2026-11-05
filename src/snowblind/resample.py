@@ -50,7 +50,7 @@ from . import _jwst_imports  # noqa: F401  (checks the stcal internals used here
 from ._spizzle import require, spizzle
 from .step import Step
 
-__all__ = ["SparseResampleStep", "SparseResampleImage", "drizzle_weights", "VARIANCE_MODES", "RESAMPLE_REJECTED"]
+__all__ = ["SparseResampleStep", "SparseResampleImage", "drizzle_weights", "VARIANCE_MODES"]
 
 log = logging.getLogger(__name__)
 
@@ -58,8 +58,6 @@ VARIANCE_MODES = ("exact", "stcal")
 
 DO_NOT_USE = dqflags.pixel["DO_NOT_USE"]
 NON_SCIENCE = dqflags.pixel["NON_SCIENCE"]
-# the DQ flags of the pixels left out of a mosaic, as jwst's resample step leaves them out
-RESAMPLE_REJECTED = DO_NOT_USE | NON_SCIENCE
 
 # suffix of the noise factor file that SparseResampleStep saves next to the mosaic
 NOISE_FACTOR_SUFFIX = "nfactor"
@@ -143,39 +141,53 @@ class _SpizzleResample(Resample):
         model : dict
             The exposure, as for stcal's ``Resample.add_model``.
         """
+        self._check_addable(model)
+        self._n_res_models += 1
+        self._compute_pixel_scale_ratio(model)
+        iscale = self._get_intensity_scale(model)
+        operator = self._operator(model)
+        self._add_to_coadds(operator, model, iscale)
+        self._count_new_group(model)
+
+    def _check_addable(self, model):
+        """Raise unless ``model`` is a valid 2D exposure and the sums can still take it."""
         if self._finalized:
             raise RuntimeError("Resampling has been finalized; call reset_arrays before adding models.")
         if self._noise is not None:
             raise RuntimeError("The noise factor pass has started; no more models can be added.")
         self.validate_input_model(model)
-        self._n_res_models += 1
-        data = model["data"]
-        if data.ndim != 2:
+        if model["data"].ndim != 2:
             raise RuntimeError(f"Input model '{model['filename']}' is not a 2D image.")
 
-        self._compute_pixel_scale_ratio(model)
-        iscale = self._get_intensity_scale(model)
-        operator = self._operator(model)
+    def _add_to_coadds(self, operator, model, iscale):
+        """Add the exposure's data, variance planes and error through its operator to the sums kept."""
+        data = model["data"]
         if not model["subtracted"] and model["level"] is not None:
             data = data - model["level"]
-
         if self._exact_variance():
             self._coadd.add(operator, data, self._variances(model), iscale)
         else:
             self._coadd.add(operator, data, iscale=iscale)
         if self._enable_var and self.variance == "stcal":
-            if self._stcal_variance is None:
-                self._stcal_variance = spizzle.StcalVariance(
-                    self._output_array_shape,
-                    n_var=len(self.variance_array_names),
-                    rnoise=self.variance_array_names.index("var_rnoise"),
-                    weight_type=self.weight_type,
-                    pixel_scale_ratio=self._scale_ratio(),
-                )
-            self._stcal_variance.add(operator, self._variances(model), iscale, exposure_time=get_tmeasure(model)[0])
+            self._add_stcal_variance(operator, model, iscale)
         if self._err_coadd is not None:
             self._err_coadd.add(operator, model["err"], iscale=iscale)
 
+    def _add_stcal_variance(self, operator, model, iscale):
+        """Add the exposure to stcal's variance planes, made with the first exposure, which sets the pixel scale
+        ratio."""
+        if self._stcal_variance is None:
+            self._stcal_variance = spizzle.StcalVariance(
+                self._output_array_shape,
+                n_var=len(self.variance_array_names),
+                rnoise=self.variance_array_names.index("var_rnoise"),
+                weight_type=self.weight_type,
+                pixel_scale_ratio=self._scale_ratio(),
+            )
+        self._stcal_variance.add(operator, self._variances(model), iscale, exposure_time=get_tmeasure(model)[0])
+
+    def _count_new_group(self, model):
+        """Count the exposure's group once, with its times, as stcal's add_model does."""
         if (group_id := model["group_id"]) not in self._group_ids:
             self.update_time(model)
             self._group_ids.append(group_id)
@@ -208,7 +220,18 @@ class _SpizzleResample(Resample):
             )
         self._finalized = True
         self._output_model["pointings"] = len(self.group_ids)
+        self._finalize_science()
+        if self._enable_var:
+            self._finalize_variance()
+        if self._compute_err == "driz_err":
+            self._output_model["err"] = (self._err_coadd.out_img / self._scale_ratio()).astype(np.float32)
+        elif self._enable_var and self._compute_err == "from_var":
+            self._output_model["err"] = self._err_from_variance()
+        self._coadd = self._err_coadd = self._stcal_variance = self._noise = None
+        self.finalize_time_info()
 
+    def _finalize_science(self):
+        """The science image, the weights and the context from the sums, the fill value where there is no weight."""
         wht = self._coadd.out_wht
         data = self._coadd.out_img
         data[wht == 0] = self._fill
@@ -217,26 +240,24 @@ class _SpizzleResample(Resample):
         if self._enable_ctx:
             self._output_model["con"] = self._coadd.out_ctx
 
-        if self._enable_var:
-            planes = self._coadd.out_var if self._exact_variance() else self._stcal_variance.out_var
-            for name, plane in zip(self.variance_array_names, planes):
-                self._output_model[name] = plane.astype(np.float32)
+    def _finalize_variance(self):
+        """The variance planes, exact or stcal's, and with the exact ones the noise factor."""
+        planes = self._coadd.out_var if self._exact_variance() else self._stcal_variance.out_var
+        for name, plane in zip(self.variance_array_names, planes):
+            self._output_model[name] = plane.astype(np.float32)
         if self._exact_variance():
             self._output_model["noise_factor"] = self._noise.noise_factor.astype(np.float32)
 
-        if self._compute_err == "driz_err":
-            self._output_model["err"] = (self._err_coadd.out_img / self._scale_ratio()).astype(np.float32)
-        elif self._enable_var and self._compute_err == "from_var":
-            var_components = [self._output_model[name] for name in self._error_variance_names()]
-            var = np.nansum(var_components, axis=0)
-            # nansum gives zero where all are NaN
-            var[np.all(np.isnan(var_components), axis=0)] = np.nan
-            if self._exact_variance():
-                var = var * self._output_model["noise_factor"]
-            self._output_model["err"] = np.sqrt(var).astype(np.float32)
-
-        self._coadd = self._err_coadd = self._stcal_variance = self._noise = None
-        self.finalize_time_info()
+    def _err_from_variance(self):
+        """ERR as the root of the summed variance planes, times the noise factor with the exact ones; NaN where every
+        plane is NaN, as stcal's."""
+        var_components = [self._output_model[name] for name in self._error_variance_names()]
+        var = np.nansum(var_components, axis=0)
+        # nansum gives zero where all are NaN
+        var[np.all(np.isnan(var_components), axis=0)] = np.nan
+        if self._exact_variance():
+            var = var * self._output_model["noise_factor"]
+        return np.sqrt(var).astype(np.float32)
 
     def _exact_variance(self):
         """Whether the variance planes are the exact ones, with the noise factor."""
@@ -295,7 +316,7 @@ class SparseResampleImage(ResampleImage, _SpizzleResample):
         exposures; off by default, unlike jwst's class.
     rejected : int
         The DQ flags of the input pixels left out (weight 0); by default
-        `RESAMPLE_REJECTED`, DO_NOT_USE and NON_SCIENCE.
+        DO_NOT_USE and NON_SCIENCE, as jwst's resample step leaves them out.
     on_output : callable or None
         Called with each output model once it is finalized, the mosaic or
         each group's image.
@@ -308,7 +329,7 @@ class SparseResampleImage(ResampleImage, _SpizzleResample):
 
     def __init__(
         self, input_models, variance="exact", pixmap_stepsize=16, pixmap_order=3, enable_ctx=False,
-        rejected=RESAMPLE_REJECTED, on_output=None, **kwargs,
+        rejected=DO_NOT_USE | NON_SCIENCE, on_output=None, **kwargs,
     ):
         require("SparseResampleImage")
         if variance not in VARIANCE_MODES:
@@ -420,7 +441,7 @@ class SparseResampleStep(Step):
     - no ``kernel``: the square kernel only;
     - no ``propagate_dq``: the DQ array is not resampled;
     - no ``good_bits``: the pixels with DO_NOT_USE or NON_SCIENCE are left
-      out (`RESAMPLE_REJECTED`), as by jwst's step;
+      out, as by jwst's step;
     - ``weight_type`` is "ivm" unless given: the step does not read jwst's
       step parameters from CRDS, which ask for "exptime" for some
       instruments;
@@ -479,32 +500,11 @@ class SparseResampleStep(Step):
         `~stdatamodels.jwst.datamodels.ImageModel` or `~jwst.datamodels.library.ModelLibrary`
             The mosaic, or with ``single`` a library of one resampled image per group.
         """
-        input_model = self.prepare_output(input_data, open_models=False)
-        if isinstance(input_model, ModelLibrary):
-            input_models = input_model
-        elif isinstance(input_model, ImageModel) or (
-            isinstance(input_model, str) and filetype.check(input_model) in ["fits", "asdf"]
-        ):
-            input_models = ModelLibrary([input_model], on_disk=not self.in_memory)
-            self.blendheaders = False
-        elif isinstance(input_model, (str, dict, list, ModelContainer)):
-            input_models = ModelLibrary(input_model, on_disk=not self.in_memory)
-        else:
-            raise TypeError(f"Input {input_data} is not a 2D image.")
-
+        input_models = self._input_library(input_data)
         try:
             output = input_models.asn["products"][0]["name"]
         except KeyError:
             output = None
-
-        with input_models:
-            for model in input_models:
-                if model.data.ndim != 2:
-                    raise RuntimeError(f"Input {model.meta.filename} is not a 2D image.")
-                # make NaN and DO_NOT_USE agree in all inputs, as the jwst step does
-                match_nans_and_flags(model)
-                input_models.shelve(model)
-
         kwargs = self._resample_kwargs()
         if self.single:
             resamp = SparseResampleImage(
@@ -529,6 +529,30 @@ class SparseResampleStep(Step):
         self._save_noise_factor(result, resamp.noise_factor)
         return result
 
+    def _input_library(self, input_data):
+        """The input images as a ModelLibrary, as jwst's ResampleStep reads them, with NaN and DO_NOT_USE made to
+        agree in each."""
+        input_model = self.prepare_output(input_data, open_models=False)
+        if isinstance(input_model, ModelLibrary):
+            input_models = input_model
+        elif isinstance(input_model, ImageModel) or (
+            isinstance(input_model, str) and filetype.check(input_model) in ["fits", "asdf"]
+        ):
+            input_models = ModelLibrary([input_model], on_disk=not self.in_memory)
+            self.blendheaders = False
+        elif isinstance(input_model, (str, dict, list, ModelContainer)):
+            input_models = ModelLibrary(input_model, on_disk=not self.in_memory)
+        else:
+            raise TypeError(f"Input {input_data} is not a 2D image.")
+        with input_models:
+            for model in input_models:
+                if model.data.ndim != 2:
+                    raise RuntimeError(f"Input {model.meta.filename} is not a 2D image.")
+                # make NaN and DO_NOT_USE agree in all inputs, as the jwst step does
+                match_nans_and_flags(model)
+                input_models.shelve(model)
+        return input_models
+
     def _mark_complete(self, model):
         """Record this step's status in an output model."""
         self.set_cal_step(model, "COMPLETE")
@@ -540,7 +564,7 @@ class SparseResampleStep(Step):
             "pixfrac": self.pixfrac,
             "fillval": self.fillval,
             "weight_type": self.weight_type,
-            "rejected": RESAMPLE_REJECTED,
+            "rejected": DO_NOT_USE | NON_SCIENCE,
             "on_output": self._mark_complete,
             "blendheaders": self.blendheaders,
             "pixmap_stepsize": self.pixmap_stepsize,

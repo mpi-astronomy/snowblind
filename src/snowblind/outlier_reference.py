@@ -46,7 +46,6 @@ import logging
 
 import numpy as np
 from astropy.stats import sigma_clipped_stats
-from jwst.datamodels import ModelLibrary
 from jwst.lib.pipe_utils import match_nans_and_flags
 from jwst.resample.resample_utils import resampled_wcs_from_models
 from jwst.stpipe.utilities import record_step_status
@@ -54,9 +53,8 @@ from scipy import ndimage
 from stcal.outlier_detection.utils import flag_resampled_crs
 from stdatamodels.jwst.datamodels import dqflags
 
-from ._jwst_imports import add_asn_id, guess_mode
 from ._spizzle import njit, prange, require, spizzle
-from .outlier_detection import OUTLIER_REJECTED
+from .outlier_detection import _prepare_outlier_inputs, _float_pair
 from .resample import drizzle_weights
 from .step import Step
 
@@ -108,6 +106,86 @@ def _sorted_median(v, w, n):
     return v[n - 1]
 
 
+@njit(cache=True)
+def _operator_row(p, oy, ox, boxes, ptr_start):
+    """The row in ``indptr`` of part ``p``'s operator for fine pixel (oy, ox) of the tile, -1 outside its box."""
+    by, bx, bny, bnx = boxes[p, 0], boxes[p, 1], boxes[p, 2], boxes[p, 3]
+    if oy < by or oy >= by + bny or ox < bx or ox >= bx + bnx:
+        return -1
+    return ptr_start[p] + (oy - by) * bnx + (ox - bx)
+
+
+@njit(cache=True)
+def _gather_inputs(o, n_cols, boxes, ptr_start, indptr, indices, weights, values, sigma, v, w, s):
+    """Collect into v, w and s, sorted by value, the input pixels of every part that land on fine pixel ``o``.
+
+    Returns their number, and the number of parts with an input pixel there.
+    """
+    oy = o // n_cols
+    ox = o - oy * n_cols
+    n = 0
+    reached = 0
+    for p in range(boxes.shape[0]):
+        r = _operator_row(p, oy, ox, boxes, ptr_start)
+        if r < 0 or indptr[r + 1] == indptr[r]:
+            continue
+        reached += 1
+        for e in range(indptr[r], indptr[r + 1]):
+            x = values[indices[e]]
+            if not np.isnan(x) and weights[e] > 0.0:
+                _insert(v, w, s, n, x, weights[e], sigma[indices[e]])
+                n += 1
+    return n, reached
+
+
+@njit(cache=True)
+def _weighted_mean(v, w, n):
+    """The weighted mean of the first ``n`` values of v."""
+    num = 0.0
+    den = 0.0
+    for q in range(n):
+        num += w[q] * v[q]
+        den += w[q]
+    return num / den
+
+
+@njit(cache=True)
+def _sigma_clipped_mean(v, w, s, n, est):
+    """The weighted mean of the first ``n`` values of v within 3 sigma of the estimate, three times from ``est``."""
+    for _ in range(3):
+        num = 0.0
+        den = 0.0
+        for q in range(n):
+            if abs(v[q] - est) <= 3.0 * s[q]:
+                num += w[q] * v[q]
+                den += w[q]
+        if den > 0.0:
+            est = num / den
+    return est
+
+
+@njit(cache=True)
+def _combined_value(v, w, s, n, reached, median_only, fewest_for_median):
+    """The combination of the first ``n`` (> 0) values of v from ``reached`` parts: their weighted mean from fewer
+    than ``fewest_for_median`` parts, else their weighted median, clipped unless ``median_only``."""
+    if reached < fewest_for_median:
+        return _weighted_mean(v, w, n)
+    est = _sorted_median(v, w, n)
+    return est if median_only else _sigma_clipped_mean(v, w, s, n, est)
+
+
+@njit(cache=True)
+def _robust_spread(v, w, s, n, est, dv, dw, ds):
+    """(1.4826 * the weighted median absolute deviation of the first ``n`` values of v from ``est``)**2 minus the
+    weighted median of their sigma**2, zero if negative; dv, dw and ds are scratch buffers."""
+    for q in range(n):
+        _insert(dv, dw, ds, q, abs(v[q] - est), w[q], 0.0)
+    mad = _sorted_median(dv, dw, n)
+    for q in range(n):
+        _insert(dv, dw, ds, q, s[q] * s[q], w[q], 0.0)
+    return max(0.0, (1.4826 * mad) ** 2 - _sorted_median(dv, dw, n))
+
+
 @njit(parallel=True, cache=True)
 def _combine(n_cols, boxes, ptr_start, indptr, indices, weights, values, sigma, longest, median_only, spread,
              fewest_for_median, out, model2, count):
@@ -115,12 +193,11 @@ def _combine(n_cols, boxes, ptr_start, indptr, indices, weights, values, sigma, 
 
     Part ``p`` covers the box ``boxes[p] = (y0, x0, ny, nx)`` of the tile; its rows start at ``ptr_start[p]`` in
     ``indptr``, whose values index ``indices`` and ``weights``, and ``indices`` index ``values`` and ``sigma``.
-    ``out`` gets the weighted median, or with ``median_only`` False the clipped mean from it, and their weighted
-    mean where fewer than ``fewest_for_median`` parts land; ``model2`` with ``spread`` the robust spread of the
-    input pixels; ``count`` the number of parts with an input pixel there.
+    ``out`` gets `_combined_value`, ``model2`` with ``spread`` (and not ``median_only``) the `_robust_spread` around it,
+    and ``count`` the number of parts with an input pixel there.  Each thread works on CHUNK fine pixels at a time
+    with one set of buffers.
     """
     n_rows = out.size
-    n_parts = boxes.shape[0]
     for c in prange((n_rows + CHUNK - 1) // CHUNK):
         v = np.empty(longest)
         w = np.empty(longest)
@@ -129,55 +206,15 @@ def _combine(n_cols, boxes, ptr_start, indptr, indices, weights, values, sigma, 
         dw = np.empty(longest)
         ds = np.empty(longest)
         for o in range(c * CHUNK, min((c + 1) * CHUNK, n_rows)):
-            oy = o // n_cols
-            ox = o - oy * n_cols
-            n = 0
-            reached = 0
-            for p in range(n_parts):
-                by, bx, bny, bnx = boxes[p, 0], boxes[p, 1], boxes[p, 2], boxes[p, 3]
-                if oy < by or oy >= by + bny or ox < bx or ox >= bx + bnx:
-                    continue
-                r = ptr_start[p] + (oy - by) * bnx + (ox - bx)
-                if indptr[r + 1] > indptr[r]:
-                    reached += 1
-                for e in range(indptr[r], indptr[r + 1]):
-                    x = values[indices[e]]
-                    if np.isnan(x) or not weights[e] > 0.0:
-                        continue
-                    _insert(v, w, s, n, x, weights[e], sigma[indices[e]])
-                    n += 1
+            n, reached = _gather_inputs(o, n_cols, boxes, ptr_start, indptr, indices, weights, values, sigma, v, w, s)
             count[o] = reached
+            out[o] = np.nan
             model2[o] = np.nan
             if n == 0:
-                out[o] = np.nan
                 continue
-            if reached < fewest_for_median:
-                num = 0.0
-                den = 0.0
-                for q in range(n):
-                    num += w[q] * v[q]
-                    den += w[q]
-                est = num / den
-            else:
-                est = _sorted_median(v, w, n)
-                if not median_only:
-                    for _ in range(3):
-                        num = 0.0
-                        den = 0.0
-                        for q in range(n):
-                            if abs(v[q] - est) <= 3.0 * s[q]:
-                                num += w[q] * v[q]
-                                den += w[q]
-                        if den > 0.0:
-                            est = num / den
-            out[o] = est
+            out[o] = _combined_value(v, w, s, n, reached, median_only, fewest_for_median)
             if spread and not median_only:
-                for q in range(n):
-                    _insert(dv, dw, ds, q, abs(v[q] - est), w[q], 0.0)
-                mad = _sorted_median(dv, dw, n)
-                for q in range(n):
-                    _insert(dv, dw, ds, q, s[q] * s[q], w[q], 0.0)
-                model2[o] = max(0.0, (1.4826 * mad) ** 2 - _sorted_median(dv, dw, n))
+                model2[o] = _robust_spread(v, w, s, n, out[o], dv, dw, ds)
 
 
 def _combine_parts(parts, shape, values, sigma, median_only, spread=False, fewest_for_median=3):
@@ -288,8 +325,8 @@ def sky_level(model):
 
 
 def _good(model):
-    """The pixels that are used: finite data and error, without the flags of OUTLIER_REJECTED."""
-    return np.isfinite(model.data) & np.isfinite(model.err) & ((model.dq & OUTLIER_REJECTED) == 0)
+    """The pixels that are used: finite data and error, without DO_NOT_USE, as jwst's outlier detection uses them."""
+    return np.isfinite(model.data) & np.isfinite(model.err) & ((model.dq & DO_NOT_USE) == 0)
 
 
 def _tile_ids(x, y, tile, n_tiles, fine_shape):
@@ -335,7 +372,7 @@ class Exposure:
         # the corners as offsets from the center: small, so float32 keeps them to about 1e-7 fine pixel
         self.offsets = (corners - self.centers[:, :, None, :]).astype(np.float32)
         del corners
-        weights = drizzle_weights(model.dq, "ivm", OUTLIER_REJECTED, var_rnoise=model.var_rnoise)
+        weights = drizzle_weights(model.dq, "ivm", DO_NOT_USE, var_rnoise=model.var_rnoise)
         self.weights = np.where(_good(model), weights, 0.0).astype(np.float32)
         weighted = self.weights > 0
         self.sky = sky_level(model)
@@ -346,32 +383,38 @@ class Exposure:
         self.tile_of = _tile_ids(
             self.centers[..., 0], self.centers[..., 1], tile, self.n_tiles, self.fine_shape
         ).astype(np.int32)
-        # the input pixels drizzled into each tile and its halo: the box of the centers within its reach, from the
-        # centers every SAMPLING pixels and every pixel along the exposure's edges, where any small overlap of the
-        # exposure with a tile lies, widened by SAMPLING and MARGIN
-        ny, nx = shape
+        self.regions = self._tile_regions(tile, halo)
+        self.prediction = np.full(shape, np.nan, dtype=np.float32)
+        # made by the first tile that measures the spread, if any
+        self.spread = None
+        self.n_exposures = np.zeros(shape, dtype=np.uint8)
+
+    def _tile_regions(self, tile, halo):
+        """The input pixels drizzled into each tile and its halo, as a dict of tile to region (pair of slices).
+
+        Each region is the box of the centers within the tile's reach, found
+        from the centers every SAMPLING pixels and every pixel along the
+        exposure's edges, where any small overlap of the exposure with a tile
+        lies, widened by SAMPLING and MARGIN.
+        """
+        ny, nx = self.centers.shape[:2]
         lattice_rows, lattice_cols = np.meshgrid(np.r_[0:ny:SAMPLING, ny - 1], np.r_[0:nx:SAMPLING, nx - 1], indexing="ij")
         rows = np.concatenate([lattice_rows.ravel(), np.zeros(nx, int), np.full(nx, ny - 1), np.arange(ny), np.arange(ny)])
         cols = np.concatenate([lattice_cols.ravel(), np.arange(nx), np.arange(nx), np.zeros(ny, int), np.full(ny, nx - 1)])
         sampled = self.centers[rows, cols]
         reach = halo + REACH
         boxes = {}
-        for dx in (-reach, reach):
-            for dy in (-reach, reach):
-                ids = _tile_ids(sampled[:, 0] + dx, sampled[:, 1] + dy, tile, self.n_tiles, self.fine_shape)
-                for t in np.unique(ids[ids >= 0]).tolist():
-                    r, c = rows[ids == t], cols[ids == t]
-                    box = boxes.get(t, (ny, 0, nx, 0))
-                    boxes[t] = (min(box[0], r.min()), max(box[1], r.max()), min(box[2], c.min()), max(box[3], c.max()))
+        for dx, dy in ((-reach, -reach), (-reach, reach), (reach, -reach), (reach, reach)):
+            ids = _tile_ids(sampled[:, 0] + dx, sampled[:, 1] + dy, tile, self.n_tiles, self.fine_shape)
+            for t in np.unique(ids[ids >= 0]).tolist():
+                r, c = rows[ids == t], cols[ids == t]
+                box = boxes.get(t, (ny, 0, nx, 0))
+                boxes[t] = (min(box[0], r.min()), max(box[1], r.max()), min(box[2], c.min()), max(box[3], c.max()))
         pad = SAMPLING + MARGIN
-        self.regions = {
-            t: (slice(max(0, r0 - pad), min(shape[0], r1 + 1 + pad)), slice(max(0, c0 - pad), min(shape[1], c1 + 1 + pad)))
+        return {
+            t: (slice(max(0, r0 - pad), min(ny, r1 + 1 + pad)), slice(max(0, c0 - pad), min(nx, c1 + 1 + pad)))
             for t, (r0, r1, c0, c1) in boxes.items()
         }
-        self.prediction = np.full(shape, np.nan, dtype=np.float32)
-        # made by the first tile that measures the spread, if any
-        self.spread = None
-        self.n_exposures = np.zeros(shape, dtype=np.uint8)
 
     def pixels(self, t, region):
         """The flat indices of the pixels whose centers lie in tile ``t``, all within ``region``."""
@@ -387,50 +430,88 @@ class Exposure:
             return None
         return spizzle.build_operator(triplets, self.jacobian[region], shape, self.weights[region])
 
+    def write_prediction(self, t, region, origin, reference, model2, count):
+        """Write the prediction of the pixels whose centers lie in tile ``t``, from the tile's reference.
+
+        Parameters
+        ----------
+        t : int
+            The tile.
+        region : pair of slice
+            The exposure's region for the tile, which holds those pixels.
+        origin : ndarray
+            The fine (x, y) of the tile's first pixel, halo included.
+        reference, model2, count : ndarray
+            From `_tile_reference`; ``model2`` None leaves the spread alone.
+        """
+        pix = self.pixels(t, region)
+        if pix.size == 0:
+            return
+        positions = self.centers.reshape(-1, 2)[pix][:, None, :] - origin
+        self.prediction.flat[pix] = spizzle.blot(reference, positions)[:, 0] + self.sky
+        if model2 is not None:
+            if self.spread is None:
+                self.spread = np.full(self.prediction.shape, np.nan, dtype=np.float32)
+            self.spread.flat[pix] = np.sqrt(spizzle.blot(model2, positions)[:, 0])
+        self.n_exposures.flat[pix] = np.minimum(_min_count_under_blot(count, positions[:, 0]), 255)
+
+
+def _min_count_under_blot(count, positions):
+    """The fewest of the counts of the 2x2 fine pixels that a blot at each position (x, y) reads."""
+    i = np.clip(np.floor(positions[:, 0]).astype(np.int64), 0, count.shape[1] - 2)
+    j = np.clip(np.floor(positions[:, 1]).astype(np.int64), 0, count.shape[0] - 2)
+    return np.minimum(np.minimum(count[j, i], count[j, i + 1]), np.minimum(count[j + 1, i], count[j + 1, i + 1]))
+
 
 def _tile(exposures, t, tile, halo, correct, spread):
     """Build the reference of tile ``t`` and write the predictions of the exposure pixels whose centers lie in it."""
-    n_tiles = exposures[0].n_tiles
-    fine_shape = exposures[0].fine_shape
-    ty, tx = divmod(t, n_tiles[1])
+    origin, shape = _tile_origin_and_shape(exposures[0], t, tile, halo)
+    users = _exposures_on_tile(exposures, t, origin, shape)
+    if not users:
+        return
+    reference, model2, count = _tile_reference(users, origin, shape, correct, spread)
+    for exposure, region, _ in users:
+        exposure.write_prediction(t, region, origin, reference, model2 if spread else None, count)
+
+
+def _tile_origin_and_shape(exposure, t, tile, halo):
+    """The fine (x, y) of tile ``t``'s first pixel, halo included, and the tile's shape with its halo."""
+    ty, tx = divmod(t, exposure.n_tiles[1])
     origin = np.array([tx * tile - halo, ty * tile - halo], dtype=np.float64)
-    shape = (min(tile, fine_shape[0] - ty * tile) + 2 * halo, min(tile, fine_shape[1] - tx * tile) + 2 * halo)
-    parts, regions, users = [], [], []
+    ny, nx = exposure.fine_shape
+    return origin, (min(tile, ny - ty * tile) + 2 * halo, min(tile, nx - tx * tile) + 2 * halo)
+
+
+def _exposures_on_tile(exposures, t, origin, shape):
+    """The exposures with input pixels on tile ``t``, each with its region and its operator onto the tile."""
+    users = []
     for exposure in exposures:
         region = exposure.regions.get(t)
-        if region is None:
-            continue
-        op = exposure.operator(region, origin, shape)
-        if op is None:
-            continue
-        parts.append(op)
-        regions.append(region)
-        users.append(exposure)
-    if not parts:
-        return
-    values = np.concatenate([(e.data[r] - e.sky).ravel() for e, r in zip(users, regions)])
-    sigma = np.concatenate([e.err[r].ravel() for e, r in zip(users, regions)])
+        op = None if region is None else exposure.operator(region, origin, shape)
+        if op is not None:
+            users.append((exposure, region, op))
+    return users
+
+
+def _tile_reference(users, origin, shape, correct, spread):
+    """The reference of a tile from its users' input pixels, the spread squared and the count of exposures.
+
+    With ``correct``, the users' residuals from the reference, combined by
+    their weighted median, are added where at least three exposures land:
+    with two, the correction would pull the reference toward both, an
+    outlier included.
+    """
+    parts = [op for _, _, op in users]
+    values = np.concatenate([(e.data[r] - e.sky).ravel() for e, r, _ in users])
+    sigma = np.concatenate([e.err[r].ravel() for e, r, _ in users])
     reference, model2, count = _combine_parts(parts, shape, values, sigma, median_only=False, spread=spread)
     if correct:
         residuals = np.concatenate([
-            (e.data[r] - e.sky - spizzle.blot(reference, e.centers[r] - origin)).ravel() for e, r in zip(users, regions)
+            (e.data[r] - e.sky - spizzle.blot(reference, e.centers[r] - origin)).ravel() for e, r, _ in users
         ])
         correction, _, _ = _combine_parts(parts, shape, residuals, sigma, median_only=True)
         reference += np.where(count >= 3, np.nan_to_num(correction), 0.0)
-    for exposure, region in zip(users, regions):
-        pix = exposure.pixels(t, region)
-        if pix.size == 0:
-            continue
-        positions = exposure.centers.reshape(-1, 2)[pix][:, None, :] - origin
-        exposure.prediction.flat[pix] = spizzle.blot(reference, positions)[:, 0] + exposure.sky
-        if spread:
-            if exposure.spread is None:
-                exposure.spread = np.full(exposure.prediction.shape, np.nan, dtype=np.float32)
-            exposure.spread.flat[pix] = np.sqrt(spizzle.blot(model2, positions)[:, 0])
-        i = np.clip(np.floor(positions[:, 0, 0]).astype(np.int64), 0, shape[1] - 2)
-        j = np.clip(np.floor(positions[:, 0, 1]).astype(np.int64), 0, shape[0] - 2)
-        fewest = np.minimum(np.minimum(count[j, i], count[j, i + 1]), np.minimum(count[j + 1, i], count[j + 1, i + 1]))
-        exposure.n_exposures.flat[pix] = np.minimum(fewest, 255)
+    return reference, model2, count
 
 
 def predict(models, mosaic_wcs, oversample=2, pixfrac=0.8, correct=True, tile=1024, halo=4, spread=False):
@@ -563,20 +644,9 @@ class TiledOutlierStep(Step):
             The images with their outliers flagged.
         """
         require("TiledOutlierStep")
-        mode = guess_mode(self, input_data)
-        if mode != "imaging":
-            raise ValueError(f"TiledOutlierStep supports images only, not mode {mode!r}")
-        library = self.prepare_output(input_data, open_models=False)
-        if not isinstance(library, ModelLibrary):
-            library = ModelLibrary(library, on_disk=not self.in_memory)
-        add_asn_id(self, input_data)
-        if len(library) < 2:
-            log.warning(f"Input only contains {len(library)} exposures; outlier detection is skipped")
-            record_step_status(library, "outlier_detection", False)
+        library, enough = _prepare_outlier_inputs(self, input_data)
+        if not enough:
             return library
-
-        snr = [float(v) for v in self.snr.split()]
-        scale = [float(v) for v in self.scale.split()]
         mosaic_wcs = resampled_wcs_from_models(library, pixel_scale_ratio=1.0)[0]
         exposures = []
         with library:
@@ -584,6 +654,8 @@ class TiledOutlierStep(Step):
                 exposures.append(Exposure(model, mosaic_wcs))
                 library.shelve(model, modify=False)
         run(exposures)
+
+        snr, scale = _float_pair(self.snr), _float_pair(self.scale)
         with library:
             for model, exposure in zip(library, exposures):
                 flags = flag_outliers(exposure, snr=snr, scale=scale)

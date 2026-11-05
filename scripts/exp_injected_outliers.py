@@ -78,6 +78,28 @@ def bright_sources(model, good, source_snr=SOURCE_SNR):
     return np.column_stack([ys[order], xs[order]])
 
 
+def place_sites(rng, good, sources, n):
+    """The (y, x, near) of ``n`` good pixels at least 2 pixels apart: up to half 1 to 3 pixels from a source, taken in
+    random order while they fit, and the rest anywhere."""
+    taken = np.zeros_like(good)
+    sites = []
+
+    def take_if_free(y, x, near):
+        if 0 <= y < good.shape[0] and 0 <= x < good.shape[1] and good[y, x] and not taken[y, x]:
+            sites.append((y, x, near))
+            taken[max(0, y - 2):y + 3, max(0, x - 2):x + 3] = True
+
+    offsets = [(dy, dx) for dy in range(-3, 4) for dx in range(-3, 4) if max(abs(dy), abs(dx)) >= 1]
+    candidates = [(y + dy, x + dx) for y, x in sources for dy, dx in offsets]
+    for k in rng.permutation(len(candidates)):
+        if len(sites) >= n // 2:
+            break
+        take_if_free(*candidates[k], True)
+    while len(sites) < n:
+        take_if_free(rng.integers(0, good.shape[0]), rng.integers(0, good.shape[1]), False)
+    return (np.array(v) for v in zip(*sites))
+
+
 def inject(args):
     rng = np.random.default_rng(args.seed)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -86,24 +108,7 @@ def inject(args):
         with datamodels.open(name) as model:
             good = good_pixels(model)
             sources = bright_sources(model, good, args.source_snr)
-            taken = np.zeros_like(good)
-            sites = []
-            # every position 1 to 3 pixels from a source, in random order, while they fit 2 pixels apart
-            offsets = [(dy, dx) for dy in range(-3, 4) for dx in range(-3, 4) if max(abs(dy), abs(dx)) >= 1]
-            candidates = [(y + dy, x + dx) for y, x in sources for dy, dx in offsets]
-            for k in rng.permutation(len(candidates)):
-                if len(sites) >= args.per_exposure // 2:
-                    break
-                y, x = candidates[k]
-                if 0 <= y < good.shape[0] and 0 <= x < good.shape[1] and good[y, x] and not taken[y, x]:
-                    sites.append((y, x, True))
-                    taken[max(0, y - 2):y + 3, max(0, x - 2):x + 3] = True
-            while len(sites) < args.per_exposure:
-                y, x = rng.integers(0, good.shape[0]), rng.integers(0, good.shape[1])
-                if good[y, x] and not taken[y, x]:
-                    sites.append((y, x, False))
-                    taken[max(0, y - 2):y + 3, max(0, x - 2):x + 3] = True
-            ys, xs, near = (np.array(v) for v in zip(*sites))
+            ys, xs, near = place_sites(rng, good, sources, args.per_exposure)
             amp = 10 ** rng.uniform(1.0, 3.0, len(ys))
             model.data[ys, xs] += amp * model.err[ys, xs]
             out = args.out / Path(name).name
@@ -163,61 +168,78 @@ def run_reference(args):
     np.savez_compressed(args.out / "coverage.npz", **{name: e.n_exposures for name, e in zip(names, exposures)})
 
 
+def source_regions(entry, shape, good):
+    """The good pixels more than a pixel from every injected cosmic ray: within 1 pixel of a source (cores), 1 to 8
+    pixels from one (wings), and elsewhere."""
+    injected = np.zeros(shape, dtype=bool)
+    injected[entry["y"], entry["x"]] = True
+    usable = good & ~ndimage.binary_dilation(injected, np.ones((3, 3)))
+    source_map = np.zeros(shape, dtype=bool)
+    if len(entry["sources"]):
+        source_map[entry["sources"][:, 0], entry["sources"][:, 1]] = True
+    cores = ndimage.binary_dilation(source_map, np.ones((3, 3)))
+    wings = ndimage.binary_dilation(source_map, np.ones((17, 17))) & ~cores
+    return {"cores": cores & usable, "wings": wings & usable, "elsewhere": ~cores & ~wings & usable}
+
+
+def count_flagged(stored, catalog, coverage, out):
+    """For one flags file, (flagged, total) of: the injected cosmic rays, those near sources, those covered by each
+    number of exposures (4 for 4 or more), and the other pixels of each region."""
+    counts = {"found": [0, 0], "near": [0, 0], "cover": {}, "cores": [0, 0], "wings": [0, 0], "elsewhere": [0, 0]}
+    for name, entry in catalog.items():
+        with datamodels.open(out / name) as model:
+            shape = model.data.shape
+            good = good_pixels(model)
+        flags = np.unpackbits(stored[name])[: shape[0] * shape[1]].reshape(shape).astype(bool)
+        hit = flags[entry["y"], entry["x"]]
+        add_count(counts["found"], hit)
+        add_count(counts["near"], hit[entry["near"]])
+        if coverage is not None:
+            cover = np.minimum(coverage[name][entry["y"], entry["x"]], 4)
+            for c in np.unique(cover):
+                add_count(counts["cover"].setdefault(int(c), [0, 0]), hit[cover == c])
+        for key, region in source_regions(entry, shape, good).items():
+            add_count(counts[key], flags[region])
+    return counts
+
+
+def add_count(count, flagged):
+    """Add the flagged ones of the boolean array ``flagged``, and its size, to ``count`` = [flagged, total]."""
+    count[0] += flagged.sum()
+    count[1] += flagged.size
+
+
+def flagged_rate(count, per=1.0):
+    return per * count[0] / max(1, count[1])
+
+
 def report(args):
     catalog = load_catalog(args.out)
     coverage = dict(np.load(args.out / "coverage.npz")) if (args.out / "coverage.npz").exists() else None
     rows = []
     for path in sorted(args.out.glob("flags_*.npz")):
         stored = np.load(path)
-        found = near_found = n = n_near = 0
-        by_cover = {}
-        extra = {"cores": [0, 0], "wings": [0, 0], "elsewhere": [0, 0]}
-        for name, entry in catalog.items():
-            with datamodels.open(args.out / name) as model:
-                shape = model.data.shape
-                good = good_pixels(model)
-            flags = np.unpackbits(stored[name])[: shape[0] * shape[1]].reshape(shape).astype(bool)
-            ys, xs, near = entry["y"], entry["x"], entry["near"]
-            hit = flags[ys, xs]
-            found += hit.sum()
-            n += len(ys)
-            near_found += hit[near].sum()
-            n_near += near.sum()
-            if coverage is not None:
-                cover = np.minimum(coverage[name][ys, xs], 4)
-                for c in np.unique(cover):
-                    f, t = by_cover.get(int(c), (0, 0))
-                    by_cover[int(c)] = (f + hit[cover == c].sum(), t + (cover == c).sum())
-            injected = np.zeros(shape, dtype=bool)
-            injected[ys, xs] = True
-            injected = ndimage.binary_dilation(injected, np.ones((3, 3)))
-            source_map = np.zeros(shape, dtype=bool)
-            if len(entry["sources"]):
-                source_map[entry["sources"][:, 0], entry["sources"][:, 1]] = True
-            cores = ndimage.binary_dilation(source_map, np.ones((3, 3)))
-            wings = ndimage.binary_dilation(source_map, np.ones((17, 17))) & ~cores
-            for key, region in (("cores", cores), ("wings", wings), ("elsewhere", ~cores & ~wings)):
-                region = region & good & ~injected
-                extra[key][0] += np.sum(flags & region)
-                extra[key][1] += region.sum()
-        rows.append((path.stem[6:], float(stored["seconds"]), found / n, near_found / max(1, n_near), by_cover, extra))
-    covers = sorted({c for row in rows for c in row[4]})
-    head = " | ".join(f"found where {c}{'+' if c == 4 else ''} cover" for c in covers)
-    print(f"\n{n} cosmic rays injected per method, {n_near} near sources\n")
-    print(f"| method | time | found | near sources | {head} | flagged elsewhere: source cores | wings per 10^4 "
-          "| elsewhere per 10^4 |")
-    print("| --- | ---: | ---: | ---: | " + " | ".join("---:" for _ in covers) + " | ---: | ---: | ---: |")
-    for label, seconds, found, near, by_cover, extra in rows:
-        cells = " | ".join(f"{by_cover[c][0] / max(1, by_cover[c][1]):.1%}" if c in by_cover else "" for c in covers)
-        core = extra["cores"][0] / max(1, extra["cores"][1])
-        wings = 1e4 * extra["wings"][0] / max(1, extra["wings"][1])
-        elsewhere = 1e4 * extra["elsewhere"][0] / max(1, extra["elsewhere"][1])
-        print(f"| {label} | {seconds:.0f} s | {found:.1%} | {near:.1%} | {cells} | {core:.2%} | {wings:.1f} | "
-              f"{elsewhere:.2f} |")
+        rows.append((path.stem[6:], float(stored["seconds"]), count_flagged(stored, catalog, coverage, args.out)))
+    print_table(rows)
     if coverage is not None:
         total = sum(c.size for c in coverage.values())
         shares = np.bincount(np.concatenate([np.minimum(c, 4).ravel() for c in coverage.values()]), minlength=5)
         print("\npixels covered by n exposures:", json.dumps({n: f"{s / total:.1%}" for n, s in enumerate(shares)}))
+
+
+def print_table(rows):
+    """One row per method of (label, seconds, counts of `count_flagged`)."""
+    covers = sorted({c for row in rows for c in row[2]["cover"]})
+    head = " | ".join(f"found where {c}{'+' if c == 4 else ''} cover" for c in covers)
+    print(f"\n{rows[0][2]['found'][1]} cosmic rays injected per method, {rows[0][2]['near'][1]} near sources\n")
+    print(f"| method | time | found | near sources | {head} | flagged elsewhere: source cores | wings per 10^4 "
+          "| elsewhere per 10^4 |")
+    print("| --- | ---: | ---: | ---: | " + " | ".join("---:" for _ in covers) + " | ---: | ---: | ---: |")
+    for label, seconds, counts in rows:
+        cells = " | ".join(f"{flagged_rate(counts['cover'][c]):.1%}" if c in counts["cover"] else "" for c in covers)
+        print(f"| {label} | {seconds:.0f} s | {flagged_rate(counts['found']):.1%} | "
+              f"{flagged_rate(counts['near']):.1%} | {cells} | {flagged_rate(counts['cores']):.2%} | "
+              f"{flagged_rate(counts['wings'], 1e4):.1f} | {flagged_rate(counts['elsewhere'], 1e4):.2f} |")
 
 
 def main():

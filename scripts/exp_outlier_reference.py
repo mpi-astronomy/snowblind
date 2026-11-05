@@ -154,6 +154,19 @@ class Field:
 
 
 @numba.njit
+def _weighted_median_of(x, w):
+    """The weighted median of ``x``, weights ``w``."""
+    order = np.argsort(x)
+    half = 0.5 * w.sum()
+    cum = 0.0
+    for q in order:
+        cum += w[q]
+        if cum >= half:
+            return x[q]
+    return np.nan
+
+
+@numba.njit
 def _weighted_median(indptr, indices, weights, values, out):
     """For each row, the weighted median of the values it lists, NaN values left out."""
     for o in range(out.size):
@@ -166,19 +179,34 @@ def _weighted_median(indptr, indices, weights, values, out):
                 v[k] = values[indices[e]]
                 w[k] = weights[e]
                 k += 1
-        if k == 0:
-            out[o] = np.nan
-            continue
-        v = v[:k]
-        w = w[:k]
-        order = np.argsort(v)
-        half = 0.5 * w.sum()
-        cum = 0.0
-        for q in order:
-            cum += w[q]
-            if cum >= half:
-                out[o] = v[q]
-                break
+        out[o] = _weighted_median_of(v[:k], w[:k]) if k > 0 else np.nan
+
+
+@numba.njit
+def _clip_once(a, b, indices, weights, values, sigma, est):
+    """The weighted mean of the values of entries a to b within 3 sigma of ``est``; ``est`` if there are none."""
+    num = den = 0.0
+    for e in range(a, b):
+        v = values[indices[e]]
+        if not np.isnan(v) and abs(v - est) <= 3.0 * sigma[indices[e]]:
+            num += weights[e] * v
+            den += weights[e]
+    return num / den if den > 0.0 else est
+
+
+@numba.njit
+def _excess_variance(a, b, indices, weights, values, sigma, est):
+    """The weighted variance about ``est`` of the values of entries a to b within 3 sigma of it, minus their weighted
+    mean sigma**2, zero if negative; NaN if there are none."""
+    var = noise = den = 0.0
+    for e in range(a, b):
+        v = values[indices[e]]
+        s = sigma[indices[e]]
+        if not np.isnan(v) and abs(v - est) <= 3.0 * s:
+            var += weights[e] * (v - est) ** 2
+            noise += weights[e] * s * s
+            den += weights[e]
+    return max(0.0, (var - noise) / den) if den > 0.0 else np.nan
 
 
 @numba.njit
@@ -188,30 +216,13 @@ def _clipped_mean(indptr, indices, weights, values, sigma, start, out, model2):
     zero if negative."""
     for o in range(out.size):
         est = start[o]
-        model2[o] = np.nan
         if np.isnan(est):
-            out[o] = np.nan
+            out[o] = model2[o] = np.nan
             continue
         for _ in range(3):
-            num = den = 0.0
-            for e in range(indptr[o], indptr[o + 1]):
-                v = values[indices[e]]
-                if not np.isnan(v) and abs(v - est) <= 3.0 * sigma[indices[e]]:
-                    num += weights[e] * v
-                    den += weights[e]
-            if den > 0.0:
-                est = num / den
+            est = _clip_once(indptr[o], indptr[o + 1], indices, weights, values, sigma, est)
         out[o] = est
-        var = noise = den = 0.0
-        for e in range(indptr[o], indptr[o + 1]):
-            v = values[indices[e]]
-            s = sigma[indices[e]]
-            if not np.isnan(v) and abs(v - est) <= 3.0 * s:
-                var += weights[e] * (v - est) ** 2
-                noise += weights[e] * s * s
-                den += weights[e]
-        if den > 0.0:
-            model2[o] = max(0.0, (var - noise) / den)
+        model2[o] = _excess_variance(indptr[o], indptr[o + 1], indices, weights, values, sigma, est)
 
 
 @numba.njit
@@ -234,17 +245,7 @@ def _robust_spread(indptr, indices, weights, values, sigma, center, out):
         if n == 0:
             out[o] = np.nan
             continue
-        stats = np.empty(2)
-        for t, x in enumerate((dev[:n], noise[:n])):
-            order = np.argsort(x)
-            half = 0.5 * w[:n].sum()
-            cum = 0.0
-            for q in order:
-                cum += w[q]
-                if cum >= half:
-                    stats[t] = x[q]
-                    break
-        out[o] = max(0.0, (1.4826 * stats[0]) ** 2 - stats[1])
+        out[o] = max(0.0, (1.4826 * _weighted_median_of(dev[:n], w[:n])) ** 2 - _weighted_median_of(noise[:n], w[:n]))
 
 
 def reference_today(field, data, sigma):
@@ -418,31 +419,41 @@ def part2(field, seeds, cr_fraction, defaults=False):
           "| next to another exposure's cosmic ray | star wings (1-8 px) | star-core pixels flagged (within 1 px) |")
     print("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
     for name, make, scale in configs:
-        measured = scale in ("measured", "robust")
-        found = n_found = near = n_near = 0
-        flagged = dict.fromkeys(("sky", "near another cosmic ray", "wings", "core"), 0)
-        counted = dict.fromkeys(flagged, 0)
-        for dirty, err, detectable, classes in realizations:
-            ref, s, model2 = make(field, dirty, err)
-            for k in range(field.n_exp):
-                prediction = blot(ref, field.pixmap(k, s))
-                if measured:
-                    model = np.sqrt(blot(model2[scale], field.pixmap(k, s)))
-                    flags = flag_measured(dirty[k], err[k], prediction, model)
-                else:
-                    flags = flag(dirty[k], err[k], prediction, scale)
-                found += np.sum(flags & detectable[k])
-                n_found += np.sum(detectable[k])
-                near += np.sum(flags & detectable[k] & classes[k]["near star"])
-                n_near += np.sum(detectable[k] & classes[k]["near star"])
-                for c in flagged:
-                    flagged[c] += np.sum(flags & classes[k][c])
-                    counted[c] += np.sum(classes[k][c])
-        rate = {c: flagged[c] / counted[c] for c in flagged}
-        tolerance = scale if measured else f"{scale[0]} / {scale[1]}"
+        found, n_found, near, n_near, rate = count_flagged(field, realizations, make, scale)
+        tolerance = scale if isinstance(scale, str) else f"{scale[0]} / {scale[1]}"
         print(f"| {name} | {tolerance} | {found / n_found:.1%} | {near / max(1, n_near):.1%} ({n_near}) | "
               f"{1e4 * rate['sky']:.1f} | {1e4 * rate['near another cosmic ray']:.0f} | {1e4 * rate['wings']:.0f} | "
               f"{rate['core']:.1%} |", flush=True)
+
+
+def flag_exposure(field, k, ref, s, model2, scale, dirty, err):
+    """The pixels of exposure k flagged against the reference blotted onto it: by jwst's rule with the two ``scale``,
+    or with the spread ``model2[scale]`` for "measured" or "robust"."""
+    prediction = blot(ref, field.pixmap(k, s))
+    if isinstance(scale, str):
+        model = np.sqrt(blot(model2[scale], field.pixmap(k, s)))
+        return flag_measured(dirty[k], err[k], prediction, model)
+    return flag(dirty[k], err[k], prediction, scale)
+
+
+def count_flagged(field, realizations, make, scale):
+    """Over all realizations and exposures: the detectable cosmic rays found and their number, those within 3 pixels
+    of a star found and their number, and the fraction of each class of good pixels flagged."""
+    found = n_found = near = n_near = 0
+    flagged = dict.fromkeys(("sky", "near another cosmic ray", "wings", "core"), 0)
+    counted = dict.fromkeys(flagged, 0)
+    for dirty, err, detectable, classes in realizations:
+        ref, s, model2 = make(field, dirty, err)
+        for k in range(field.n_exp):
+            flags = flag_exposure(field, k, ref, s, model2, scale, dirty, err)
+            found += np.sum(flags & detectable[k])
+            n_found += np.sum(detectable[k])
+            near += np.sum(flags & detectable[k] & classes[k]["near star"])
+            n_near += np.sum(detectable[k] & classes[k]["near star"])
+            for c in flagged:
+                flagged[c] += np.sum(flags & classes[k][c])
+                counted[c] += np.sum(classes[k][c])
+    return found, n_found, near, n_near, {c: flagged[c] / counted[c] for c in flagged}
 
 
 def main():
