@@ -51,6 +51,29 @@
   injects cosmic rays into `_cal` files and compares jwst's outlier
   detection with `TiledOutlierStep`'s method.
 
+### Changed
+
+- `snowblind_detector1` no longer runs `JumpPlusStep` after its jump step;
+  `SnowblindStep` is the only snowball hook. With the reset fit, its
+  extra flags took one more good difference out of the ramp of every
+  jump-flagged pixel, the grown snowball halos included, which made the
+  halos noisier in the rate than with the jump step's `expand_large_events`
+  (issue #25).
+- `snowblind_detector1` no longer sets the jump step's
+  `after_jump_flag_time1` to 0: the flagging of the groups after large jumps
+  is left to the jwst defaults and the CRDS parameters, which set it for
+  NIRISS.
+
+### Deprecated
+
+- `JumpPlusStep` warns that it is deprecated and will be removed. The
+  jwst saturation step (since jwst 1.16) flags the group before saturation
+  when its frames may have saturated, the jump step flags a group that a
+  cosmic ray hit partway through, and the ramp fits leave those groups out;
+  the likelihood fits also leave out the difference after a flagged group,
+  and in an OLS fit the jump left there is small. What the step adds is
+  mostly good data.
+
 ## [1.3.0] - 2026-11-03
 
 ### Added

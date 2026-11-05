@@ -6,9 +6,9 @@ jwst pipeline's own: on their own, or as hooks inside the jwst pipelines.
 The pages below describe what each step does, how it differs from the jwst
 step it replaces or adds to, how to run it, and how to choose its settings.
 
-* ``SnowblindStep`` masks the halos of cosmic-ray showers and snowballs, and
-  ``JumpPlusStep`` flags the groups next to jumps and saturation that
-  frame-averaged readouts leave unflagged.
+* ``SnowblindStep`` masks the halos of cosmic-ray showers and snowballs.
+  ``JumpPlusStep``, which flags the groups next to jumps and saturation in
+  frame-averaged readouts, is deprecated.
 * ``OpenPixelStep`` finds open and hot pixels missing from the reference
   bad-pixel mask.
 * ``PersistenceFlagStep`` flags the pixels that saturated in an earlier

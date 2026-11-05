@@ -66,17 +66,18 @@ or, in Python:
 
 The pipeline also sets up the jump step for the two. It runs at 7 sigma
 (the three- and four-group thresholds too), flags the four neighbors of
-jumps above 20 sigma, and leaves the snowball expansion and the flagging
-after jumps to ``SnowblindStep(min_radius=3, after_jumps=5)`` and
-``JumpPlusStep`` as its first post-hooks. At 7 sigma the jump step flags
-what would disturb the stream clean, and the reset fit's own jump search
-(4.5 sigma) finds the fainter jumps on the cleaned ramp; a clean with no
-jump flags at all leaves more striping in the rate image, and 7 sigma
-cleans as well as 5 sigma. These settings take precedence over the CRDS
-parameter references and give way to the caller's
+jumps above 20 sigma, and leaves the snowball expansion to
+``SnowblindStep(min_radius=3, after_jumps=5)`` as its first post-hook; its
+flagging of the groups after large jumps (``after_jump_flag_*``) stays as
+the jwst step and CRDS set it. At
+7 sigma the jump step flags what would disturb the stream clean, and the
+reset fit's own jump search (4.5 sigma) finds the fainter jumps on the
+cleaned ramp; a clean with no jump flags at all leaves more striping in the
+rate image, and 7 sigma cleans as well as 5 sigma. These settings take
+precedence over the CRDS parameter references and give way to the caller's
 (``--steps.jump.rejection_threshold=5``);
 ``--steps.jump.expand_large_events=True`` gives back the jwst snowball
-flagging in place of the two hooks.
+flagging in place of the hook.
 
 Parameters of the reset fit go through the ``ramp_fit`` step
 (``--steps.ramp_fit.reset_calib=my_calib.asdf``), parameters of the stream

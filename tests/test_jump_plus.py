@@ -1,12 +1,26 @@
 import numpy as np
+import pytest
 from stdatamodels.jwst import datamodels
 
 from snowblind import JumpPlusStep
 
+pytestmark = pytest.mark.filterwarnings("ignore:JumpPlusStep is deprecated:DeprecationWarning")
 
 JUMP_DET = datamodels.dqflags.group['JUMP_DET']
 GOOD = datamodels.dqflags.group['GOOD']
 SATURATED = datamodels.dqflags.group["SATURATED"]
+
+
+def test_process_warns_deprecated():
+    """JumpPlusStep().process on a ramp with nframes=8 raises a DeprecationWarning.
+
+    process is called directly because stpipe sends warnings raised during a run to its log.
+    """
+    im = datamodels.RampModel((1, 3, 4, 4))
+    im.meta.exposure.nframes = 8
+
+    with pytest.warns(DeprecationWarning, match="JumpPlusStep is deprecated"):
+        JumpPlusStep().process(im)
 
 
 def test_init():
