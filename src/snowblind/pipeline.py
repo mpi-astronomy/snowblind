@@ -6,8 +6,8 @@ parameter of the jwst pipeline, including the parameters CRDS holds for
 it, and makes two substitutions: `StreamCleanStep` runs as a post-hook of
 the jump step with the jwst flicker step skipped, and `ResetRampFitStep`
 takes the ramp-fit slot.  The jump step gets its own defaults for these
-two (`JUMP_DEFAULTS`, with `SnowblindStep` and `JumpPlusStep` as its first
-post-hooks), and the reference-pixel step runs with SIRS
+two (`JUMP_DEFAULTS`, with `SnowblindStep` as its first post-hook), and the
+reference-pixel step runs with SIRS
 (`REFPIX_DEFAULTS`), whose output the stream clean is matched to.  The superbias slot holds `snowblind.superbias.SuperBiasStep`,
 the jwst step without the zeroframe zeros its subtraction makes.  It runs
 as ``strun snowblind_detector1`` or through `Detector1Pipeline.call`.
@@ -16,7 +16,6 @@ import logging
 
 from jwst.pipeline import Detector1Pipeline as JwstDetector1Pipeline
 
-from .jump_plus import JumpPlusStep
 from .reset_rampfit import ResetRampFitStep
 from .snowblind import SnowblindStep
 from .stream_clean import StreamCleanStep
@@ -27,16 +26,15 @@ __all__ = ["Detector1Pipeline"]
 log = logging.getLogger(__name__)
 
 # The jump step's parameters ahead of the stream clean and the reset fit: at 7 sigma it flags what would disturb
-# the stream clean, SnowblindStep and JumpPlusStep take over its snowball expansion and after-jump flagging, and
-# the reset fit's own jump search (4.5 sigma) finds the fainter jumps on the cleaned ramp.  They take precedence
-# over the CRDS parameter references and give way to the caller's parameters.
+# the stream clean, SnowblindStep takes over its snowball expansion, and the reset fit's own jump search
+# (4.5 sigma) finds the fainter jumps on the cleaned ramp.  They take precedence over the CRDS parameter references
+# and give way to the caller's parameters.
 JUMP_DEFAULTS = {
     "rejection_threshold": 7.0,
     "three_group_rejection_threshold": 7.0,
     "four_group_rejection_threshold": 7.0,
     "flag_4_neighbors": True,
     "min_jump_to_flag_neighbors": 20.0,
-    "after_jump_flag_time1": 0.0,
     "expand_large_events": False,
 }
 
@@ -55,7 +53,6 @@ STEP_DEFAULTS = {
 # The jump step's post-hooks in place of its expand_large_events, in their order
 SNOWBALL_HOOKS = (
     (SnowblindStep, "snowblind.SnowblindStep(min_radius=3, after_jumps=5)"),
-    (JumpPlusStep, "snowblind.JumpPlusStep"),
 )
 
 
@@ -74,12 +71,12 @@ class Detector1Pipeline(JwstDetector1Pipeline):
     ``--reset_fit=False``, which gives the jwst step back.
 
     The reference-pixel step runs with SIRS (`REFPIX_DEFAULTS`) and the jump
-    step with `JUMP_DEFAULTS` (7 sigma, no large-event expansion or
-    after-jump flagging), over the CRDS parameters; with
-    ``expand_large_events`` off `SnowblindStep` and `JumpPlusStep` are its
-    first post-hooks; the caller's ``--steps.refpix...`` and
-    ``--steps.jump...`` parameters still win, and ``--steps.jump.expand_large_events=True`` gives the jwst
-    snowball flagging back instead of the two hooks.
+    step with `JUMP_DEFAULTS` (7 sigma, no large-event expansion), over the
+    CRDS parameters; with
+    ``expand_large_events`` off `SnowblindStep` is its first post-hook; the
+    caller's ``--steps.refpix...`` and ``--steps.jump...`` parameters still
+    win, and ``--steps.jump.expand_large_events=True`` gives the jwst
+    snowball flagging back instead of the hook.
 
     The ``superbias`` slot holds `snowblind.superbias.SuperBiasStep`, the
     jwst step, which also keeps the zeroframe pixels its subtraction makes
@@ -106,8 +103,8 @@ class Detector1Pipeline(JwstDetector1Pipeline):
             Passed to the jwst pipeline.  The ``refpix`` and ``jump``
             entries of the ``steps`` mapping get each parameter of
             `STEP_DEFAULTS` they do not hold, and the ``jump`` entry, while ``expand_large_events`` is off, a
-            `SnowblindStep` and a `JumpPlusStep` in ``post_hooks`` unless
-            one is there already, ahead of a stream clean listed there.
+            `SnowblindStep` in ``post_hooks`` unless one is there already,
+            ahead of a stream clean listed there.
             ``expand_large_events`` must be a boolean, or the string of
             one that strun or a config file gives (``"True"``,
             ``"False"``); the jump step's validation rejects anything else.

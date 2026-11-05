@@ -10,12 +10,16 @@ from snowblind import Detector1Pipeline, ResetRampFitStep, StreamCleanStep
 from snowblind.superbias import SuperBiasStep
 
 SNOWBLIND_HOOK = "snowblind.SnowblindStep(min_radius=3, after_jumps=5)"
-JUMP_PLUS_HOOK = "snowblind.JumpPlusStep"
 
 
 def crds_jump_threshold_of_4(cls, dataset, disable=None, crds_observatory=None):
     """Stand-in for the jwst pipeline's CRDS parameters: a jump section with rejection_threshold 4."""
     return ConfigObj({"steps": {"jump": {"rejection_threshold": 4.0}}})
+
+
+def crds_after_jump_flag_90_seconds(cls, dataset, disable=None, crds_observatory=None):
+    """Stand-in for the jwst pipeline's CRDS parameters: a jump section with after_jump_flag_time1 90."""
+    return ConfigObj({"steps": {"jump": {"after_jump_flag_time1": 90.0}}})
 
 
 def crds_refpix_median(cls, dataset, disable=None, crds_observatory=None):
@@ -51,12 +55,12 @@ def test_pipeline_hooks_the_stream_clean_after_jump_and_skips_the_jwst_flicker_s
 
 
 def test_pipeline_keeps_a_stream_clean_hook_the_caller_gave():
-    """Detector1Pipeline(steps=...) with a stream clean hook string keeps it after the snowball hooks, with no second one."""
+    """Detector1Pipeline(steps=...) with a stream clean hook string keeps it after the snowball hook, with no second one."""
     hook = "snowblind.StreamCleanStep(background_method='median')"
 
     pipeline = Detector1Pipeline(steps={"jump": {"post_hooks": [hook]}})
 
-    assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, JUMP_PLUS_HOOK, hook]
+    assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, hook]
 
 
 def test_pipeline_uses_the_jwst_pipeline_parameter_reference():
@@ -73,10 +77,10 @@ def test_pipeline_without_reset_fit_keeps_the_jwst_ramp_fit():
 
 
 def test_pipeline_without_stream_clean_adds_no_stream_clean_hook():
-    """Detector1Pipeline(stream_clean=False) with the flicker step on gives jump the snowball hooks alone and the step on."""
+    """Detector1Pipeline(stream_clean=False) with the flicker step on gives jump the snowball hook alone and the step on."""
     pipeline = Detector1Pipeline(stream_clean=False, steps={"clean_flicker_noise": {"skip": False}})
 
-    assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, JUMP_PLUS_HOOK]
+    assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK]
     assert pipeline.clean_flicker_noise.skip is False
 
 
@@ -86,7 +90,7 @@ def test_pipeline_accepts_a_single_hook_string():
 
     pipeline = Detector1Pipeline(steps={"jump": {"post_hooks": hook}})
 
-    assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, JUMP_PLUS_HOOK, hook]
+    assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, hook]
 
 
 def test_pipeline_without_reset_fit_drops_the_reset_parameters_from_the_ramp_fit_section():
@@ -125,18 +129,11 @@ def test_pipeline_switches_off_the_jump_steps_large_event_expansion():
     assert pipeline.jump.expand_large_events is False
 
 
-def test_pipeline_hooks_snowblind_and_jump_plus_ahead_of_the_stream_clean():
-    """Detector1Pipeline() has SnowblindStep(min_radius=3, after_jumps=5), JumpPlusStep, StreamCleanStep as jump post hooks."""
+def test_pipeline_hooks_snowblind_ahead_of_the_stream_clean():
+    """Detector1Pipeline() has SnowblindStep(min_radius=3, after_jumps=5) and StreamCleanStep as its jump post hooks."""
     pipeline = Detector1Pipeline()
 
-    assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, JUMP_PLUS_HOOK, StreamCleanStep]
-
-
-def test_pipeline_puts_a_missing_snowblind_hook_ahead_of_the_callers_jump_plus():
-    """Detector1Pipeline(steps=...) with post_hooks of JumpPlusStep alone puts the SnowblindStep hook before it."""
-    pipeline = Detector1Pipeline(steps={"jump": {"post_hooks": [JUMP_PLUS_HOOK]}})
-
-    assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, JUMP_PLUS_HOOK, StreamCleanStep]
+    assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, StreamCleanStep]
 
 
 def test_pipeline_keeps_a_jump_threshold_the_caller_gave():
@@ -154,10 +151,10 @@ def test_pipeline_with_large_event_expansion_adds_no_snowball_hooks():
 
 
 def test_pipeline_with_large_event_expansion_off_as_a_string_adds_the_snowball_hooks():
-    """Detector1Pipeline(steps=...) with expand_large_events "False", as strun gives it, adds the snowball hooks."""
+    """Detector1Pipeline(steps=...) with expand_large_events "False", as strun gives it, adds the snowball hook."""
     pipeline = Detector1Pipeline(steps={"jump": {"expand_large_events": "False"}})
 
-    assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, JUMP_PLUS_HOOK, StreamCleanStep]
+    assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, StreamCleanStep]
 
 
 def test_pipeline_with_a_mistyped_large_event_expansion_raises():
@@ -173,6 +170,15 @@ def test_config_from_reference_puts_the_jump_defaults_over_crds(monkeypatch):
     config = Detector1Pipeline.get_config_from_reference({}, crds_observatory="jwst")
 
     assert config["steps"]["jump"]["rejection_threshold"] == 7.0
+
+
+def test_config_from_reference_keeps_the_crds_after_jump_flagging(monkeypatch):
+    """Detector1Pipeline.get_config_from_reference over CRDS parameters with after_jump_flag_time1 90 returns 90."""
+    monkeypatch.setattr(JwstDetector1Pipeline, "get_config_from_reference", classmethod(crds_after_jump_flag_90_seconds))
+
+    config = Detector1Pipeline.get_config_from_reference({}, crds_observatory="jwst")
+
+    assert config["steps"]["jump"]["after_jump_flag_time1"] == 90.0
 
 
 def test_config_from_reference_puts_sirs_over_crds(monkeypatch):

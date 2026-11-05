@@ -1,4 +1,6 @@
 import logging
+import warnings
+
 import numpy as np
 from jwst import datamodels
 from .step import Step
@@ -9,9 +11,23 @@ log = logging.getLogger(__name__)
 JUMP_DET = datamodels.dqflags.group["JUMP_DET"]
 SATURATED = datamodels.dqflags.group["SATURATED"]
 
+DEPRECATION_MESSAGE = (
+    "JumpPlusStep is deprecated and will be removed in a future release. The jwst saturation step flags the "
+    "group before saturation in frame-averaged readouts (since jwst 1.16), the likelihood ramp fits leave out "
+    "both differences next to a flagged group, and in an OLS fit the jump left in the next difference is small, "
+    "so the step mostly removes good data."
+)
+
 
 class JumpPlusStep(Step):
     """Updates groupdq by propagating jumps in group N to group N+1
+
+    Deprecated: the jwst saturation step (since jwst 1.16) flags the group
+    before saturation when its frames may have saturated, and the jump step
+    flags a group that a cosmic ray hit partway through; the likelihood ramp
+    fits (``ResetRampFitStep``, jwst ``LIKELY``) leave out both differences
+    next to a flagged group, and ``OLS_C`` drops the one-group segment that
+    leaves.  What this step adds is mostly good data taken out of the fit.
 
     For NIR readout modes that average together more than one frames
     per group, i.e NFRAMES > 1, this propagates the detected JUMPS to
@@ -49,6 +65,8 @@ class JumpPlusStep(Step):
             alone: stpipe resets it only for a step without a parent, so a hook
             that set it would skip every later run of its pipeline.
         """
+        warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning, stacklevel=2)
+        log.warning(DEPRECATION_MESSAGE)
         with datamodels.open(input_data) as jump:
             # If there is more than one frame averaged into a group,
             # then jumps events are to be flagged for 2 frames

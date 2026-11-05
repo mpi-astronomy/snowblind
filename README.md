@@ -14,10 +14,11 @@ each step works and how to choose its settings.
   saturated core. It replaces the jump step's `expand_large_events`, which
   draws circles or ellipses around them, and works on rate products as well
   as ramps, so it can be applied after the fact.
-- **`JumpPlusStep`** flags, in readouts that average several frames per
-  group, the group after each jump and the group before saturation, which
-  the jwst jump and saturation steps leave unflagged. It replaces the jump
-  step's `after_jump_flag` settings.
+- **`JumpPlusStep`** is deprecated and will be removed. It flags, in
+  readouts that average several frames per group, the group after each jump
+  and the group before saturation; the jwst saturation step (since jwst
+  1.16) and jump step flag the groups that need it and the ramp fits leave
+  them out, so the step mostly removes good data.
 - **`PersistenceFlagStep`** flags the pixels that saturated in an earlier
   exposure of the same detector, for a time measured for each detector and
   packaged with snowblind. The jwst `persistence` step (as of jwst 3.0)
@@ -71,14 +72,14 @@ to):
 
     strun snowblind_detector1 jw..._uncal.fits
 
-Or add only the snowball and jump steps to the jwst pipeline, as hooks after
-its jump step:
+Or add only the snowball masking to the jwst pipeline, as a hook after its
+jump step:
 
 ```python
 from jwst.pipeline import Detector1Pipeline
-from snowblind import JumpPlusStep, SnowblindStep
+from snowblind import SnowblindStep
 
-steps = {"jump": {"expand_large_events": False, "post_hooks": [SnowblindStep, JumpPlusStep]}}
+steps = {"jump": {"expand_large_events": False, "post_hooks": [SnowblindStep]}}
 Detector1Pipeline.call("jw..._uncal.fits", steps=steps, save_results=True)
 ```
 

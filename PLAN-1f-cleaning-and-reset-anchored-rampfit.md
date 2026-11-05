@@ -5377,3 +5377,62 @@ packaged from that.
 - The figures of docs/persistence.rst come from these files
   (`python scripts/make_persistence_figures.py`); the decay figure shows
   NRCALONG only, its faint-pixel panel dropped as too much for user docs.
+
+### 2026-11-05: JumpPlusStep after SnowblindStep made the snowball halos noisier (issue #25)
+
+Issue #25: snowball halos are noisier in the rate with `SnowblindStep` than
+with the jump step's `expand_large_events`. Measured on CEERS F444W MEDIUM8
+NRCALONG exposure 00001 (9 groups, 8 differences), one pre-jump ramp, one
+stream clean, every flag set fitted on the same cleaned cube with
+`ResetRampFitStep` and with the jwst `OLS_C` fit. Flag sets: A the jump step
+with `expand_large_events=True` (what `snowblind_detector1
+--steps.jump.expand_large_events=True` runs, with no hooks); B
+`SnowblindStep(min_radius=3, after_jumps=5)` alone; C B plus `JumpPlusStep`
+(the pipeline default until now); D A plus `JumpPlusStep`. "Kept" is the
+median number of differences the likelihood fit uses (stcal
+`determine_diffs2use`: both groups of a difference without any flag); "ERR"
+is the median over the pixels of the reset fit's rate ERR divided by A's.
+
+| pixels | count | kept A / B / C / D | ERR B / C / D |
+|---|---|---|---|
+| halo flagged by both methods | 7,444 | 6 / 6 / 5 / 5 | 1.00 / 1.09 / 1.09 |
+| every other jump-flagged pixel | 534,592 | 6 / 6 / 5 / 5 | 1.00 / 1.09 / 1.09 |
+| halo flagged by SnowblindStep only | 12,541 | 8 / 6 / 5 / 8 | 1.14 / 1.24 / 1.00 |
+| SnowblindStep ring (flagged in 2+ groups) | 7,491 | 6 / 5 / 4 / 5 | 1.09 / 1.15 / 1.00 |
+
+- SnowblindStep flags the halo in the jump group only, like the jump step;
+  `JumpPlusStep`'s copy of every JUMP_DET flag into the next group is the
+  whole difference where both methods flag. The OLS fit shows the same
+  (+8%). The jump step's expansion covers more pixels on this exposure
+  (38,462 against 28,546), so the halo area is not the cause.
+- The copy removes no jump signal under the reset fit: the mean rate change
+  in the halo is 0.02 ERR or less, with no excess of upward changes. Under
+  OLS, leaving it out raises the share of single-jump pixels more than 1
+  ERR high over the share more than 1 ERR low by up to 1.6 percentage
+  points (mean +0.04 ERR): the jump left in the difference after the jump
+  group is below the jump threshold.
+- History: the forward copy (2023-08-11) was for OLS, where a flag on group
+  N leaves out only the difference before it; stcal's jump detection has
+  no frame-averaging logic, then or now. The copy of SATURATED into the
+  group before (2023-08-29/30) predates stcal 1.9.0's backward pass with
+  the dilution factor (2024-07, DO_NOT_USE since 2024-11), on by default
+  in jwst 1.16.0 (`use_readpatt`, JP-3593, 2024-09). Of the 3,338 groups
+  the copy marked here, 364 were already DO_NOT_USE, 1,512 JUMP_DET (a
+  cosmic ray partway through the group; the likelihood fit drops it, OLS_C
+  drops the one-group segment it leaves) and 1,462 unflagged; those look
+  undamaged (the difference into them, less the median of the pixel's
+  earlier differences, has the spread of unflagged pixels at the same
+  group).
+- Done: `JumpPlusStep` deprecated and taken out of `snowblind_detector1`,
+  which also no longer sets `after_jump_flag_time1=0`: the jump step's
+  flagging of groups after large jumps is the jwst default and CRDS's
+  (1000 DN for 90 s on NIRISS, which is two groups of a NIS readout; off
+  for NIRCam).
+- To revisit: whether that flagging makes sense. It flags JUMP_DET on the
+  next floor(time / group time) groups after a jump above the DN threshold,
+  within the integration only. Test on a NIRISS exposure whether the
+  differences after jumps above 1000 DN sit above the pixel's median
+  difference more than after smaller jumps, and what the extra groups cost
+  under the reset fit (each one more difference).
+- Scripts and flags: results/2026-11-05_jump_plus_halos/ (`run_variants.py`
+  rebuilds the ramp and the fits, about 10 minutes).
