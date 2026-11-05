@@ -9,16 +9,12 @@ each step works and how to choose its settings.
 
 ## What it provides
 
+### Steps
 - **`SnowblindStep`** masks the halos of cosmic-ray showers and snowballs by
   growing the shape of each jump-flagged region and the ring around its
   saturated core. It replaces the jump step's `expand_large_events`, which
   draws circles or ellipses around them, and works on rate products as well
   as ramps, so it can be applied after the fact.
-- **`JumpPlusStep`** is deprecated and will be removed. It flags, in
-  readouts that average several frames per group, the group after each jump
-  and the group before saturation; the jwst saturation step (since jwst
-  1.16) and jump step flag the groups that need it and the ramp fits leave
-  them out, so the step mostly removes good data.
 - **`PersistenceFlagStep`** flags the pixels that saturated in an earlier
   exposure of the same detector, for a time measured for each detector and
   packaged with snowblind. The jwst `persistence` step (as of jwst 3.0)
@@ -35,10 +31,11 @@ each step works and how to choose its settings.
 - **`ResetRampFitStep`** is the jwst likelihood ramp fit with the reset
   level as an extra point at the start, so pixels with only one unsaturated
   group, such as the cores of bright stars, still get a rate.
-- **`snowblind_detector1`** is `calwebb_detector1` with the stream clean,
-  the reset likelihood ramp fit and the snowball and jump steps in place,
-  and the SIRS reference-pixel correction. It works as a drop-in
-  replacement.
+- **~`JumpPlusStep`~** <mark>is deprecated</mark> and will be removed. It flags, in
+  readouts that average several frames per group, the group after each jump
+  and the group before saturation; the jwst saturation step (since jwst
+  1.16) and jump step flag the groups that need it and the ramp fits leave
+  them out, so the step mostly removes good data.
 - **`SparseResampleStep`** and **`SparseOutlierDetectionStep`** are the jwst
   resample and outlier detection steps for images with drizzle replaced by
   [spizzle](https://github.com/mpi-astronomy/spizzle). The mosaic's
@@ -50,9 +47,15 @@ each step works and how to choose its settings.
   pixels, so it resolves undersampled star cores: it finds more cosmic rays
   near stars and flags far fewer star cores than the jwst step, with the
   same settings for every filter, and never allocates a mosaic-sized array.
+
+### Pipelines
+- **`snowblind_detector1`** is `calwebb_detector1` with StreamCleanStep,
+  SnowblindStep and ResetRampFitStep in place, and the SIRS reference-pixel
+  correction turned on. It works as a drop-in replacement.
 - **`snowblind_image3`** is `calwebb_image3` with `TiledOutlierStep` and
   `SparseResampleStep` in place (`--outlier_step=sparse_outlier` uses
-  `SparseOutlierDetectionStep` for the outliers).
+  `SparseOutlierDetectionStep` for the outliers).  Also a drop-in
+  replacement.
 
 ## Installation
 
