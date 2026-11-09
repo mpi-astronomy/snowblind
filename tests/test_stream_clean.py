@@ -31,6 +31,7 @@ from snowblind.stream_clean import (
     reference_scale,
     slope_per_group,
     unusable_in_flat,
+    trace_geometry,
 )
 
 
@@ -1022,25 +1023,71 @@ def test_step_removes_only_the_offsets_on_a_grism_dispersing_along_the_stream(tm
 
 
 @pytest.mark.parametrize(
-    ("allow", "fit_method"),
-    [(None, "none"), (False, "none"), (True, "row_median")],
+    ("fit_method", "expected"),
+    [("auto", "none"), ("none", "none"), ("row_median", "row_median")],
 )
-def test_step_runs_the_stream_filter_on_gr150r_only_when_allowed(tmp_path, allow, fit_method):
-    """StreamCleanStep on a GR150R ramp uses fit_method none unless allow_dispersion_along_stream is True."""
-    step, out = _run_wfss_step(tmp_path, filter_name="GR150R", allow_dispersion_along_stream=allow)
+def test_step_fit_method_on_gr150r(tmp_path, fit_method, expected):
+    """StreamCleanStep on a GR150R ramp resolves fit_method auto to none and runs a named filter."""
+    step, out = _run_wfss_step(tmp_path, filter_name="GR150R", fit_method=fit_method)
 
-    assert step._fit_method == fit_method
-    assert step.allow_dispersion_along_stream is allow
+    assert step._fit_method == expected
     assert out.meta.cal_step.stream_clean == "COMPLETE"
 
 
-def test_step_allow_dispersion_along_stream_defaults_to_none():
-    """StreamCleanStep() has allow_dispersion_along_stream None."""
-    assert StreamCleanStep().allow_dispersion_along_stream is None
+@pytest.mark.parametrize(
+    ("exposure_type", "instrument", "filter_name", "pupil", "expected"),
+    [
+        ("NIS_WFSS", "NIRISS", "GR150C", "F200W", "wiener"),
+        ("NRC_WFSS", "NIRCAM", "F356W", "GRISMC", "wiener"),
+        ("NRC_WFSS", "NIRCAM", "F356W", "GRISMR", "none"),
+        ("NIS_IMAGE", "NIRISS", "CLEAR", "F200W", "wiener"),
+    ],
+)
+def test_step_resolves_fit_method_auto_from_the_grism_geometry(
+    tmp_path, exposure_type, instrument, filter_name, pupil, expected
+):
+    """StreamCleanStep resolves fit_method auto to none only for a grism that disperses along the stream."""
+    model = make_ramp_model()
+    model.meta.instrument.name = instrument
+    model.meta.instrument.filter = filter_name
+    model.meta.instrument.pupil = pupil
+    model.meta.exposure.type = exposure_type
+
+    fit_method, _, _ = StreamCleanStep()._resolve_options(trace_geometry(model), dispersion_along_stream(model))
+
+    assert fit_method == expected
+
+
+def test_step_allow_dispersion_along_stream_is_deprecated_and_means_wiener():
+    """StreamCleanStep with allow_dispersion_along_stream=True warns of the deprecation and resolves auto to wiener on GR150R."""
+    step = StreamCleanStep(allow_dispersion_along_stream=True)
+
+    with pytest.warns(DeprecationWarning, match="allow_dispersion_along_stream is deprecated"):
+        fit_method, column_offsets, even_odd = step._resolve_options("along_stream", "NIRISS GR150R")
+
+    assert (fit_method, column_offsets, even_odd) == ("wiener", True, True)
+
+
+def test_step_named_fit_method_beats_the_deprecated_allow_dispersion_along_stream():
+    """StreamCleanStep with fit_method='row_median' and allow_dispersion_along_stream=False on GR150R runs row_median."""
+    step = StreamCleanStep(fit_method="row_median", allow_dispersion_along_stream=False)
+
+    with pytest.warns(DeprecationWarning):
+        fit_method, _, _ = step._resolve_options("along_stream", "NIRISS GR150R")
+
+    assert fit_method == "row_median"
+
+
+def test_step_fit_method_defaults_to_auto_and_allow_dispersion_along_stream_to_none():
+    """StreamCleanStep() has fit_method auto and allow_dispersion_along_stream None."""
+    step = StreamCleanStep()
+
+    assert step.fit_method == "auto"
+    assert step.allow_dispersion_along_stream is None
 
 
 def test_step_cleans_a_stream_parallel_grism_when_allowed(tmp_path):
-    """StreamCleanStep.call on a GR150R ramp with allow_dispersion_along_stream=True and a user mask completes."""
+    """StreamCleanStep.call on a GR150R ramp with fit_method row_median and a user mask completes."""
     model = make_ramp_model()
     model.meta.instrument.name = "NIRISS"
     model.meta.instrument.detector = "NIS"
@@ -1050,7 +1097,7 @@ def test_step_cleans_a_stream_parallel_grism_when_allowed(tmp_path):
 
     result = StreamCleanStep.call(
         model, apply_flat_field=False, fit_method="row_median", user_mask=str(tmp_path / "mask.fits"),
-        background_method="median", allow_dispersion_along_stream=True,
+        background_method="median",
     )
 
     assert result.meta.cal_step.stream_clean == "COMPLETE"

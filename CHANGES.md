@@ -4,8 +4,10 @@
 
 ### Added
 
-- `StreamCleanStep` accepts `fit_method='none'`: no stream filter, only the
-  even-odd and column offsets (issue #37).
+- `StreamCleanStep` accepts `fit_method='none'`, no stream filter and only
+  the even-odd and column offsets, and `fit_method='auto'`, now the default:
+  `'wiener'`, except `'none'` on a grism that disperses along the readout
+  stream (issue #37).
 - `SparseResampleStep` (`sparse_resample`): the jwst resample step for
   images with drizzle replaced by spizzle, which builds each exposure's
   square-kernel weights once as a sparse matrix and sums in double
@@ -64,11 +66,10 @@
   exposures, where it used to be on. The step no longer rewrites its own
   parameters (issue #37).
 - `StreamCleanStep` no longer skips a grism that disperses along the readout
-  stream unless `allow_dispersion_along_stream` is set; it runs with
-  `fit_method='none'`, which removes the even-odd and column offsets and no
-  stream noise, and warns. `allow_dispersion_along_stream=True` runs the
-  stream filter as before. `allow_dispersion_along_stream` now defaults to
-  `None`, which is `False` on those grisms.
+  stream (NIRISS GR150R, NIRCam GRISMR). `fit_method='auto'` runs it with
+  `'none'`, which removes the even-odd and column offsets and no stream
+  noise. Naming `'wiener'` or `'row_median'` runs that filter there, with a
+  warning, as `allow_dispersion_along_stream=True` did.
 - `snowblind_detector1` no longer runs `JumpPlusStep` after its jump step;
   `SnowblindStep` is the only snowball hook. With the reset fit, its
   extra flags took one more good difference out of the ramp of every
@@ -82,6 +83,10 @@
 
 ### Deprecated
 
+- `StreamCleanStep`'s `allow_dispersion_along_stream` warns that it is
+  deprecated and will be removed. `True` still resolves `fit_method='auto'`
+  to `'wiener'` on a grism that disperses along the readout stream; name
+  the `fit_method` instead.
 - `JumpPlusStep` warns that it is deprecated and will be removed. The
   jwst saturation step (since jwst 1.16) flags the group before saturation
   when its frames may have saturated, the jump step flags a group that a

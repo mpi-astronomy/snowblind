@@ -203,8 +203,8 @@ Dispersed (WFSS) exposures
    them off where the traces run along the columns (NIRISS GR150C, NIRCam
    GRISMC); see `Dispersed exposures`_. Grisms that disperse along the
    readout stream (NIRISS GR150R, NIRCam GRISMR) get no stream filter
-   (``fit_method='none'``, only the offsets) unless
-   ``allow_dispersion_along_stream`` is set.
+   (``fit_method='auto'`` is ``'none'`` there, only the offsets) unless
+   ``fit_method`` names ``'wiener'`` or ``'row_median'``.
 
 Detectors or epochs the packaged calibration does not cover
    Measure your own reset calibration from dark ramps of the detector
@@ -625,10 +625,11 @@ the stream, where a trace is a feature of a few hundred to over a
 thousand pixel times, with its continuum shape and emission lines at the
 scales the filter treats as noise. Faint traces and trace wings under the
 mask's threshold would lose their spectral shape, a bias no sky
-statistic shows, so the step runs those exposures with ``fit_method='none'``
-and a warning: no stream filter, only the even-odd and column offsets, so
-the 1/f noise stays in the data. ``allow_dispersion_along_stream=True``
-runs the filter chosen by ``fit_method`` at that risk. The decision is
+statistic shows, so ``fit_method='auto'``, the default, is ``'none'`` on
+those exposures: no stream filter, only the even-odd and column offsets, so
+the 1/f noise stays in the data. Naming ``'wiener'`` or ``'row_median'``
+runs that filter at that risk, with a warning. (``allow_dispersion_along_stream``,
+which used to do this, is deprecated and will be removed.) The decision is
 made from the filter and pupil keywords.
 
 Where the reference does not match the shape of the sky along the
