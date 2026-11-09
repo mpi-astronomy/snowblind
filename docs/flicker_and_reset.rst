@@ -161,9 +161,12 @@ calibration with the reset offset anchored to each exposure's own sky.
 What to change for other data:
 
 Darks
-   ``background_method=None``. The filter then removes all structure
-   slower than its cutoff, which on a dark is all 1/f noise; a
-   background model would hand the slow part of it back.
+   The default works. The median is one number per difference, put back
+   after the clean, so the rate keeps the dark current while the 1/f
+   noise is removed as with ``background_method=None``, which also
+   removes each column's mean level and the dark current with it. A
+   background model (``integration_model``) would hand the slow part of
+   the 1/f noise back.
 
 Sky-limited imaging (the default)
    ``background_method='median'``, one number per difference. Sparse
@@ -289,7 +292,10 @@ scene mask, the background model (fitted to the least-squares slope
 image and scaled to each difference by its time) and the filter are the
 same for every difference, and the even-odd and column offsets are masked
 means. The whole clean is one linear operation on the ramp and cannot
-add noise to the rate.
+add noise to the rate. The default scalar median background is measured
+on each difference, but it is added back after the clean, so it sets
+only the level of the difference, and the pixels it clips stay in the
+mask the noise is fitted on.
 
 .. figure:: figures/dark_rate_images.png
    :width: 100%
@@ -298,9 +304,9 @@ add noise to the rate.
    short-wavelength dark, fitted with OLS_C, after the median
    reference-pixel correction, SIRS, SIRS with the jwst
    ``clean_flicker_noise`` step (median method) and SIRS with the stream
-   clean, both cleaning steps with no background model, as is right on a
-   dark. Stretch +- 2.5 sigma about the median. The jwst step removes the
-   banding from every group difference, yet the rate image keeps about as
+   clean, both cleaning steps with ``background_method=None``. Stretch
+   +- 2.5 sigma about the median. The jwst step removes the banding from
+   every group difference, yet the rate image keeps about as
    much row structure as with SIRS alone: over 20 groups the
    per-difference medians accumulate into as much as they removed. The
    stream clean leaves the read noise, and its even-odd and column offset

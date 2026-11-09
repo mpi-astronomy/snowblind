@@ -11,6 +11,7 @@ from snowblind import StreamCleanStep, readout
 from snowblind.stream_clean import (
     background_structure,
     clean_difference,
+    clipped_median_background,
     clean_ramp,
     column_offset_pattern,
     dilate_sources,
@@ -499,13 +500,23 @@ def test_wiener_channel_without_data_removes_nothing():
     np.testing.assert_allclose(det_out[:, :, :width], det_in[:, :, :width], atol=1e-4)
 
 
-def test_prepare_difference_integration_model_needs_fixed_background():
-    """prepare_difference with background_method='integration_model' and no fixed background raises ValueError."""
+@pytest.mark.parametrize("method", ["integration_model", "exposure_model", "crds_background"])
+def test_prepare_difference_model_needs_fixed_background(method):
+    """prepare_difference with a model background_method and no fixed background raises ValueError."""
     image = np.ones((NY, NX), dtype=np.float32)
     mask = np.ones((NY, NX), dtype=bool)
 
-    with pytest.raises(ValueError, match="integration_model"):
-        prepare_difference(image, mask, background_method="integration_model")
+    with pytest.raises(ValueError, match=method):
+        prepare_difference(image, mask, background_method=method)
+
+
+def test_prepare_difference_unknown_background_method_raises():
+    """prepare_difference with background_method='model' raises ValueError."""
+    image = np.ones((NY, NX), dtype=np.float32)
+    mask = np.ones((NY, NX), dtype=bool)
+
+    with pytest.raises(ValueError, match="Unknown background_method"):
+        prepare_difference(image, mask, background_method="model")
 
 
 def test_exposure_model_is_shared_across_integrations():
@@ -816,6 +827,45 @@ def test_prepare_difference_subtracts_background_times_flat_in_raw_dn():
     np.testing.assert_allclose(background, 10.0 * flat, rtol=0.03)
     residual_rows = np.median(bkg_sub, axis=1)
     np.testing.assert_allclose(residual_rows - residual_rows.mean(), rows - rows.mean(), atol=0.3)
+
+
+def test_prepare_difference_median_leaves_mask_unclipped():
+    """prepare_difference with background_method='median' on noise with a few bright pixels leaves the mask all True.
+
+    The noise fit uses this mask, so the pixels the median clips in one difference must not drop out of it.
+    """
+    rng = np.random.default_rng(17)
+    image = rng.normal(10.0, 1.0, (NY, NX)).astype(np.float32)
+    image[::7, ::5] = 100.0
+    mask = np.ones((NY, NX), dtype=bool)
+
+    prepare_difference(image, mask, background_method="median")
+
+    assert mask.all()
+
+
+def test_clipped_median_background_returns_sky_under_bright_pixels():
+    """clipped_median_background on sky 10 with a tenth of the rows at 100 returns 10 within 0.02.
+
+    The plain median of that image is about 10.14.
+    """
+    rng = np.random.default_rng(18)
+    image = rng.normal(10.0, 1.0, (256, 256)).astype(np.float32)
+    image[::10] = 100.0
+    mask = np.ones(image.shape, dtype=bool)
+
+    assert clipped_median_background(image, mask) == pytest.approx(10.0, abs=0.02)
+
+
+def test_clipped_median_background_uses_only_mask_pixels():
+    """clipped_median_background on sky 10 inside the mask and 50 outside it returns 10 within 0.02."""
+    rng = np.random.default_rng(19)
+    image = rng.normal(10.0, 1.0, (256, 256)).astype(np.float32)
+    mask = np.ones(image.shape, dtype=bool)
+    mask[:, 128:] = False
+    image[:, 128:] = 50.0
+
+    assert clipped_median_background(image, mask) == pytest.approx(10.0, abs=0.02)
 
 
 def test_clean_difference_with_flat_returns_image_minus_row_noise():

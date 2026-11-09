@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `prepare_difference`, `clean_difference` and `estimate_channel_gains` no
+  longer take `background_box_size`, which only jwst's per-difference
+  `model` background used. `prepare_difference` raises a `ValueError` for
+  a `background_method` other than `median`, None or a model method given
+  its `fixed_background`.
+
+### Fixed
+
+- `StreamCleanStep` with `background_method='median'` (the default on
+  imaging) no longer removes the pixels the median clips from the pixels
+  the noise is fitted on. The clip is redone on every group difference, so
+  each difference was cleaned over a slightly different set of pixels, and
+  what one difference took out of a group's read noise was not given back
+  by the next. The leftovers added up from group to group as row and
+  column banding in the rate, growing with the number of groups and most
+  visible where the sky is faint. The median value is unchanged:
+  snowblind now computes it with its own `clipped_median_background`,
+  which gives the same value as jwst's `background_level` without
+  changing the mask. On darks the default now removes the 1/f noise as
+  well as `background_method=None` and keeps the dark current, which
+  `None` removes; the docs no longer recommend `None` for darks.
+
 ## [1.3.0] - 2026-11-03
 
 ### Added
