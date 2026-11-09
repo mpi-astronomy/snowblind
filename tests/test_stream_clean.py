@@ -1052,36 +1052,57 @@ def test_step_selects_the_crds_background_on_a_wfss_exposure(tmp_path):
     assert out.meta.cal_step.stream_clean == "COMPLETE"
 
 
-def test_step_turns_off_column_offsets_on_a_wfss_exposure(tmp_path):
-    """StreamCleanStep on a NIS_WFSS GR150C ramp with the default column_offsets ends with column_offsets False."""
+def _run_wfss_step(tmp_path, exposure_type="NIS_WFSS", **kwargs):
+    """Run StreamCleanStep on a GR150C-style ramp of the given exposure type; return the step and its output."""
     model = make_ramp_model()
     model.meta.instrument.name = "NIRISS"
     model.meta.instrument.detector = "NIS"
     model.meta.instrument.filter = "GR150C"
     model.meta.instrument.pupil = "F200W"
-    model.meta.exposure.type = "NIS_WFSS"
+    model.meta.exposure.type = exposure_type
     datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "bkg.fits")
     datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
     step = StreamCleanStep(
         override_bkg=str(tmp_path / "bkg.fits"), user_mask=str(tmp_path / "mask.fits"), apply_flat_field=False,
-        fit_method="row_median",
+        fit_method="row_median", **kwargs,
     )
+    return step, step.run(model)
 
-    out = step.run(model)
 
-    assert step.column_offsets is False
+def test_step_turns_off_column_offsets_on_a_wfss_exposure(tmp_path):
+    """StreamCleanStep on a NIS_WFSS ramp with the default column_offsets cleans with column offsets off and leaves the parameter None."""
+    step, out = _run_wfss_step(tmp_path)
+
+    assert step._column_offsets is False
+    assert step.column_offsets is None
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def test_step_column_offsets_true_overrides_the_wfss_default(tmp_path):
+    """StreamCleanStep on a NIS_WFSS ramp with column_offsets=True cleans with column offsets on."""
+    step, out = _run_wfss_step(tmp_path, column_offsets=True)
+
+    assert step._column_offsets is True
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def test_step_column_offsets_false_is_kept_on_a_wfss_exposure(tmp_path):
+    """StreamCleanStep on a NIS_WFSS ramp with column_offsets=False cleans with column offsets off."""
+    step, out = _run_wfss_step(tmp_path, column_offsets=False)
+
+    assert step._column_offsets is False
     assert out.meta.cal_step.stream_clean == "COMPLETE"
 
 
 def test_step_keeps_column_offsets_on_an_imaging_exposure(tmp_path):
-    """StreamCleanStep on a NRC_IMAGE ramp with the default column_offsets ends with column_offsets True."""
+    """StreamCleanStep on a NRC_IMAGE ramp with the default column_offsets cleans with column offsets on."""
     model = make_ramp_model()
     datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
     step = StreamCleanStep(user_mask=str(tmp_path / "mask.fits"), apply_flat_field=False, fit_method="row_median")
 
     out = step.run(model)
 
-    assert step.column_offsets is True
+    assert step._column_offsets is True
     assert out.meta.cal_step.stream_clean == "COMPLETE"
 
 

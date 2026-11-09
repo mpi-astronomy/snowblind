@@ -53,6 +53,11 @@
 
 ### Changed
 
+- `StreamCleanStep`'s `column_offsets` now defaults to `None`, which is on
+  for imaging and off for WFSS exposures as before; `True` or `False`
+  overrides that, e.g. `column_offsets=True` on NIRISS GR150R, whose
+  traces cross the columns (issue #37). The step no longer rewrites its
+  own `column_offsets` parameter on WFSS exposures.
 - `snowblind_detector1` no longer runs `JumpPlusStep` after its jump step;
   `SnowblindStep` is the only snowball hook. With the reset fit, its
   extra flags took one more good difference out of the ramp of every

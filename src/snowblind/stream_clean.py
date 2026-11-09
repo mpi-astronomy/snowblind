@@ -117,7 +117,7 @@ class StreamCleanStep(Step):
         min_density = float(default=0.2)  # local background fraction below which the estimate tapers off
         first_direction = integer(default=1)  # readout direction of channel 0 in the detector frame, 1 or -1
         even_odd_columns = boolean(default=True)  # remove the per-channel even-odd column offset of each difference
-        column_offsets = boolean(default=True)  # remove each column's masked mean from each difference (a per-column offset that drifts during the integration); turned off on WFSS exposures, where the traces run along the columns and would bias the means
+        column_offsets = boolean(default=None)  # remove each column's masked mean from each difference (a per-column offset that drifts during the integration); the default, None, is on, except on WFSS exposures, where traces along the columns would bias the means; True or False overrides
         anchor_mean = boolean(default=True)  # set each channel's mean removed noise to the masked mean of the residual, so a robust estimator cannot bias the sky
         max_lag = integer(default=65536)  # autocorrelation length in pixel times for the noise spectrum; wiener only
         min_period = integer(default=300)  # pixel times (3 ms); the wiener gain is zero for shorter periods (None keeps all)
@@ -180,12 +180,19 @@ class StreamCleanStep(Step):
             # the dispersed background is a smooth function of position that no scalar background can model
             self.background_method = "crds_background"
             log.debug("WFSS exposure: background_method set to 'crds_background'")
-        if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES and self.column_offsets:
-            # the traces run along the axis the offsets are measured on, so each column's masked mean carries
-            # the outskirts of its detected traces and the whole of its undetected ones, a bias that would be
-            # removed from every trace in the column
-            self.column_offsets = False
-            log.debug("WFSS exposure: column_offsets turned off")
+        wfss = str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES
+        if self.column_offsets is None:
+            # on WFSS the traces can run along the axis the offsets are measured on, so each column's masked mean
+            # carries the outskirts of its detected traces and the whole of its undetected ones, a bias that would be
+            # removed from every trace in the column; column_offsets=True overrides, e.g. for GR150R, whose traces
+            # cross the columns
+            self._column_offsets = not wfss
+            if wfss:
+                log.debug("WFSS exposure: column_offsets turned off (column_offsets=True overrides)")
+        else:
+            self._column_offsets = bool(self.column_offsets)
+            if self._column_offsets and wfss:
+                log.debug("WFSS exposure: column_offsets left on by request")
         self._stripe_axes = (1, 0)
         self._notch_period = None
         if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES:
@@ -375,7 +382,7 @@ class StreamCleanStep(Step):
             return_spectra=True,
             first_group_scale=first_group_time_ratio(result),
             even_odd_columns=self.even_odd_columns,
-            column_offsets=self.column_offsets,
+            column_offsets=self._column_offsets,
             anchor_mean=self.anchor_mean,
             stats=self._sky_stats,
         )

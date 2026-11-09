@@ -199,7 +199,8 @@ Crowded fields and bright stars
 
 Dispersed (WFSS) exposures
    The step switches itself to ``background_method='crds_background'``
-   and turns ``column_offsets`` off; see `Dispersed exposures`_. Grisms
+   and, unless ``column_offsets`` is set, turns it off; see
+   `Dispersed exposures`_. Grisms
    that disperse along the readout stream (NIRISS GR150R, NIRCam GRISMR)
    are skipped unless ``allow_dispersion_along_stream`` is set.
 
@@ -590,12 +591,17 @@ by the flat before scaling. ``reference_units`` decides by hand.
 
 Three more changes keep dispersed sources out of the noise estimate:
 
-* ``column_offsets`` is turned off. A trace covers hundreds to over a
+* ``column_offsets`` is turned off, unless it is set to ``True``
+  (the default, ``None``, is on for imaging and off for WFSS). A trace covers hundreds to over a
   thousand pixels of a column, and the outskirts of the detected traces
   and the whole of the undetected ones raise the masked mean of their
   columns, so removing it takes flux out of every trace in the column (a
   few to 30 percent on faint traces). No other estimator avoids that,
-  since the column structure is itself smooth over tens of columns.
+  since the column structure is itself smooth over tens of columns. The
+  bias comes from traces that run along the columns; where they cross the
+  columns instead (NIRISS GR150R, with ``allow_dispersion_along_stream``),
+  a trace covers a few pixels of each column and ``column_offsets=True``
+  is safe.
 * The scene mask destripes only along the readout stream's axis, so a
   long trace does not set its column's median.
 * The Wiener gain is notched at the row frequency of the readout (a
