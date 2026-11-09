@@ -504,6 +504,10 @@ from the metrics above, and one or two sentences on what they mean.
 Units used below: a clock is the time to read one pixel, 10 microseconds;
 a full-frame row is 524 clocks or 5.24 ms (512 pixels plus 12 of overhead).
 
+The snowball entries (2026-10-23 jump-step expansion, 2026-11-05 issue #25,
+2026-11-05 issues #5 and #16, 2026-11-08) moved to `PLAN-snowballs.md` on
+2026-11-08.
+
 
 ## E. Order of work and milestones
 
@@ -2324,68 +2328,6 @@ used in anger. NRCBLONG has more row banding after SIRS than NRCALONG
 `field_rate_images_ceers_{nrcalong,nrcblong}{,_full}` from exposure
 00001. Remaining for CEERS: the photometry comparison against James's
 iterated remstriping reduction, which needs his products.
-
-### 2026-10-23: snowball expansion in the jump step for the dark figures
-
-James saw snowball rings in the NIRISS dark figure and asked whether
-`expand_large_events` was on. It was: the NIRISS jump parameter
-reference (0075 in the run, 0087 in context 1598, same values for
-darks and images) sets expand_large_events True, min_jump_area 15,
-expand_factor 1.75, sat_required_snowball True; NIRCam's sets area 5,
-factor 2. The NIRISS Detector1 parameter references (0004 darks, 0005
-images) override nothing. The rings are the halo beyond the expanded
-disc: in the annulus 2 to 25 pixels past the flagged edge of the three
-largest events the rate sits 0.01 to 0.03 DN/s above the frame.
-James's choice: area 8, factor at least 2; the SnowblindStep route is
-not wanted for now (the helper's `snowblind` option now also switches
-the jump expansion off, since Snowblind grows the raw regions and
-would otherwise grow the circles again; `jump_params` and the scripts'
-`--jump key=value` override the reference). Test (scratch
-`snowballs/jump_test.py`, 20 groups, OLS_C; halo = median excess rate
-in the annulus 2 to 30 px beyond each flagged region of 100 px or
-more; "jump px" = JUMP_DET pixels in the rate DQ, which OLS_C still
-fits from the other segments, so no pixel is lost):
-
-| dark | setting | events >= 100 px | jump px | halo median (DN/s) | halo 90th pct |
-|---|---|---|---|---|---|
-| NIRISS | CRDS (area 15, factor 1.75, sat) | 15 | 50496 | +0.0059 | +0.0177 |
-| NIRISS | area 8, factor 2 | 17 | 53804 | +0.0055 | +0.0131 |
-| NIRISS | area 8, factor 2.5 | 21 | 61757 | +0.0035 | +0.0095 |
-| NIRISS | area 8, factor 2, no sat required | 18 | 62199 | +0.0051 | +0.0123 |
-| NIRISS | area 8, factor 3, no sat required | 39 | 106526 | +0.0015 | +0.0069 |
-| NRCA1 | CRDS (area 5, factor 2, sat) | 10 | 71231 | +0.0008 | +0.0077 |
-| NRCA1 | area 8, factor 2 | 10 | 70852 | +0.0008 | +0.0077 |
-| NRCA1 | area 8, factor 2.5 | 11 | 73872 | +0.0006 | +0.0062 |
-| NRCA1 | area 8, factor 2, no sat required | 16 | 90874 | +0.0008 | +0.0048 |
-| NRCA1 | area 8, factor 3, no sat required | 47 | 155521 | +0.0011 | +0.0037 |
-
-The halo falls off slowly, so the expansion factor is the lever and
-the area threshold barely matters at 20 groups: on NIRISS factor 2
-takes the median halo from 0.0059 to 0.0055, factor 2.5 to 0.0035
-(90th percentile 0.0177 -> 0.0095) for 15 percent more flagged
-pixels, and only factor 3 without the saturation requirement reaches
-0.0015, at twice the flagged pixels (2.6 percent of the detector).
-NRCA1 halos are 5 times smaller to begin with. Chosen for the figures:
-area 8, factor 2.5, saturation required, on both darks
-(`--jump min_jump_area=8,expand_factor=2.5`;
-`results/2026-10-23_rate_images_{nis,nrca1}`). The remaining halo at
-factor 2.5 is the tail of the charge profile; a profile-following
-growth is what SnowblindStep does, kept for later.
-
-James asked for more expansion on NIRISS, factor 3. Measured with the
-saturation requirement kept (the earlier factor-3 row was without it):
-
-| dark | setting | events >= 100 px | jump px | halo median (DN/s) | halo 90th pct |
-|---|---|---|---|---|---|
-| NIRISS | area 8, factor 3 | 21 | 71446 | +0.0030 | +0.0080 |
-| NIRISS | area 8, factor 4 | 27 | 96081 | +0.0031 | +0.0076 |
-
-Factor 3 takes the median halo from 0.0035 (factor 2.5) to 0.0030 and
-the 90th percentile from 0.0095 to 0.0080 for 16 percent more flagged
-pixels; factor 4 gains nothing further at 35 percent more, so the
-halo beyond 3 times the core is at the measurement floor of this
-annulus statistic. NIRISS figures now use area 8, factor 3
-(`results/2026-10-23_rate_images_nis_f3`); NRCA1 stays at 2.5.
 
 ### 2026-10-23: the CEERS remstriping baseline
 
@@ -5377,65 +5319,6 @@ packaged from that.
 - The figures of docs/persistence.rst come from these files
   (`python scripts/make_persistence_figures.py`); the decay figure shows
   NRCALONG only, its faint-pixel panel dropped as too much for user docs.
-
-### 2026-11-05: JumpPlusStep after SnowblindStep made the snowball halos noisier (issue #25)
-
-Issue #25: snowball halos are noisier in the rate with `SnowblindStep` than
-with the jump step's `expand_large_events`. Measured on CEERS F444W MEDIUM8
-NRCALONG exposure 00001 (9 groups, 8 differences), one pre-jump ramp, one
-stream clean, every flag set fitted on the same cleaned cube with
-`ResetRampFitStep` and with the jwst `OLS_C` fit. Flag sets: A the jump step
-with `expand_large_events=True` (what `snowblind_detector1
---steps.jump.expand_large_events=True` runs, with no hooks); B
-`SnowblindStep(min_radius=3, after_jumps=5)` alone; C B plus `JumpPlusStep`
-(the pipeline default until now); D A plus `JumpPlusStep`. "Kept" is the
-median number of differences the likelihood fit uses (stcal
-`determine_diffs2use`: both groups of a difference without any flag); "ERR"
-is the median over the pixels of the reset fit's rate ERR divided by A's.
-
-| pixels | count | kept A / B / C / D | ERR B / C / D |
-|---|---|---|---|
-| halo flagged by both methods | 7,444 | 6 / 6 / 5 / 5 | 1.00 / 1.09 / 1.09 |
-| every other jump-flagged pixel | 534,592 | 6 / 6 / 5 / 5 | 1.00 / 1.09 / 1.09 |
-| halo flagged by SnowblindStep only | 12,541 | 8 / 6 / 5 / 8 | 1.14 / 1.24 / 1.00 |
-| SnowblindStep ring (flagged in 2+ groups) | 7,491 | 6 / 5 / 4 / 5 | 1.09 / 1.15 / 1.00 |
-
-- SnowblindStep flags the halo in the jump group only, like the jump step;
-  `JumpPlusStep`'s copy of every JUMP_DET flag into the next group is the
-  whole difference where both methods flag. The OLS fit shows the same
-  (+8%). The jump step's expansion covers more pixels on this exposure
-  (38,462 against 28,546), so the halo area is not the cause.
-- The copy removes no jump signal under the reset fit: the mean rate change
-  in the halo is 0.02 ERR or less, with no excess of upward changes. Under
-  OLS, leaving it out raises the share of single-jump pixels more than 1
-  ERR high over the share more than 1 ERR low by up to 1.6 percentage
-  points (mean +0.04 ERR): the jump left in the difference after the jump
-  group is below the jump threshold.
-- History: the forward copy (2023-08-11) was for OLS, where a flag on group
-  N leaves out only the difference before it; stcal's jump detection has
-  no frame-averaging logic, then or now. The copy of SATURATED into the
-  group before (2023-08-29/30) predates stcal 1.9.0's backward pass with
-  the dilution factor (2024-07, DO_NOT_USE since 2024-11), on by default
-  in jwst 1.16.0 (`use_readpatt`, JP-3593, 2024-09). Of the 3,338 groups
-  the copy marked here, 364 were already DO_NOT_USE, 1,512 JUMP_DET (a
-  cosmic ray partway through the group; the likelihood fit drops it, OLS_C
-  drops the one-group segment it leaves) and 1,462 unflagged; those look
-  undamaged (the difference into them, less the median of the pixel's
-  earlier differences, has the spread of unflagged pixels at the same
-  group).
-- Done: `JumpPlusStep` deprecated and taken out of `snowblind_detector1`,
-  which also no longer sets `after_jump_flag_time1=0`: the jump step's
-  flagging of groups after large jumps is the jwst default and CRDS's
-  (1000 DN for 90 s on NIRISS, which is two groups of a NIS readout; off
-  for NIRCam).
-- To revisit: whether that flagging makes sense. It flags JUMP_DET on the
-  next floor(time / group time) groups after a jump above the DN threshold,
-  within the integration only. Test on a NIRISS exposure whether the
-  differences after jumps above 1000 DN sit above the pixel's median
-  difference more than after smaller jumps, and what the extra groups cost
-  under the reset fit (each one more difference).
-- Scripts and flags: results/2026-11-05_jump_plus_halos/ (`run_variants.py`
-  rebuilds the ramp and the fits, about 10 minutes).
 
 ### 2026-11-09: the median background's clip leaked into the noise-fit mask
 

@@ -80,6 +80,38 @@
   `after_jump_flag_time1` to 0: the flagging of the groups after large jumps
   is left to the jwst defaults and the CRDS parameters, which set it for
   NIRISS.
+- `SnowblindStep` grows only snowballs: jump regions that hold a saturated
+  core, the pixels that saturate in the jump group or the next (in a rate
+  image or rateints cube, a hole in the region). Large jump regions without
+  one, such as cosmic-ray tracks, are no longer grown, and the ring carried
+  into the following groups is drawn around these cores only, not around
+  every saturated pixel inside a grown region (issue #5). A hole of more
+  than 200 pixels is filled too when it holds a saturated pixel. EXTNCRS
+  counts the snowballs, and the step logs their number, summed over all
+  groups and integrations ("Total snowballs = N", as the jump step logs).
+- `SnowblindStep` finds and grows snowballs cut by the edge of the
+  light-sensitive area (issue #16). Reference pixels (REFERENCE_PIXEL) and
+  the area past the array border may hold part of an event: the disk of
+  `min_radius` may extend over them as long as its center is on a
+  light-sensitive pixel, and the event is completed past the edge before
+  its equal-area radius is measured, so it grows by its whole size, in a
+  corner too. An event centered on the outermost light-sensitive row or
+  column needs no core in view if it holds a disk of `min_radius` that does
+  not extend past the edge.
+- `SnowblindStep` flags each snowball's core in every group of the next
+  integration of a ramp, group 0 included, where the core shows
+  persistence from the hit; the core is not grown there, as its neighbors
+  show none. The jwst jump step does the same with
+  `mask_snowball_core_next_int`.
+- `SnowblindStep`'s `min_radius` defaults to 2 (was 4), close to the jump
+  step's `min_jump_area` of 15 pixels; with a core required, small
+  cosmic-ray hits no longer pass at that size. `snowblind_detector1` uses
+  the default (was 3): its hook is `SnowblindStep(after_jumps=5)`.
+- `SnowblindStep` opens and grows each event in a window around it instead
+  of over the whole frame, a few times faster on full-frame ramps.
+  `dilate_jump_slice` and `dilate_large_area_jumps` take the saturated and
+  reference pixels and return the cores with the grown regions;
+  `dilate_saturated_cores` takes the cores.
 
 ### Deprecated
 
@@ -94,6 +126,13 @@
   the likelihood fits also leave out the difference after a flagged group,
   and in an OLS fit the jump left there is small. What the step adds is
   mostly good data.
+
+### Fixed
+
+- `SnowblindStep` no longer flags JUMP_DET at pixels (0, 0), (0, 1) and
+  (1, 0) in every group of a ramp. In a full frame these are reference
+  pixels; in a subarray where that corner is light-sensitive, they lost
+  their whole ramp.
 
 ## [1.3.1] - 2026-11-09
 

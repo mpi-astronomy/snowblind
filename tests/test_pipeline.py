@@ -9,7 +9,7 @@ from stpipe.exceptions import ValidationError
 from snowblind import Detector1Pipeline, ResetRampFitStep, StreamCleanStep
 from snowblind.superbias import SuperBiasStep
 
-SNOWBLIND_HOOK = "snowblind.SnowblindStep(min_radius=3, after_jumps=5)"
+SNOWBLIND_HOOK = "snowblind.SnowblindStep(after_jumps=5)"
 
 
 def crds_jump_threshold_of_4(cls, dataset, disable=None, crds_observatory=None):
@@ -130,7 +130,7 @@ def test_pipeline_switches_off_the_jump_steps_large_event_expansion():
 
 
 def test_pipeline_hooks_snowblind_ahead_of_the_stream_clean():
-    """Detector1Pipeline() has SnowblindStep(min_radius=3, after_jumps=5) and StreamCleanStep as its jump post hooks."""
+    """Detector1Pipeline() has SnowblindStep(after_jumps=5) and StreamCleanStep as its jump post hooks."""
     pipeline = Detector1Pipeline()
 
     assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, StreamCleanStep]

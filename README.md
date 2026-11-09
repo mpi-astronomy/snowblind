@@ -10,11 +10,12 @@ each step works and how to choose its settings.
 ## What it provides
 
 ### Steps
-- **`SnowblindStep`** masks the halos of cosmic-ray showers and snowballs by
-  growing the shape of each jump-flagged region and the ring around its
-  saturated core. It replaces the jump step's `expand_large_events`, which
-  draws circles or ellipses around them, and works on rate products as well
-  as ramps, so it can be applied after the fact.
+- **`SnowblindStep`** masks the halos of snowballs, the jump-flagged regions
+  around a saturated core, by growing the shape of each region and the ring
+  around its core, including snowballs cut by the edge of the detector. It
+  replaces the jump step's `expand_large_events`, which draws circles or
+  ellipses around them, and works on rate products as well as ramps, so it
+  can be applied after the fact.
 - **`PersistenceFlagStep`** flags the pixels that saturated in an earlier
   exposure of the same detector, for a time measured for each detector and
   packaged with snowblind. The jwst `persistence` step (as of jwst 3.0)

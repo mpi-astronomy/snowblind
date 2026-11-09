@@ -52,7 +52,7 @@ STEP_DEFAULTS = {
 
 # The jump step's post-hooks in place of its expand_large_events, in their order
 SNOWBALL_HOOKS = (
-    (SnowblindStep, "snowblind.SnowblindStep(min_radius=3, after_jumps=5)"),
+    (SnowblindStep, "snowblind.SnowblindStep(after_jumps=5)"),
 )
 
 

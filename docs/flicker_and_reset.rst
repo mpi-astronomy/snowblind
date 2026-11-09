@@ -67,7 +67,7 @@ or, in Python:
 The pipeline also sets up the jump step for the two. It runs at 7 sigma
 (the three- and four-group thresholds too), flags the four neighbors of
 jumps above 20 sigma, and leaves the snowball expansion to
-``SnowblindStep(min_radius=3, after_jumps=5)`` as its first post-hook; its
+``SnowblindStep(after_jumps=5)`` as its first post-hook; its
 flagging of the groups after large jumps (``after_jump_flag_*``) stays as
 the jwst step and CRDS set it. At
 7 sigma the jump step flags what would disturb the stream clean, and the
