@@ -4,6 +4,8 @@
 
 ### Added
 
+- `StreamCleanStep` accepts `fit_method='none'`: no stream filter, only the
+  even-odd and column offsets (issue #37).
 - `SparseResampleStep` (`sparse_resample`): the jwst resample step for
   images with drizzle replaced by spizzle, which builds each exposure's
   square-kernel weights once as a sparse matrix and sums in double
@@ -53,11 +55,20 @@
 
 ### Changed
 
-- `StreamCleanStep`'s `column_offsets` now defaults to `None`, which is on
-  for imaging and off for WFSS exposures as before; `True` or `False`
-  overrides that, e.g. `column_offsets=True` on NIRISS GR150R, whose
-  traces cross the columns (issue #37). The step no longer rewrites its
-  own `column_offsets` parameter on WFSS exposures.
+- `StreamCleanStep`: `column_offsets` and `even_odd_columns` now default to
+  `None`, which decides from the grism geometry: on for imaging and for
+  grisms that disperse along the readout stream (NIRISS GR150R, NIRCam
+  GRISMR), off for WFSS exposures whose traces run along the columns
+  (GR150C, GRISMC). `True` or `False` overrides, so the offsets can now be
+  kept on GR150C. `even_odd_columns` is therefore off by default on those
+  exposures, where it used to be on. The step no longer rewrites its own
+  parameters (issue #37).
+- `StreamCleanStep` no longer skips a grism that disperses along the readout
+  stream unless `allow_dispersion_along_stream` is set; it runs with
+  `fit_method='none'`, which removes the even-odd and column offsets and no
+  stream noise, and warns. `allow_dispersion_along_stream=True` runs the
+  stream filter as before. `allow_dispersion_along_stream` now defaults to
+  `None`, which is `False` on those grisms.
 - `snowblind_detector1` no longer runs `JumpPlusStep` after its jump step;
   `SnowblindStep` is the only snowball hook. With the reset fit, its
   extra flags took one more good difference out of the ramp of every
