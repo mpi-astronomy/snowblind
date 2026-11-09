@@ -115,8 +115,8 @@ META_SCHEMA = {
                     "title": "stream_clean sky mean minus median [DN/s]",
                     "description": (
                         "Masked mean minus masked median of the background pixels of the flat-fielded group "
-                        "differences, averaged over the differences and integrations: the shift a scalar median "
-                        "background imposes on the sky."
+                        "differences, averaged over the differences and integrations: the shift a median "
+                        "background would impose on the sky."
                     ),
                     "fits_keyword": "SKYMNMED",
                 },

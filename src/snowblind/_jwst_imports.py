@@ -2,11 +2,10 @@
 
 The underscore-prefixed names, and the ``_fileio`` module, are private to
 jwst and may move or change without notice.  They all exist from jwst
-2.0.0, where the background helpers moved into their own module, and were
-checked against jwst commit e15d3e779 (2026-10-09, "JP-4462: Remove
-outdated pipeline names").  If this module fails to import on a newer
-jwst, compare it against that commit and update the names here rather than
-at the call sites.
+2.0.0 and were checked against jwst commit e15d3e779 (2026-10-09, "JP-4462:
+Remove outdated pipeline names").  If this module fails to import on a
+newer jwst, compare it against that commit and update the names here rather
+than at the call sites.
 
 `snowblind.resample` builds on private parts of stcal's
 ``stcal.resample.Resample`` too, checked against stcal
@@ -26,9 +25,6 @@ try:
         make_intermediate_model,
         median_clean,
         read_flat_file,
-    )
-    from jwst.clean_flicker_noise.background_level import (  # noqa: F401
-        background_level,
     )
     from jwst.outlier_detection._fileio import save_blot  # noqa: F401
     from jwst.outlier_detection.outlier_detection_step import OutlierDetectionStep

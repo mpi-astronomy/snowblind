@@ -64,7 +64,7 @@ class Detector1Pipeline(JwstDetector1Pipeline):
     parameters CRDS provides for ``calwebb_detector1``.  The differences:
     ``jump`` gets `StreamCleanStep` as a post-hook (``--steps.stream_clean``
     is not a slot; its parameters go through the hook, e.g.
-    ``--steps.jump.post_hooks="snowblind.StreamCleanStep(background_method='median')",``),
+    ``--steps.jump.post_hooks="snowblind.StreamCleanStep(background_method='integration_model')",``),
     ``clean_flicker_noise`` is skipped, and ``ramp_fit`` is `ResetRampFitStep`,
     whose parameters are set as ``--steps.ramp_fit.reset_calib=...``.
     Either substitution is switched off with ``--stream_clean=False`` or
