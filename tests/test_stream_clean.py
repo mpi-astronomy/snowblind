@@ -1070,7 +1070,7 @@ def _run_wfss_step(tmp_path, exposure_type="NIS_WFSS", **kwargs):
 
 
 def test_step_turns_off_column_offsets_on_a_wfss_exposure(tmp_path):
-    """StreamCleanStep on a NIS_WFSS ramp with the default column_offsets cleans with column offsets off and leaves the parameter None."""
+    """StreamCleanStep on a NIS_WFSS ramp with default column_offsets turns them off and leaves the parameter None."""
     step, out = _run_wfss_step(tmp_path)
 
     assert step._column_offsets is False
