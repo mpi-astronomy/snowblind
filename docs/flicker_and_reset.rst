@@ -202,9 +202,12 @@ Crowded fields and bright stars
 
 Dispersed (WFSS) exposures
    The step switches itself to ``background_method='crds_background'``
-   and turns ``column_offsets`` off; see `Dispersed exposures`_. Grisms
-   that disperse along the readout stream (NIRISS GR150R, NIRCam GRISMR)
-   are skipped unless ``allow_dispersion_along_stream`` is set.
+   and, unless ``column_offsets`` and ``even_odd_columns`` are set, turns
+   them off where the traces run along the columns (NIRISS GR150C, NIRCam
+   GRISMC); see `Dispersed exposures`_. Grisms that disperse along the
+   readout stream (NIRISS GR150R, NIRCam GRISMR) get no stream filter
+   (``fit_method='auto'`` is ``'none'`` there, only the offsets) unless
+   ``fit_method`` names ``'wiener'`` or ``'row_median'``.
 
 Detectors or epochs the packaged calibration does not cover
    Measure your own reset calibration from dark ramps of the detector
@@ -484,8 +487,8 @@ the differences, so a mean per difference equals subtracting the column
 mean of the rate image and cannot add noise, where a median would
 random-walk. Row banding does not bias the column means, since it adds
 the same value to every column of a row. On NIRISS the same correction
-runs along science rows. It is off on WFSS exposures, whose traces run
-along the columns.
+runs along science rows. Both offsets are off on WFSS exposures whose
+traces run along the columns; see `Dispersed exposures`_.
 
 The first read and the zeroframe
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -650,12 +653,21 @@ by the flat before scaling. ``reference_units`` decides by hand.
 
 Three more changes keep dispersed sources out of the noise estimate:
 
-* ``column_offsets`` is turned off. A trace covers hundreds to over a
+* ``column_offsets`` and ``even_odd_columns`` are turned off, unless they
+  are set to ``True`` (the default, ``None``, is on for imaging and for
+  grisms that disperse along the stream, off for those whose traces run
+  along the columns). A trace covers hundreds to over a
   thousand pixels of a column, and the outskirts of the detected traces
   and the whole of the undetected ones raise the masked mean of their
   columns, so removing it takes flux out of every trace in the column (a
   few to 30 percent on faint traces). No other estimator avoids that,
-  since the column structure is itself smooth over tens of columns.
+  since the column structure is itself smooth over tens of columns. The
+  even-odd offset is one number per amplifier, so a trace moves it far
+  less, but it is measured the same way and follows the same rule. Where
+  the traces run along the stream instead (NIRISS GR150R, NIRCam GRISMR),
+  a trace crosses a few pixels of each column and both offsets are safe;
+  a generous ``mask_dilation`` keeps the unmasked wings of the traces from
+  pulling up the column means.
 * The scene mask destripes only along the readout stream's axis, so a
   long trace does not set its column's median.
 * The Wiener gain is notched at the row frequency of the readout (a
@@ -673,9 +685,12 @@ the stream, where a trace is a feature of a few hundred to over a
 thousand pixel times, with its continuum shape and emission lines at the
 scales the filter treats as noise. Faint traces and trace wings under the
 mask's threshold would lose their spectral shape, a bias no sky
-statistic shows, so the step skips those exposures with a warning;
-``allow_dispersion_along_stream=True`` overrides that at that risk. The
-decision is made from the filter and pupil keywords.
+statistic shows, so ``fit_method='auto'``, the default, is ``'none'`` on
+those exposures: no stream filter, only the even-odd and column offsets, so
+the 1/f noise stays in the data. Naming ``'wiener'`` or ``'row_median'``
+runs that filter at that risk, with a warning. (``allow_dispersion_along_stream``,
+which used to do this, is deprecated and will be removed.) The decision is
+made from the filter and pupil keywords.
 
 Where the reference does not match the shape of the sky along the
 dispersion, the residual gradient runs across the stream and the filter

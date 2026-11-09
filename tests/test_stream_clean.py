@@ -33,6 +33,7 @@ from snowblind.stream_clean import (
     reference_scale,
     slope_per_group,
     unusable_in_flat,
+    trace_geometry,
 )
 
 
@@ -1106,23 +1107,98 @@ def test_dispersion_along_stream_names_the_stream_parallel_grisms():
     assert dispersion_along_stream(model) is None
 
 
-def test_step_skips_a_grism_dispersing_along_the_stream(tmp_path):
-    """StreamCleanStep.call on a NIRISS GR150R ramp sets SKIPPED and leaves the data alone."""
+def test_step_removes_only_the_offsets_on_a_grism_dispersing_along_the_stream(tmp_path):
+    """StreamCleanStep on a GR150R ramp with column offsets and row stripes removes the offsets and keeps the stripes."""
+    rng = np.random.default_rng(3)
+    stripes, _ = row_stripes(rng)
+    columns = rng.uniform(-2, 2, NX).astype(np.float32)
     model = make_ramp_model()
     model.meta.instrument.name = "NIRISS"
     model.meta.instrument.detector = "NIS"
     model.meta.instrument.filter = "GR150R"
     model.meta.instrument.pupil = "F200W"
-    model.data[:] = 5.0
+    for group in range(model.data.shape[1]):
+        model.data[0, group] = group * (10.0 + stripes + columns[None, :])
+    mask_path = write_mask(tmp_path, np.ones((NY, NX), dtype=bool))
 
-    result = StreamCleanStep.call(model, apply_flat_field=False, fit_method="row_median")
+    step = StreamCleanStep(apply_flat_field=False, user_mask=mask_path, background_method="median")
+    result = step.run(model)
 
-    assert result.meta.cal_step.stream_clean == "SKIPPED"
-    np.testing.assert_array_equal(result.data, 5.0)
+    assert step._fit_method == "none"
+    assert result.meta.cal_step.stream_clean == "COMPLETE"
+    diff = np.diff(result.data[0], axis=0)[0]
+    width = readout.channel_width(NX)
+    channel = diff[4:-4, 4:width]
+    assert np.ptp(channel.mean(axis=0)) < 1e-3
+    assert channel.mean(axis=1).std() > 1.0
+
+
+@pytest.mark.parametrize(
+    ("fit_method", "expected"),
+    [("auto", "none"), ("none", "none"), ("row_median", "row_median")],
+)
+def test_step_fit_method_on_gr150r(tmp_path, fit_method, expected):
+    """StreamCleanStep on a GR150R ramp resolves fit_method auto to none and runs a named filter."""
+    step, out = _run_wfss_step(tmp_path, filter_name="GR150R", fit_method=fit_method)
+
+    assert step._fit_method == expected
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+
+
+@pytest.mark.parametrize(
+    ("exposure_type", "instrument", "filter_name", "pupil", "expected"),
+    [
+        ("NIS_WFSS", "NIRISS", "GR150C", "F200W", "wiener"),
+        ("NRC_WFSS", "NIRCAM", "F356W", "GRISMC", "wiener"),
+        ("NRC_WFSS", "NIRCAM", "F356W", "GRISMR", "none"),
+        ("NIS_IMAGE", "NIRISS", "CLEAR", "F200W", "wiener"),
+    ],
+)
+def test_step_resolves_fit_method_auto_from_the_grism_geometry(
+    tmp_path, exposure_type, instrument, filter_name, pupil, expected
+):
+    """StreamCleanStep resolves fit_method auto to none only for a grism that disperses along the stream."""
+    model = make_ramp_model()
+    model.meta.instrument.name = instrument
+    model.meta.instrument.filter = filter_name
+    model.meta.instrument.pupil = pupil
+    model.meta.exposure.type = exposure_type
+
+    fit_method, _, _ = StreamCleanStep()._resolve_options(trace_geometry(model), dispersion_along_stream(model))
+
+    assert fit_method == expected
+
+
+def test_step_allow_dispersion_along_stream_is_deprecated_and_means_wiener():
+    """StreamCleanStep with allow_dispersion_along_stream=True warns of the deprecation and resolves auto to wiener on GR150R."""
+    step = StreamCleanStep(allow_dispersion_along_stream=True)
+
+    with pytest.warns(DeprecationWarning, match="allow_dispersion_along_stream is deprecated"):
+        fit_method, column_offsets, even_odd = step._resolve_options("along_stream", "NIRISS GR150R")
+
+    assert (fit_method, column_offsets, even_odd) == ("wiener", True, True)
+
+
+def test_step_named_fit_method_beats_the_deprecated_allow_dispersion_along_stream():
+    """StreamCleanStep with fit_method='row_median' and allow_dispersion_along_stream=False on GR150R runs row_median."""
+    step = StreamCleanStep(fit_method="row_median", allow_dispersion_along_stream=False)
+
+    with pytest.warns(DeprecationWarning):
+        fit_method, _, _ = step._resolve_options("along_stream", "NIRISS GR150R")
+
+    assert fit_method == "row_median"
+
+
+def test_step_fit_method_defaults_to_auto_and_allow_dispersion_along_stream_to_none():
+    """StreamCleanStep() has fit_method auto and allow_dispersion_along_stream None."""
+    step = StreamCleanStep()
+
+    assert step.fit_method == "auto"
+    assert step.allow_dispersion_along_stream is None
 
 
 def test_step_cleans_a_stream_parallel_grism_when_allowed(tmp_path):
-    """StreamCleanStep.call on a GR150R ramp with allow_dispersion_along_stream=True and a user mask completes."""
+    """StreamCleanStep.call on a GR150R ramp with fit_method row_median and a user mask completes."""
     model = make_ramp_model()
     model.meta.instrument.name = "NIRISS"
     model.meta.instrument.detector = "NIS"
@@ -1132,7 +1208,7 @@ def test_step_cleans_a_stream_parallel_grism_when_allowed(tmp_path):
 
     result = StreamCleanStep.call(
         model, apply_flat_field=False, fit_method="row_median", user_mask=str(tmp_path / "mask.fits"),
-        background_method="median", allow_dispersion_along_stream=True,
+        background_method="median",
     )
 
     assert result.meta.cal_step.stream_clean == "COMPLETE"
@@ -1163,36 +1239,96 @@ def test_step_selects_the_crds_background_on_a_wfss_exposure(tmp_path):
     assert out.meta.cal_step.stream_clean == "COMPLETE"
 
 
-def test_step_turns_off_column_offsets_on_a_wfss_exposure(tmp_path):
-    """StreamCleanStep on a NIS_WFSS GR150C ramp with the default column_offsets ends with column_offsets False."""
+def _run_wfss_step(tmp_path, exposure_type="NIS_WFSS", instrument="NIRISS", filter_name="GR150C", pupil="F200W", **kwargs):
+    """Run StreamCleanStep on a ramp of the given grism setup with a user mask and unit background; return step and output."""
     model = make_ramp_model()
-    model.meta.instrument.name = "NIRISS"
-    model.meta.instrument.detector = "NIS"
-    model.meta.instrument.filter = "GR150C"
-    model.meta.instrument.pupil = "F200W"
-    model.meta.exposure.type = "NIS_WFSS"
+    model.meta.instrument.name = instrument
+    model.meta.instrument.detector = "NIS" if instrument == "NIRISS" else "NRCA1"
+    model.meta.instrument.filter = filter_name
+    model.meta.instrument.pupil = pupil
+    model.meta.exposure.type = exposure_type
     datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "bkg.fits")
     datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
+    kwargs.setdefault("fit_method", "row_median")
     step = StreamCleanStep(
-        override_bkg=str(tmp_path / "bkg.fits"), user_mask=str(tmp_path / "mask.fits"), apply_flat_field=False,
-        fit_method="row_median",
+        override_bkg=str(tmp_path / "bkg.fits"), user_mask=str(tmp_path / "mask.fits"), apply_flat_field=False, **kwargs,
     )
+    return step, step.run(model)
 
-    out = step.run(model)
 
-    assert step.column_offsets is False
+def test_step_turns_off_column_offsets_on_a_wfss_exposure(tmp_path):
+    """StreamCleanStep on a NIS_WFSS ramp with default column_offsets turns them off and leaves the parameter None."""
+    step, out = _run_wfss_step(tmp_path)
+
+    assert step._column_offsets is False
+    assert step.column_offsets is None
     assert out.meta.cal_step.stream_clean == "COMPLETE"
 
 
+def test_step_column_offsets_true_overrides_the_wfss_default(tmp_path):
+    """StreamCleanStep on a NIS_WFSS ramp with column_offsets=True cleans with column offsets on."""
+    step, out = _run_wfss_step(tmp_path, column_offsets=True)
+
+    assert step._column_offsets is True
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def test_step_column_offsets_false_is_kept_on_a_wfss_exposure(tmp_path):
+    """StreamCleanStep on a NIS_WFSS ramp with column_offsets=False cleans with column offsets off."""
+    step, out = _run_wfss_step(tmp_path, column_offsets=False)
+
+    assert step._column_offsets is False
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+
+
+@pytest.mark.parametrize(
+    ("exposure_type", "instrument", "filter_name", "pupil", "expected"),
+    [
+        ("NIS_WFSS", "NIRISS", "GR150C", "F200W", False),
+        ("NIS_WFSS", "NIRISS", "GR150R", "F200W", True),
+        ("NRC_WFSS", "NIRCAM", "F356W", "GRISMC", False),
+        ("NRC_WFSS", "NIRCAM", "F356W", "GRISMR", True),
+        ("NIS_IMAGE", "NIRISS", "CLEAR", "F200W", True),
+    ],
+)
+def test_step_resolves_the_offsets_from_the_grism_geometry(tmp_path, exposure_type, instrument, filter_name, pupil, expected):
+    """StreamCleanStep with both offsets left at None turns them off only where traces run along the columns."""
+    step, out = _run_wfss_step(
+        tmp_path, exposure_type=exposure_type, instrument=instrument, filter_name=filter_name, pupil=pupil
+    )
+
+    assert step._column_offsets is expected
+    assert step._even_odd_columns is expected
+    assert step.column_offsets is None
+    assert step.even_odd_columns is None
+    assert out.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def test_step_even_odd_columns_override_on_a_grism_along_the_columns(tmp_path):
+    """StreamCleanStep on a GR150C ramp with even_odd_columns=True cleans with even-odd on and column offsets off."""
+    step, _ = _run_wfss_step(tmp_path, even_odd_columns=True)
+
+    assert step._even_odd_columns is True
+    assert step._column_offsets is False
+
+
+def test_step_even_odd_columns_false_is_kept_on_an_imaging_exposure(tmp_path):
+    """StreamCleanStep on a NIS_IMAGE ramp with even_odd_columns=False cleans with even-odd off and column offsets on."""
+    step, _ = _run_wfss_step(tmp_path, exposure_type="NIS_IMAGE", filter_name="CLEAR", even_odd_columns=False)
+
+    assert step._even_odd_columns is False
+    assert step._column_offsets is True
+
+
 def test_step_keeps_column_offsets_on_an_imaging_exposure(tmp_path):
-    """StreamCleanStep on a NRC_IMAGE ramp with the default column_offsets ends with column_offsets True."""
+    """StreamCleanStep on a NRC_IMAGE ramp with the default column_offsets cleans with column offsets on."""
     model = make_ramp_model()
     datamodels.ImageModel(np.ones((NY, NX), dtype=np.float32)).save(tmp_path / "mask.fits")
     step = StreamCleanStep(user_mask=str(tmp_path / "mask.fits"), apply_flat_field=False, fit_method="row_median")
 
     out = step.run(model)
 
-    assert step.column_offsets is True
+    assert step._column_offsets is True
     assert out.meta.cal_step.stream_clean == "COMPLETE"
 
 

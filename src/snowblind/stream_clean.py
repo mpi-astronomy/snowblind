@@ -9,6 +9,7 @@ and groups is adapted from ``do_correction`` in
 ``jwst/clean_flicker_noise/clean_flicker_noise.py`` at jwst commit e15d3e779.
 """
 import logging
+import warnings
 
 import numpy as np
 from astropy.stats import sigma_clipped_stats
@@ -81,8 +82,9 @@ class StreamCleanStep(Step):
     part in the clock grid but are not used to fit the noise.
 
     The main options (see ``spec`` for the full list and defaults):
-    ``fit_method`` picks the per-channel noise estimator (``wiener`` or
-    ``row_median``); ``background_method`` and ``scene_model`` choose the
+    ``fit_method`` picks the per-channel noise estimator (``wiener``,
+    ``row_median`` or ``none``; the default ``auto`` is ``wiener``, or ``none``
+    on a grism that disperses along the readout stream); ``background_method`` and ``scene_model`` choose the
     background removed before the fit (``crds_background``, the default
     on WFSS exposures, scales the CRDS background reference once to the
     ramp); ``user_mask``, ``mask_dilation``
@@ -104,7 +106,7 @@ class StreamCleanStep(Step):
     fits_comment = "1/f cleaning: snowblind.StreamCleanStep"
 
     spec = """
-        fit_method = option('wiener', 'row_median', default='wiener')  # noise estimator per channel
+        fit_method = option('wiener', 'row_median', 'none', 'auto', default='auto')  # noise estimator per channel; auto is wiener, except none (no stream filter, only the even-odd and column offsets) on a grism whose dispersion runs along the readout stream (NIRISS GR150R, NIRCam GRISMR), where faint trace shapes would be read as noise; naming wiener or row_median there runs it at that risk
         background_method = option('mean', 'median', 'integration_model', 'exposure_model', 'crds_background', None, default='mean')  # background removed before fitting and put back after, so it sets the sky level: mean leaves the sky as it was (imaging and darks), median puts it at the median, integration_model and exposure_model (box models) also keep extended structure above their box, crds_background (the scaled CRDS background reference) is the default on WFSS exposures, None removes the mean level (sky or dark current) too
         background_box_size = int_list(min=2, max=2, default=None)  # box size of the box-spline background (integration_model, exposure_model); default 32 by 32
         apply_flat_field = boolean(default=True)  # measure the background on the flat-fielded difference (the sky times the response); without a flat reference the raw difference is used
@@ -112,14 +114,14 @@ class StreamCleanStep(Step):
         user_mask = string(default=None)  # path to a user-supplied background mask
         mask_dilation = integer(default=0)  # pixels by which to grow the masked (source) regions, for source wings
         mask_spikes = boolean(default=True)  # mask the column-aligned spikes of saturated stars along their extent (chisel mask only)
-        allow_dispersion_along_stream = boolean(default=False)  # clean a grism exposure whose dispersion runs along the readout stream (NIRISS GR150R, NIRCam GRISMR), where faint trace shapes are read as noise; skipped otherwise
+        allow_dispersion_along_stream = boolean(default=None)  # deprecated, will be removed: True is fit_method wiener on a grism whose dispersion runs along the readout stream; use fit_method
         clean_first_group = boolean(default=True)  # also clean group 1, against zero or against the reset prior; needed for reset_rampfit, harmless for OLS
         reset_calib = string(default=None)  # snowblind-reset-calib ASDF; with it the first read is cleaned against its reset-level prior, as reset_rampfit will use it
         scene_model = string(default=None)  # FITS image of the scene in DN/s, detector frame, before flat-fielding (e.g. the blotted mosaic); replaces the background model
         min_density = float(default=0.2)  # local background fraction below which the estimate tapers off
         first_direction = integer(default=1)  # readout direction of channel 0 in the detector frame, 1 or -1
-        even_odd_columns = boolean(default=True)  # remove the per-channel even-odd column offset of each difference
-        column_offsets = boolean(default=True)  # remove each column's masked mean from each difference (a per-column offset that drifts during the integration); turned off on WFSS exposures, where the traces run along the columns and would bias the means
+        even_odd_columns = boolean(default=None)  # remove the per-channel even-odd column offset of each difference; the default, None, is on, except on WFSS exposures whose traces run along the columns (NIRISS GR150C, NIRCam GRISMC); True or False overrides
+        column_offsets = boolean(default=None)  # remove each column's masked mean from each difference (a per-column offset that drifts during the integration); the default, None, is on, except on WFSS exposures whose traces run along the columns (NIRISS GR150C, NIRCam GRISMC), where they would bias the means; True or False overrides
         anchor_mean = boolean(default=True)  # set each channel's mean removed noise to the masked mean of the residual, so a robust estimator cannot bias the sky
         max_lag = integer(default=65536)  # autocorrelation length in pixel times for the noise spectrum; wiener only
         min_period = integer(default=300)  # pixel times (3 ms); the wiener gain is zero for shorter periods (None keeps all)
@@ -168,26 +170,12 @@ class StreamCleanStep(Step):
             self.set_cal_step(result, "SKIPPED")
             return result
         grism = dispersion_along_stream(result)
-        if grism is not None and not self.allow_dispersion_along_stream:
-            log.warning(
-                f"{grism} disperses along the readout stream: a trace is a feature of a few hundred (NIRISS) to over a "
-                "thousand (NIRCam) clocks there, with its continuum shape and emission lines at the scales the Wiener "
-                "gain passes, so the spectral shape of "
-                "faint traces and trace wings under the scene mask's threshold would be read as 1/f noise and removed; "
-                "skipping stream_clean (allow_dispersion_along_stream=True overrides, at that risk)"
-            )
-            self.set_cal_step(result, "SKIPPED")
-            return result
+        geometry = trace_geometry(result)
+        self._fit_method, self._column_offsets, self._even_odd_columns = self._resolve_options(geometry, grism)
         if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES and self.background_method in SCALAR_BACKGROUND_METHODS:
             # the dispersed background is a smooth function of position that no scalar background can model
             self.background_method = "crds_background"
             log.debug("WFSS exposure: background_method set to 'crds_background'")
-        if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES and self.column_offsets:
-            # the traces run along the axis the offsets are measured on, so each column's masked mean carries
-            # the outskirts of its detected traces and the whole of its undetected ones, a bias that would be
-            # removed from every trace in the column
-            self.column_offsets = False
-            log.debug("WFSS exposure: column_offsets turned off")
         self._stripe_axes = (1, 0)
         self._notch_period = None
         if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES:
@@ -202,8 +190,9 @@ class StreamCleanStep(Step):
             self._notch_period = float(readout.channel_width(det_shape[1]) + readout.LINE_OVERHEAD)
             log.debug(f"WFSS exposure: the Wiener gain is notched at the readout row period of {self._notch_period:.0f} clocks")
             log.info(
-                "A dispersed exposure: the background is the scaled CRDS background reference, and the traces along the "
-                "columns are kept out of the noise estimate (no per-column offsets, the readout row period notched)"
+                "A dispersed exposure: the background is the scaled CRDS background reference, the readout row period "
+                f"is notched in the Wiener gain, column_offsets={self._column_offsets} and "
+                f"even_odd_columns={self._even_odd_columns}"
             )
 
         flat = None
@@ -273,7 +262,11 @@ class StreamCleanStep(Step):
 
         log.info(
             f"Cleaning {result.meta.filename} with "
-            + ("the Wiener filter along the readout stream" if self.fit_method == "wiener" else "row medians")
+            + {
+                "wiener": "the Wiener filter along the readout stream",
+                "row_median": "row medians",
+                "none": "no stream filter (the even-odd and column offsets only)",
+            }[self._fit_method]
         )
         cleaned, spectra = self._clean_with_mask(result, background_mask, flat)
 
@@ -298,6 +291,68 @@ class StreamCleanStep(Step):
         self._record_sky_stats(result)
         self.set_cal_step(result, "COMPLETE")
         return result
+
+    def _resolve_options(self, geometry, grism):
+        """Return ``(fit_method, column_offsets, even_odd_columns)`` for an exposure, the user's values over the defaults.
+
+        The defaults follow from which way the traces of a grism run.  Along the readout stream (NIRISS GR150R,
+        NIRCam GRISMR) a trace is read as 1/f noise by the stream filter, so ``auto`` is ``none``, but it crosses a
+        few pixels of each column and the offsets are safe.  Along the columns (GR150C, GRISMC) the filter is safe
+        but the column and even-odd means carry the traces, so the offsets are off.  Anywhere else all three are on.
+
+        Parameters
+        ----------
+        geometry : str
+            ``trace_geometry`` of the exposure.
+        grism : str or None
+            The ``dispersion_along_stream`` name, for the log.
+
+        Returns
+        -------
+        tuple
+            The fit method, and whether to remove the column offsets and the even-odd offset.
+        """
+        match geometry:
+            case "along_stream":
+                defaults = ("none", True, True)
+            case "along_columns":
+                defaults = ("wiener", False, False)
+            case _:
+                defaults = ("wiener", True, True)
+        fit_method, column_offsets, even_odd_columns = defaults
+        if self.allow_dispersion_along_stream is not None:
+            message = (
+                "allow_dispersion_along_stream is deprecated and will be removed in a future release; "
+                "fit_method='wiener' or 'row_median' now runs the stream filter on a grism that disperses along the stream"
+            )
+            warnings.warn(message, DeprecationWarning, stacklevel=2)
+            log.warning(message)
+        if self.fit_method != "auto":
+            fit_method = self.fit_method
+        elif self.allow_dispersion_along_stream and geometry == "along_stream":
+            fit_method = "wiener"
+        if self.column_offsets is not None:
+            column_offsets = bool(self.column_offsets)
+        if self.even_odd_columns is not None:
+            even_odd_columns = bool(self.even_odd_columns)
+        if geometry == "along_stream":
+            if fit_method == "none":
+                log.info(
+                    f"{grism} disperses along the readout stream, where the stream filter would read the traces as 1/f "
+                    "noise: removing only the even-odd and column offsets (fit_method='wiener' or 'row_median' runs the filter)"
+                )
+            else:
+                log.warning(
+                    f"{grism} disperses along the readout stream: a trace is a feature of a few hundred (NIRISS) to "
+                    "over a thousand (NIRCam) clocks there, with its continuum shape and emission lines at the scales "
+                    f"the stream filter passes, so running fit_method={fit_method!r} would read the spectral shape of "
+                    "faint traces and trace wings under the scene mask's threshold as 1/f noise and remove it"
+                )
+        log.debug(
+            f"fit_method={fit_method!r}, column_offsets={column_offsets}, even_odd_columns={even_odd_columns} "
+            f"for traces {geometry.replace('_', ' ')}"
+        )
+        return fit_method, column_offsets, even_odd_columns
 
     def _clean_with_mask(self, result, background_mask, flat):
         """Run `clean_ramp` with the step's parameters and a given background mask.
@@ -364,7 +419,7 @@ class StreamCleanStep(Step):
             scene_background=scene_background,
             zeroframe=zeroframe,
             zeroframe_scale=frame_time / group_time,
-            fit_method=self.fit_method,
+            fit_method=self._fit_method,
             background_method=self.background_method,
             background_box_size=self.background_box_size,
             clean_first_group=self.clean_first_group,
@@ -376,8 +431,8 @@ class StreamCleanStep(Step):
             notch_period=self._notch_period,
             return_spectra=True,
             first_group_scale=first_group_time_ratio(result),
-            even_odd_columns=self.even_odd_columns,
-            column_offsets=self.column_offsets,
+            even_odd_columns=self._even_odd_columns,
+            column_offsets=self._column_offsets,
             anchor_mean=self.anchor_mean,
             stats=self._sky_stats,
         )
@@ -951,6 +1006,27 @@ def dispersion_along_stream(model):
     return None
 
 
+def trace_geometry(model):
+    """Which way the traces of a WFSS exposure run relative to the readout stream.
+
+    Parameters
+    ----------
+    model : `~stdatamodels.jwst.datamodels.RampModel`
+        The input; ``meta.exposure.type`` and what `dispersion_along_stream` reads.
+
+    Returns
+    -------
+    str
+        ``"along_stream"`` for a grism that disperses along it (NIRISS GR150R, NIRCam GRISMR), ``"along_columns"``
+        for a WFSS exposure whose grism disperses across it (GR150C, GRISMC), else ``"other"``.
+    """
+    if dispersion_along_stream(model) is not None:
+        return "along_stream"
+    if str(model.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES:
+        return "along_columns"
+    return "other"
+
+
 def _unsupported_reason(model):
     """Return why the model cannot be cleaned, or None if it can.
 
@@ -1084,7 +1160,7 @@ def clean_ramp(
         Detector readout axis keyword ``meta.subarray.slowaxis``: the
         science-frame axis and direction of the slow readout.
     fit_method : str
-        Key into `snowblind.stream_filters.FILTERS`.
+        Key into `snowblind.stream_filters.FILTERS`, or `None` for no stream estimate (the offsets only).
     background_method : {'mean', 'median', 'integration_model', 'exposure_model', 'crds_background', None}
         Background removed from each difference before the noise fit (see
         `clean_difference`).  ``integration_model`` and ``exposure_model``
@@ -2012,7 +2088,7 @@ def clean_difference(
         Detector readout axis keyword ``meta.subarray.slowaxis``: the
         science-frame axis and direction of the slow readout.
     fit_method : str
-        Key into `snowblind.stream_filters.FILTERS`.
+        Key into `snowblind.stream_filters.FILTERS`, or ``'none'`` for no stream estimate (the offsets only).
     background_method : {'mean', 'median', 'integration_model', 'exposure_model', 'crds_background', None}
         Passed to `prepare_difference`.
     flat : ndarray or None
@@ -2149,7 +2225,7 @@ def estimate_noise(
         Detector readout axis keyword ``meta.subarray.slowaxis``: the
         science-frame axis and direction of the slow readout.
     fit_method : str
-        Key into `snowblind.stream_filters.FILTERS`.
+        Key into `snowblind.stream_filters.FILTERS`, or ``'none'`` for no stream estimate (the offsets only).
     first_direction : int
         Readout direction of channel 0 in the detector frame.
     channel_gains : list of tuple or None
@@ -2180,8 +2256,8 @@ def estimate_noise(
     ndarray of float32, shape (nrows, ncols)
         Noise estimate for every pixel in DN, in the science frame.
     """
-    if fit_method not in FILTERS:
-        raise ValueError(f"Unknown fit_method {fit_method!r}; choose from {sorted(FILTERS)}")
+    if fit_method != "none" and fit_method not in FILTERS:
+        raise ValueError(f"Unknown fit_method {fit_method!r}; choose from {sorted(FILTERS) + ['none']}")
 
     image_det = readout.to_detector_frame(image, fastaxis, slowaxis)
     mask_det = readout.to_detector_frame(mask, fastaxis, slowaxis)
@@ -2194,12 +2270,14 @@ def estimate_noise(
         per_column = column_offset_pattern(block - alternating, block_mask) if column_offsets else 0.0
         fixed = alternating + per_column
         residual = block - fixed
-        if fit_method == "row_median":
+        if fit_method == "none":
+            estimate = np.zeros(residual.shape, dtype=np.float32)
+        elif fit_method == "row_median":
             estimate = row_median_noise(residual, block_mask, direction)
         else:
             gain = None if channel_gains is None else channel_gains[channel]
             estimate = wiener_noise(residual, block_mask, direction, min_density=min_density, gain=gain)
-        if anchor_mean and np.any(block_mask):
+        if anchor_mean and fit_method != "none" and np.any(block_mask):
             estimate = estimate + (np.mean((block - fixed)[block_mask]) - np.mean(estimate[block_mask]))
         noise_det[:, columns] = fixed + estimate
     return np.ascontiguousarray(readout.to_science_frame(noise_det, fastaxis, slowaxis))
