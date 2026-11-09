@@ -1,11 +1,12 @@
 import logging
+import asdf
 import numpy as np
 import pytest
 from astropy.io import fits
 from stdatamodels.jwst import datamodels
 
 from snowblind import SnowblindStep
-from snowblind.snowblind import group_difference_times, packaged_snowball_times
+from snowblind.snowblind import group_difference_times, longest_packaged_snowball_times, packaged_snowball_times
 
 
 JUMP_DET = datamodels.dqflags.group['JUMP_DET']
@@ -432,14 +433,65 @@ def test_ramp_takes_the_packaged_neighbor_time_of_the_detector():
     assert (result.groupdq[1, :, 20, 21] == GOOD).all()
 
 
-def test_ramp_without_packaged_times_warns_and_leaves_later_integrations(monkeypatch, tmp_path, caplog):
-    """SnowblindStep.call on a ramp whose detector has no packaged times logs a warning and leaves integration 2 GOOD."""
+def package_times_of_other_detectors(directory):
+    """Packaged times for NRCA2 (core 500 s, neighbors 50 s) and NRCB4 (core 2000 s, neighbors 30 s) in directory."""
+    for detector, core_time, neighbor_time in [("nrca2", 500.0, 50.0), ("nrcb4", 2000.0, 30.0)]:
+        tree = {"core_time": core_time, "neighbor_time": neighbor_time}
+        asdf.AsdfFile(tree).write_to(directory / f"snowball_persistence_{detector}.asdf")
+
+
+def test_longest_packaged_snowball_times_of_two_files(monkeypatch, tmp_path):
+    """longest_packaged_snowball_times over NRCA2 (500 s, 50 s) and NRCB4 (2000 s, 30 s) returns (2000 s, 50 s)."""
+    package_times_of_other_detectors(tmp_path)
+    monkeypatch.setattr("snowblind.snowblind.PACKAGED_DIR", tmp_path)
+
+    assert longest_packaged_snowball_times() == (2000.0, 50.0)
+
+
+def test_ramp_without_its_own_packaged_times_logs_a_warning(monkeypatch, tmp_path, caplog):
+    """SnowblindStep.call on an NRCA1 ramp with times packaged for other detectors only logs a warning."""
+    package_times_of_other_detectors(tmp_path)
     monkeypatch.setattr("snowblind.snowblind.PACKAGED_DIR", tmp_path)
 
     with caplog.at_level(logging.WARNING, logger="snowblind.snowblind"):
-        result = SnowblindStep.call(ramp_with_snowball_in_first_integration(2))
+        SnowblindStep.call(ramp_with_snowball_in_first_integration(2))
 
     assert "No snowball persistence times are packaged for detector NRCA1" in caplog.text
+
+
+def test_ramp_without_its_own_packaged_times_flags_the_core_for_the_longest_core_time(monkeypatch, tmp_path):
+    """SnowblindStep.call on an NRCA1 ramp, longest packaged core time 2000 s, integrations 1000 s apart, flags the core."""
+    package_times_of_other_detectors(tmp_path)
+    monkeypatch.setattr("snowblind.snowblind.PACKAGED_DIR", tmp_path)
+    im = ramp_with_snowball_in_first_integration(2)
+    im.int_times = int_times_with_gap(1000.0)
+
+    result = SnowblindStep.call(im)
+
+    assert (result.groupdq[1, :, 20, 20] == JUMP_DET).all()
+
+
+def test_ramp_without_its_own_packaged_times_flags_the_neighbor_for_the_longest_neighbor_time(monkeypatch, tmp_path):
+    """SnowblindStep.call on an NRCA1 ramp, longest packaged neighbor time 50 s, flags the neighbor in group 0 only.
+
+    With integrations 40 s apart, the differences of integration 2 start 40, 50, ..., 90 s after the first ends.
+    """
+    package_times_of_other_detectors(tmp_path)
+    monkeypatch.setattr("snowblind.snowblind.PACKAGED_DIR", tmp_path)
+    im = ramp_with_snowball_in_first_integration(2)
+    im.int_times = int_times_with_gap(40.0)
+
+    result = SnowblindStep.call(im)
+
+    assert result.groupdq[1, :, 21, 21].tolist() == [JUMP_DET] + [GOOD] * 5
+
+
+def test_ramp_without_any_packaged_times_leaves_later_integrations(monkeypatch, tmp_path):
+    """SnowblindStep.call on a ramp with no packaged times at all leaves integration 2 GOOD."""
+    monkeypatch.setattr("snowblind.snowblind.PACKAGED_DIR", tmp_path)
+
+    result = SnowblindStep.call(ramp_with_snowball_in_first_integration(2))
+
     assert (result.groupdq[1] == GOOD).all()
 
 

@@ -38,7 +38,8 @@ class SnowblindStep(Step):
     persists after the reset: in the later integrations of the exposure the core is
     flagged for ``core_persistence_time`` seconds after the end of the integration of the
     hit, and the core grown by one pixel for ``neighbor_persistence_time`` seconds.  Both
-    default to the times measured for the detector and packaged with snowblind.  A rate
+    default to the times measured for the detector and packaged with snowblind, or to the
+    longest packaged ones for a detector without its own.  A rate
     image or rateints cube has no saturation per group, so there the holes in the region
     take the place of the core.
 
@@ -554,17 +555,17 @@ class SnowblindStep(Step):
 
     def _persistence_times(self, detector):
         """``core_persistence_time`` and ``neighbor_persistence_time``, each taken from the detector's packaged
-        file when None; 0 s, after a warning, when the package has no file for the detector."""
+        file when None; when the package has no file for the detector, the longest of each over the packaged
+        files, after a warning, and 0 s if there are none."""
         core_time, neighbor_time = self.core_persistence_time, self.neighbor_persistence_time
         if core_time is None or neighbor_time is None:
             packaged = packaged_snowball_times(detector)
             if packaged is None:
+                packaged = longest_packaged_snowball_times()
                 log.warning(
-                    f"No snowball persistence times are packaged for detector {detector}: the cores are not "
-                    "flagged in later integrations unless core_persistence_time and neighbor_persistence_time "
-                    "are set"
+                    f"No snowball persistence times are packaged for detector {detector}: taking the longest "
+                    f"packaged, {packaged[0]:.0f} s for the cores and {packaged[1]:.0f} s for the pixels next to them"
                 )
-                packaged = (0.0, 0.0)
             core_time = packaged[0] if core_time is None else core_time
             neighbor_time = packaged[1] if neighbor_time is None else neighbor_time
         return core_time, neighbor_time
@@ -700,5 +701,33 @@ def packaged_snowball_times(detector):
     path = PACKAGED_DIR.joinpath(PACKAGED_TIME_PATTERN.format(detector=str(detector).lower()))
     if not path.is_file():
         return None
+    return _times_in_file(path)
+
+
+def longest_packaged_snowball_times():
+    """The longest core time and the longest neighbor time over every detector's packaged file.
+
+    The default for a detector without a file of its own.
+
+    Returns
+    -------
+    tuple of float
+        ``(core_time, neighbor_time)`` in seconds, each the largest of its kind over the
+        packaged files (not necessarily from the same detector); ``(0.0, 0.0)`` when there
+        are none.
+    """
+    prefix, suffix = PACKAGED_TIME_PATTERN.split("{detector}")
+    times = [
+        _times_in_file(path)
+        for path in PACKAGED_DIR.iterdir()
+        if path.name.startswith(prefix) and path.name.endswith(suffix)
+    ]
+    if not times:
+        return 0.0, 0.0
+    return max(core for core, _ in times), max(neighbor for _, neighbor in times)
+
+
+def _times_in_file(path):
+    """``(core_time, neighbor_time)`` of one packaged snowball persistence file."""
     with asdf.open(str(path), lazy_load=False, memmap=False) as handle:
         return float(handle.tree["core_time"]), float(handle.tree["neighbor_time"])

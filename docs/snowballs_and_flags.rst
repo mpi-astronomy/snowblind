@@ -69,8 +69,9 @@ next one.
 Both times default to those measured for the detector and packaged with
 snowblind (``snowblind/data/snowball_persistence_<detector>.asdf``), for
 the ten NIRCam detectors and NIRISS. A detector without a file, or a model
-without its detector, gets a warning and no flagging in later integrations
-unless both times are given. Each time is the 99th percentile over the
+without its detector, gets the longest packaged times (about 21000 s for the
+core and 3800 s for the pixels next to it) and a warning. Each time is the
+99th percentile over the
 detector's snowballs of the time at which a pixel falls to 0.005 DN/s, the
 threshold of the ``PersistenceFlagStep`` times: from about 1400 s (NRCA4) to
 21000 s (NRCB4) for the saturated pixels, and from about 550 s to 3800 s for

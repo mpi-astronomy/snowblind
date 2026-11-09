@@ -43,7 +43,9 @@ Done 2026-11-09 evening, uncommitted (replaces the provisional rule above):
   hit's integration, group 0 included; group times from `int_times`, or
   the frame counts (`group_difference_times`). Defaults: the packaged
   `snowblind/data/snowball_persistence_<detector>.asdf` (10 NIRCam + NIS),
-  read by `packaged_snowball_times`; no file: a warning, no flagging.
+  read by `packaged_snowball_times`; no file: the longest packaged core and
+  neighbor times (`longest_packaged_snowball_times`, 21204 s and 3814 s)
+  and a warning (decided 2026-11-09, was 0 s).
 - `snowblind.saturation.flag_saturation_neighbors` (function hook):
   CHARGELOSS | DO_NOT_USE on the 8 neighbors of each group's SATURATED
   pixels; IRS2 grown in the normal layout via `x_irs2`.

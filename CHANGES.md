@@ -111,8 +111,8 @@
   detectors and NIRISS, the 99th percentile over the detector's snowballs
   of the time at which a pixel falls to 0.005 DN/s, from about 1400 s to
   21000 s for the saturated pixels and 550 s to 3800 s for their
-  neighbors. A detector without a file gets a warning and no flagging in
-  later integrations unless both times are given.
+  neighbors. A detector without a file gets the longest packaged times,
+  each the largest over the files, with a warning.
   `scripts/measure_snowball_persistence.py` measures the excess at the
   cores in dark exposures, `scripts/fit_snowball_persistence.py` fits the
   decay of each core, `scripts/package_snowball_persistence.py` writes the
