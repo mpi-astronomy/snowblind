@@ -22,6 +22,7 @@ from snowblind.stream_clean import (
     first_group_time_ratio,
     integration_backgrounds,
     masked_mean_background,
+    mean_background,
     prepare_difference,
     read_scene_model,
     reference_carries_flat,
@@ -216,8 +217,8 @@ def test_clean_ramp_sky_shift_is_mean_minus_median_of_the_differences():
     """clean_ramp with a stats dict reports the mean minus the median of the input differences over the mask.
 
     The difference is 9 to 11 DN across 48 columns and 11.5 DN on the other
-    16, within the 3-sigma clipping of the background helper (whose sigma
-    comes from the lower half), so every pixel stays in the mask.
+    16, all within the 3-sigma clip of the median background (whose sigma
+    comes from the lower half), so the median subtracted is that of every pixel.
     """
     row = np.concatenate([np.linspace(9.0, 11.0, 48), np.full(16, 11.5)]).astype(np.float32)
     data = np.zeros((1, 4, NY, NX), dtype=np.float32)
@@ -231,6 +232,27 @@ def test_clean_ramp_sky_shift_is_mean_minus_median_of_the_differences():
 
     expected = float(np.mean(row) - np.median(row))
     np.testing.assert_allclose(stats["sky_shift"], [expected], rtol=1e-5)
+
+
+def test_clean_ramp_mean_background_leaves_the_sky_level():
+    """clean_ramp with the mean background on stripes plus bright pixels reports a sky change of zero.
+
+    The bright pixels raise the mean of every difference above its median,
+    so a median background would lower the sky.
+    """
+    rng = np.random.default_rng(21)
+    data, _ = striped_ramp(rng)
+    data[0, :, ::9, ::7] += 50.0 * np.arange(1, data.shape[1] + 1)[:, None, None]
+    groupdq = np.zeros(data.shape, dtype=np.uint8)
+    mask = np.ones((NY, NX), dtype=bool)
+    stats = {}
+
+    clean_ramp(
+        data, groupdq, mask, -1, 2, fit_method="row_median", background_method="mean",
+        column_offsets=True, anchor_mean=True, stats=stats,
+    )
+
+    assert stats["sky_change"][0] == pytest.approx(0.0, abs=1e-4)
 
 
 def test_sky_shift_and_change_divides_by_the_response():
@@ -274,7 +296,7 @@ def test_clean_ramp_cleans_group0_when_clean_first_group_true():
 
     cleaned = clean_ramp(data, groupdq, mask, -1, 2, fit_method="row_median", clean_first_group=True)
 
-    noise = estimate_noise(data[0, 0] - np.median(data[0, 0]), mask.copy(), -1, 2, "row_median")
+    noise = estimate_noise(data[0, 0] - np.mean(data[0, 0]), mask.copy(), -1, 2, "row_median")
     np.testing.assert_allclose(data[0, 0] - cleaned[0, 0], noise, atol=1e-3)
 
 
@@ -517,6 +539,25 @@ def test_prepare_difference_unknown_background_method_raises():
 
     with pytest.raises(ValueError, match="Unknown background_method"):
         prepare_difference(image, mask, background_method="model")
+
+
+def test_prepare_difference_flat_given_by_position_raises():
+    """prepare_difference with background_method and the flat given by position raises TypeError (both are keyword-only)."""
+    image = np.ones((NY, NX), dtype=np.float32)
+    mask = np.ones((NY, NX), dtype=bool)
+
+    with pytest.raises(TypeError):
+        prepare_difference(image, mask, "median", np.ones((NY, NX), dtype=np.float32))
+
+
+def test_clean_ramp_unknown_background_method_raises():
+    """clean_ramp with background_method='model' raises ValueError."""
+    data = np.zeros((1, 4, NY, NX), dtype=np.float32)
+    groupdq = np.zeros(data.shape, dtype=np.uint8)
+    mask = np.ones((NY, NX), dtype=bool)
+
+    with pytest.raises(ValueError, match="Unknown background_method"):
+        clean_ramp(data, groupdq, mask, -1, 2, background_method="model")
 
 
 def test_exposure_model_is_shared_across_integrations():
@@ -844,6 +885,17 @@ def test_prepare_difference_median_leaves_mask_unclipped():
     assert mask.all()
 
 
+def test_mean_background_returns_the_mean_of_mask_pixels():
+    """mean_background on 10 inside the mask with every 10th row at 100, and 50 outside, returns 19."""
+    image = np.full((100, 100), 10.0, dtype=np.float32)
+    image[::10] = 100.0
+    mask = np.ones(image.shape, dtype=bool)
+    mask[:, 50:] = False
+    image[:, 50:] = 50.0
+
+    assert mean_background(image, mask) == pytest.approx(19.0)
+
+
 def test_clipped_median_background_returns_sky_under_bright_pixels():
     """clipped_median_background on sky 10 with a tenth of the rows at 100 returns 10 within 0.02.
 
@@ -866,6 +918,15 @@ def test_clipped_median_background_uses_only_mask_pixels():
     image[:, 128:] = 50.0
 
     assert clipped_median_background(image, mask) == pytest.approx(10.0, abs=0.02)
+
+
+def test_clipped_median_background_integer_mask_matches_bool_mask():
+    """clipped_median_background with a uint8 mask returns the same value as with the bool mask."""
+    rng = np.random.default_rng(20)
+    image = rng.normal(10.0, 1.0, (NY, NX)).astype(np.float32)
+    mask = rng.random((NY, NX)) > 0.5
+
+    assert clipped_median_background(image, mask.astype(np.uint8)) == clipped_median_background(image, mask)
 
 
 def test_clean_difference_with_flat_returns_image_minus_row_noise():

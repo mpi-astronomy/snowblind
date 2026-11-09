@@ -51,6 +51,7 @@ __all__ = [
     "estimate_channel_gains",
     "integration_backgrounds",
     "masked_mean_background",
+    "mean_background",
     "clipped_median_background",
     "slope_per_group",
     "exclude_reference_border",
@@ -92,8 +93,8 @@ class StreamCleanStep(Step):
     around the stream filter; ``save_mask``, ``save_noise`` and
     ``save_spectra`` write intermediate products.  The step records what
     it did to the sky level in ``meta.snowblind.stream_clean``:
-    ``sky_mean_minus_median`` of the background pixels (the shift a scalar
-    median background imposes, header card ``SKYMNMED``) and
+    ``sky_mean_minus_median`` of the background pixels (the shift a median
+    background would impose, header card ``SKYMNMED``) and
     ``sky_change_by_cleaning`` (card ``SKYCHG``), both in DN/s of the
     flat-fielded sky, and each per integration.
     """
@@ -104,7 +105,7 @@ class StreamCleanStep(Step):
 
     spec = """
         fit_method = option('wiener', 'row_median', default='wiener')  # noise estimator per channel
-        background_method = option('median', 'integration_model', 'exposure_model', 'crds_background', None, default='median')  # background removed before fitting and put back after: a scalar median suits sky-limited fields and darks, integration_model (a box model) only extended structure above its box, None also removes the mean level (sky or dark current); crds_background (the scaled CRDS background reference) is the default on WFSS exposures
+        background_method = option('mean', 'median', 'integration_model', 'exposure_model', 'crds_background', None, default='mean')  # background removed before fitting and put back after, so it sets the sky level: mean leaves the sky as it was (imaging and darks), median puts it at the median, integration_model and exposure_model (box models) also keep extended structure above their box, crds_background (the scaled CRDS background reference) is the default on WFSS exposures, None removes the mean level (sky or dark current) too
         background_box_size = int_list(min=2, max=2, default=None)  # box size of the box-spline background (integration_model, exposure_model); default 32 by 32
         apply_flat_field = boolean(default=True)  # measure the background on the flat-fielded difference (the sky times the response); without a flat reference the raw difference is used
         reference_units = option('auto', 'raw', 'flat_fielded', default='auto')  # units of the CRDS background reference: raw (it carries the detector's pixel response, as the NIRISS files do), flat_fielded (as the NIRCam files are), or auto (decided from its pixel pattern against the flat)
@@ -177,7 +178,7 @@ class StreamCleanStep(Step):
             )
             self.set_cal_step(result, "SKIPPED")
             return result
-        if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES and self.background_method == "median":
+        if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES and self.background_method in SCALAR_BACKGROUND_METHODS:
             # the dispersed background is a smooth function of position that no scalar background can model
             self.background_method = "crds_background"
             log.debug("WFSS exposure: background_method set to 'crds_background'")
@@ -387,8 +388,8 @@ class StreamCleanStep(Step):
         Two numbers, in DN/s of the flat-fielded sky (raw DN/s without a
         flat), from the per-difference values of `clean_ramp` divided by
         the group time: ``sky_mean_minus_median``, the masked mean minus
-        median of the background pixels, which is the shift a scalar median
-        background imposes on the sky, and ``sky_change_by_cleaning``,
+        median of the background pixels, which is the shift a median
+        background would impose on the sky, and ``sky_change_by_cleaning``,
         negative when the cleaning lowered the sky.  `Step.record` writes
         the mean over the integrations, also to the header cards
         ``SKYMNMED`` and ``SKYCHG``, and the value of each integration to
@@ -554,13 +555,13 @@ class StreamCleanStep(Step):
             if self._reference is not None:
                 self._fit_reference(model, background_mask, flat)
                 background_mask = self._chisel_scene_mask(rate, self._scene_flat)
-            if self.background_method == "median" and self._scene is None:
+            if self.background_method in SCALAR_BACKGROUND_METHODS and self._scene is None:
                 low, high = background_structure(rate, background_mask)
                 if high - low > 0.5:
                     # a galaxy across the frame, a dispersed background, or heavy crowding; flat sky fields sit within 0.15
                     log.warning(
                         f"The unmasked background has large-scale structure: its 32-pixel tiled sky runs from {low:.2f} to "
-                        f"{high:.2f} times the median.  A scalar median background hands that structure to the noise "
+                        f"{high:.2f} times the median.  A scalar background hands that structure to the noise "
                         "estimate, which removes it; for extended emission use background_method='integration_model', "
                         "for a dispersed exposure 'crds_background'"
                     )
@@ -761,7 +762,7 @@ def reference_scale(rate, reference, background_mask, floor=0.2, min_pixels=1000
 def background_structure(rate, background_mask, box=32, percentiles=(1.0, 99.0)):
     """How much large-scale structure the unmasked background holds, as a range relative to its median.
 
-    A scalar median background assumes the background is flat.  Extended
+    A scalar background assumes the background is flat.  Extended
     emission that the scene mask does not cover, such as a galaxy filling
     half the frame, is a gradient of tens of percent of the sky, and under
     a scalar background the stream filter removes it as slow noise.  The
@@ -1044,7 +1045,7 @@ def clean_ramp(
     fastaxis,
     slowaxis,
     fit_method="row_median",
-    background_method="median",
+    background_method="mean",
     background_box_size=None,
     clean_first_group=False,
     flat=None,
@@ -1084,7 +1085,7 @@ def clean_ramp(
         science-frame axis and direction of the slow readout.
     fit_method : str
         Key into `snowblind.stream_filters.FILTERS`.
-    background_method : {'median', 'integration_model', 'exposure_model', 'crds_background', None}
+    background_method : {'mean', 'median', 'integration_model', 'exposure_model', 'crds_background', None}
         Background removed from each difference before the noise fit (see
         `clean_difference`).  ``integration_model`` and ``exposure_model``
         fit one model per integration or per exposure with
@@ -1150,8 +1151,8 @@ def clean_ramp(
         differences cleaned, measured on the background pixels of the
         flat-fielded difference (the raw difference when ``flat`` is
         None): ``sky_shift``, the masked mean minus the masked median of
-        the difference, which is the shift a scalar median background
-        imposes on the sky; and ``sky_change``, the mean of the cleaned
+        the difference, which is the shift a median background would
+        impose on the sky; and ``sky_change``, the mean of the cleaned
         minus the input difference, the change of the sky made by the
         cleaning (negative when the sky was lowered).  NaN for an
         integration with no usable difference.
@@ -1166,6 +1167,7 @@ def clean_ramp(
         Only when ``return_spectra`` is True: one entry per integration,
         each a list of per-channel dicts from `channel_gain`.
     """
+    background_method = _checked_background_method(background_method)
     nints = data.shape[0]
     cleaned = np.array(data, dtype=np.float32, copy=True)
 
@@ -1316,7 +1318,7 @@ def sky_shift_and_change(sky, removed, response=None):
     -------
     shift : float
         Mean minus median of ``sky`` (divided by the response): the shift a
-        scalar median background imposes on the sky.  NaN without finite
+        median background would impose on the sky.  NaN without finite
         pixels.
     change : float
         Mean of the cleaned minus the input difference over the pixels, i.e.
@@ -1368,6 +1370,32 @@ def _fixed_for(fixed, integration, group, first_group_scale):
     return fixed[integration]
 
 
+def mean_background(image, mask):
+    """The mean of the background pixels; ``mask`` is not changed.
+
+    The noise fit removes each column's or channel's mean, so putting this
+    mean back leaves the mean of the background pixels as it was: the
+    clean removes only noise that averages to zero.  A plain mean over the
+    same pixels in every difference adds up over the differences to the
+    mean of the group, so nothing random-walks along the ramp.
+
+    Parameters
+    ----------
+    image : ndarray, shape (nrows, ncols)
+        Image in any units; non-finite pixels are left out.
+    mask : ndarray of bool, shape (nrows, ncols)
+        True for background pixels; read, not modified.
+
+    Returns
+    -------
+    float
+        The mean of the usable background pixels, in the units of
+        ``image``; NaN when no pixel is usable.
+    """
+    values = np.asarray(image, dtype=np.float64)[np.asarray(mask, dtype=bool) & np.isfinite(image)]
+    return float(np.mean(values)) if values.size else float("nan")
+
+
 def clipped_median_background(image, mask, n_sigma=3.0):
     """The median of the background pixels within ``n_sigma`` of the sky level; ``mask`` is not changed.
 
@@ -1393,7 +1421,7 @@ def clipped_median_background(image, mask, n_sigma=3.0):
         The median of the kept pixels, in the units of ``image``; NaN when
         no pixel is usable.
     """
-    values = np.asarray(image, dtype=np.float32)[mask & np.isfinite(image)]
+    values = np.asarray(image, dtype=np.float32)[np.asarray(mask, dtype=bool) & np.isfinite(image)]
     if values.size == 0:
         return np.float32(np.nan)
     wide = values.astype(np.float64)
@@ -1405,7 +1433,20 @@ def clipped_median_background(image, mask, n_sigma=3.0):
     return np.median(values[kept])
 
 
-def prepare_difference(image, mask, background_method="median", flat=None, fixed_background=None):
+SCALAR_BACKGROUND_METHODS = {"mean": mean_background, "median": clipped_median_background}
+MODEL_BACKGROUND_METHODS = ("integration_model", "exposure_model", "crds_background")
+
+
+def _checked_background_method(background_method):
+    """``background_method`` as None or one of the scalar or model methods; ValueError otherwise."""
+    if background_method is None or str(background_method).lower() == "none":
+        return None
+    if background_method not in SCALAR_BACKGROUND_METHODS and background_method not in MODEL_BACKGROUND_METHODS:
+        raise ValueError(f"Unknown background_method {background_method!r}")
+    return background_method
+
+
+def prepare_difference(image, mask, *, background_method="mean", flat=None, fixed_background=None):
     """Mask NaNs and remove the background, in the raw DN of the difference.
 
     This is the part of ``_clean_one_image`` in the jwst step that comes
@@ -1430,12 +1471,13 @@ def prepare_difference(image, mask, background_method="median", flat=None, fixed
         Background mask, True for usable pixels.  Updated in place: NaN
         pixels and pixels without a valid flat are set to False.  The
         pixels the ``median`` background leaves out are not, so that the
-        noise fit uses the same pixels in every difference.
-    background_method : {'median', 'integration_model', 'exposure_model', 'crds_background', None}
-        How the background is found: ``median`` is
-        `clipped_median_background` of the (flat-fielded) difference, the
-        other methods require ``fixed_background``, and None (or
-        ``'none'``) removes no background.
+        background does not change which pixels the noise is fitted on.
+    background_method : {'mean', 'median', 'integration_model', 'exposure_model', 'crds_background', None}
+        How the background is found: ``mean`` is `mean_background` and
+        ``median`` `clipped_median_background` of the (flat-fielded)
+        difference, the other methods require ``fixed_background``, and
+        None (or ``'none'``) removes no background; any other value raises
+        a ValueError.
     flat : ndarray or None, shape (nrows, ncols)
         Flat field; pixels where it is not finite or not positive are
         treated as NaN.
@@ -1453,6 +1495,9 @@ def prepare_difference(image, mask, background_method="median", flat=None, fixed
     nan_pix : ndarray of bool
         Where the input was not finite.
     """
+    method = _checked_background_method(background_method)
+    if method in MODEL_BACKGROUND_METHODS and fixed_background is None:
+        raise ValueError(f"background_method={method!r} needs its background as fixed_background")
     image = image.astype(np.float32, copy=True)
     flat_ok = None
     if flat is not None:
@@ -1466,20 +1511,15 @@ def prepare_difference(image, mask, background_method="median", flat=None, fixed
     if not np.any(mask):
         return None, None, nan_pix
 
-    no_background = background_method is None or str(background_method).lower() == "none"
-    if background_method in ("integration_model", "exposure_model", "crds_background") and fixed_background is None:
-        raise ValueError(f"background_method={background_method!r} needs its background as fixed_background")
     if fixed_background is not None:
         background = fixed_background
-    elif no_background:
-        background = 0.0
-    elif background_method == "median":
+    elif method in SCALAR_BACKGROUND_METHODS:
         # measured on the flat-fielded image, where the sky is smooth
         fielded = image if flat is None else np.where(flat_ok, image / np.where(flat_ok, flat, 1.0), 0.0)
-        background = clipped_median_background(fielded, mask)
+        background = SCALAR_BACKGROUND_METHODS[method](fielded, mask)
     else:
-        raise ValueError(f"Unknown background_method {background_method!r}")
-    if flat is not None and not no_background:
+        background = 0.0
+    if flat is not None and method is not None:
         background = np.asarray(background, dtype=np.float32) * np.where(flat_ok, flat, 0.0)
     bkg_sub = image - background
     return bkg_sub, background, nan_pix
@@ -1677,7 +1717,8 @@ def estimate_channel_gains(
     background_mask,
     fastaxis,
     slowaxis,
-    background_method="median",
+    *,
+    background_method="mean",
     clean_first_group=False,
     flat=None,
     first_direction=1,
@@ -1690,7 +1731,7 @@ def estimate_channel_gains(
 ):
     """First pass of the ``wiener`` method: the noise spectrum and gain of every channel.
 
-    For every group difference the background-subtracted, clipped image is
+    For every group difference the background-subtracted image is
     laid out on the clock grid channel by channel and its masked
     autocorrelation turned into a spectrum.  The spectra are median-combined
     over the differences of an integration (the noise is stationary, the
@@ -1711,7 +1752,7 @@ def estimate_channel_gains(
     slowaxis : int
         Detector readout axis keyword ``meta.subarray.slowaxis``: the
         science-frame axis and direction of the slow readout.
-    background_method : {'median', 'integration_model', 'crds_background', None}
+    background_method : {'mean', 'median', 'integration_model', 'exposure_model', 'crds_background', None}
         Background removed from each difference (see `prepare_difference`).
     clean_first_group : bool
         If True, group 0 (against zero or ``first_group_reference``) is
@@ -1755,8 +1796,11 @@ def estimate_channel_gains(
         data, groupdq, background_mask, clean_first_group, first_group_reference
     ):
         bkg_sub, _background, _nan_pix = prepare_difference(
-            image, mask, background_method, flat,
-            _fixed_for(fixed_backgrounds, i, j, first_group_scale),
+            image,
+            mask,
+            background_method=background_method,
+            flat=flat,
+            fixed_background=_fixed_for(fixed_backgrounds, i, j, first_group_scale),
         )
         if bkg_sub is None:
             continue
@@ -1932,8 +1976,9 @@ def clean_difference(
     mask,
     fastaxis,
     slowaxis,
+    *,
     fit_method="row_median",
-    background_method="median",
+    background_method="mean",
     flat=None,
     first_direction=1,
     channel_gains=None,
@@ -1948,9 +1993,10 @@ def clean_difference(
     Follows ``_clean_one_image`` in the jwst step: optionally measure the
     background on the flat-fielded image, mask NaNs, fit and remove a
     background level, estimate the noise, then restore the background,
-    flat and NaNs.  Nothing here is nonlinear in the data, so the same
-    operation applies to every difference and nothing random-walks along
-    the ramp.
+    flat and NaNs.  The noise fit is a fixed linear operation on the masked
+    pixels, so over the differences it adds up to the same operation on
+    the group and nothing random-walks along the ramp; the ``median``
+    background is not linear, but it only sets the level that is put back.
 
     Parameters
     ----------
@@ -1967,7 +2013,7 @@ def clean_difference(
         science-frame axis and direction of the slow readout.
     fit_method : str
         Key into `snowblind.stream_filters.FILTERS`.
-    background_method : {'median', 'integration_model', 'crds_background', None}
+    background_method : {'mean', 'median', 'integration_model', 'exposure_model', 'crds_background', None}
         Passed to `prepare_difference`.
     flat : ndarray or None
         Flat field matching ``image``.
@@ -1997,7 +2043,7 @@ def clean_difference(
         The background that was removed and restored.
     """
     bkg_sub, background, nan_pix = prepare_difference(
-        image, mask, background_method, flat, fixed_background
+        image, mask, background_method=background_method, flat=flat, fixed_background=fixed_background
     )
     if bkg_sub is None:
         return None, None
