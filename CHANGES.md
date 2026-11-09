@@ -108,15 +108,17 @@
   to times measured for each detector and packaged with snowblind
   (`snowblind/data/snowball_persistence_<detector>.asdf`, read by
   `snowblind.snowblind.packaged_snowball_times`): for the ten NIRCam
-  detectors and NIRISS, the 99th percentile over the detector's snowballs
-  of the time at which a pixel falls to 0.005 DN/s, from about 1400 s to
-  21000 s for the saturated pixels and 550 s to 3800 s for their
-  neighbors. A detector without a file gets the longest packaged times,
-  each the largest over the files, with a warning.
+  detectors, NIRISS and the two NIRSpec detectors, the 99th percentile over
+  the detector's snowballs of the time at which a pixel falls to
+  0.005 DN/s, from about 1400 s to 21000 s for the saturated pixels and
+  550 s to 3800 s for their neighbors. A detector without a file gets the
+  longest packaged times, each the largest over the files, with a warning.
   `scripts/measure_snowball_persistence.py` measures the excess at the
   cores in dark exposures, `scripts/fit_snowball_persistence.py` fits the
   decay of each core, `scripts/package_snowball_persistence.py` writes the
-  files and `scripts/make_snowball_persistence_figure.py` draws them.
+  files, lengthening both times where darks of the detector taken later
+  show more excess (`--later`), and
+  `scripts/make_snowball_persistence_figure.py` draws them.
 - `snowblind.saturation.flag_saturation_neighbors`, a post-hook for the
   saturation step run with `n_pix_grow_sat=0`: it flags the eight pixels
   around each saturated pixel, group by group, with CHARGELOSS and
@@ -133,9 +135,6 @@
   `dilate_jump_slice` and `dilate_large_area_jumps` take the saturated and
   reference pixels and return the cores with the grown regions;
   `dilate_saturated_cores` takes the cores.
-
-### Changed
-
 - `SnowblindStep` flags the ring, each snowball's core grown by
   `ring_width` pixels, from the jump group to the end of the integration,
   where the charge leaking from the core keeps affecting its neighbors

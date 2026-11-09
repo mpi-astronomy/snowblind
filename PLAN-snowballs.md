@@ -31,7 +31,9 @@ Done on branch `snowballs-near-edges` (committed f807f0b):
   (`cores_in_next_integration`). Written before the duration was settled;
   see the decision below.
 
-Done 2026-11-09 evening, uncommitted (replaces the provisional rule above):
+Done 2026-11-09 evening (committed d397f7c and aef5dcc; the branch was
+rebased onto main after release 1.3.1 the same night: c66c1d8, 7fbb512,
+caf30db; replaces the provisional rule above):
 
 - The ring is flagged to the end of the integration (`after_jumps`
   defaults to None; set, it warns that it is deprecated and keeps the old
@@ -42,7 +44,8 @@ Done 2026-11-09 evening, uncommitted (replaces the provisional rule above):
   while the difference it ends starts within the time of the end of the
   hit's integration, group 0 included; group times from `int_times`, or
   the frame counts (`group_difference_times`). Defaults: the packaged
-  `snowblind/data/snowball_persistence_<detector>.asdf` (10 NIRCam + NIS),
+  `snowblind/data/snowball_persistence_<detector>.asdf` (10 NIRCam, NIS,
+  NRS1, NRS2),
   read by `packaged_snowball_times`; no file: the longest packaged core and
   neighbor times (`longest_packaged_snowball_times`, 21204 s and 3814 s)
   and a warning (decided 2026-11-09, was 0 s).
@@ -57,7 +60,9 @@ Done 2026-11-09 evening, uncommitted (replaces the provisional rule above):
   `make_snowball_persistence_figure.py`. Docs (new subsection and figure
   `docs/figures/snowball_persistence.png`), README, CHANGES, tests
   (530 pass).
-- Still to add: NRS1 and NRS2 files when their measurement is in.
+- NRS1 and NRS2 files added 2026-11-09 night, uncommitted (entry of that
+  date): NRS1 lengthened by its 2026 check (`package_snowball_persistence.py
+  --later`); figure, docs, CHANGES and the per-detector test updated.
 
 Decided 2026-11-08 (James):
 
@@ -125,11 +130,10 @@ Decided 2026-11-09 evening (James):
 
 ## 2. Open items
 
-1. Snowball core persistence time, every detector (NIRCam x10, NIRISS);
-   2026-11-09: all ten NIRCam detectors measured (entries of that date);
-   James chose the 99th percentile of the per-core times (darks are the
-   strict case: with sky, the excess sinks into the sky noise sooner);
-   NIRISS not yet run:
+1. Done 2026-11-09 for all thirteen detectors (NIRCam x10, NIRISS,
+   NIRSpec x2; entries of that date). James chose the 99th percentile of
+   the per-core times (darks are the strict case: with sky, the excess
+   sinks into the sky noise sooner). The task was to
    measure the decay of the core's excess against the time since the end of
    the hit's integration, to the 0.005 DN/s threshold of the
    `PersistenceFlagStep` times, and pick a conservative time. Data: program
@@ -740,3 +744,63 @@ percentile):
   `out_9022/core_persistence_9022.png` of the entry above, which used the
   10 ks window). The `_decay.txt` and `_decay.npz` files in `out_9022/`
   and `out_9279/` are from this run.
+
+### 2026-11-09 (night): NIRSpec NRS1 and NRS2, and a check on 2026 darks
+
+Main set: program 1121 (`out_1121/`), 9 IRS2 exposures back to back
+(NRSIRS2RAPID, one integration of 20 or 245 groups each), run on the
+astronode with `measure.py --jobs 1` (40 GB peak per process for a
+245-group integration). The logs confirm `n_pix_grow_sat=1`; cores have a
+median of 25 to 26 px. Fitted with the standard rules (`decay_times.py`:
+baselines at least 2 clean integrations, cores with data in their first
+1000 s).
+
+| Detector | cores | alpha | stack, measured | saturated pixels | null 99% | 1 px: alpha | stack | 1 px from saturated | null 99% |
+|----------|------:|------:|------:|------:|------:|-----:|----:|------:|------:|
+| NRS1     | 1356 | 1.19 | 3457 | 6061 | 3201 | 1.27 | 735 | 2048 | 1396 |
+| NRS2     |  997 | 1.21 | 3614 | 6741 | 2499 | 1.19 | 947 | 2748 | 2273 |
+
+(Of 2128 and 1564 cores. NRS1's saturated time is its 99% of 5850 s
+scaled by 1.036, measured over fitted stack crossing; NRS2's 1 px time is
+2732 s scaled by 1.006.)
+
+- NIRSpec sits between the long-wavelength NIRCam detectors and NIRISS.
+  Pixels 2 px from a saturated pixel never reach 5 mDN/s (at most
+  2.3 mDN/s).
+- Each exposure is one long integration, so most cores stayed saturated
+  for more than 600 s before the reset, the case that decays slowest: on
+  NRS1 the 99% is 3.9 ks for cores saturated under 300 s and 5.9 ks for
+  those over 600 s.
+- NRS2's neighbor time is close to its null (2748 s against 2273 s), so
+  partly noise: conservative, as on the fast NIRCam detectors.
+
+Check: program 9273 (`out_9273/`, 2026-01-27), 4 exposures of 200 groups
+with gaps of about 1.6 ks, so no core has data in its first 1000 s; fitted
+with `--min-clean 1 --early-by 5000`. Its per-core times are not usable
+(null 99% 4.3 to 4.8 ks); its stack is compared with 1121's over the six
+time bins both have (1.5 to 12 ks), as the inverse-variance weighted mean
+of the per-bin ratio 2026 / 2022 of the saturated pixels' stack:
+
+- NRS1: 1.23 +- 0.07, above 1 in every bin (1.21, 1.18, 1.23, 1.75, 1.26,
+  1.70; chi-square 15.5 for 6 bins against a ratio of 1), with the
+  control pixels flat. Persistence on NRS1 looks about 23% stronger now.
+- NRS2: 0.91 +- 0.06, consistent with 2022.
+- The 1 px stack of 9273 is too noisy after 1.8 ks to compare (bins below
+  zero; mean ratio 0.62 +- 0.25), so the neighbors take the saturated
+  pixels' ratio.
+
+James chose (2026-11-09) to lengthen NRS1's times by the check, as if
+every core's excess were 1.23 times higher: each time times
+1.23^(1/alpha), its own alpha, x1.195 for the core and x1.180 for the
+neighbors. `package_snowball_persistence.py --later` does this for any
+detector whose later stack is higher (a ratio below 1 changes nothing) and
+saves the check under `later_check` in the file.
+
+Packaged: NRS1 7241 s core, 2417 s neighbors; NRS2 6741 s and 2748 s.
+Both fall within the NIRCam ranges, so the longest-time fallback stays
+21204 s and 3814 s. The figure (`docs/figures/snowball_persistence.png`,
+now from `scripts/make_snowball_persistence_figure.py`) adds a NIRSpec
+row and draws the packaged times, so NRS1's lines include the check. The
+repo's `fit_snowball_persistence.py` and `snowball_persistence_excess.py`
+now have `--min-clean` and `--early-by`; rerun on the 9273 series they
+give `decay.npz` files identical to `out_9273/`.

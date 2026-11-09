@@ -68,11 +68,11 @@ next one.
 
 Both times default to those measured for the detector and packaged with
 snowblind (``snowblind/data/snowball_persistence_<detector>.asdf``), for
-the ten NIRCam detectors and NIRISS. A detector without a file, or a model
-without its detector, gets the longest packaged times (about 21000 s for the
-core and 3800 s for the pixels next to it) and a warning. Each time is the
-99th percentile over the
-detector's snowballs of the time at which a pixel falls to 0.005 DN/s, the
+the ten NIRCam detectors, NIRISS and the two NIRSpec detectors. A detector
+without a file, or a model without its detector, gets the longest packaged
+times (about 21000 s for the core and 3800 s for the pixels next to it) and
+a warning. Each time is the 99th percentile over the detector's snowballs
+of the time at which a pixel falls to 0.005 DN/s, the
 threshold of the ``PersistenceFlagStep`` times: from about 1400 s (NRCA4) to
 21000 s (NRCB4) for the saturated pixels, and from about 550 s to 3800 s for
 the pixels next to them. Pixels two pixels from the saturated ones never
@@ -94,9 +94,13 @@ time since the end of the integration of the hit; alpha is fitted to that
 mean, and A to each core with alpha fixed, which gives the core's decay
 time. The power law falls faster than the data at late times, so where the
 mean over cores crosses the threshold later than its fit, the percentile is
-scaled by the ratio. Control pixels far from every core, given the
-integration of a hit and treated the same way, show the spread that noise
-alone gives (99th percentile 0.6 ks to 2 ks). Each file holds the fits,
+scaled by the ratio. Where darks of the detector taken later show more
+excess, averaged over the time bins both sets cover, both times are
+lengthened as if every core's excess were higher by that ratio (each time
+by the ratio to the power 1/alpha). Control pixels far from every core,
+given the integration of a hit and treated the same way, show the spread
+that noise alone gives (99th percentile 0.7 ks to 3.2 ks for the saturated
+pixels, 0.4 ks to 2.3 ks for their neighbors). Each file holds the fits,
 the mean excess per time bin, every core's decay time and the exposures;
 ``scripts/measure_snowball_persistence.py``,
 ``scripts/fit_snowball_persistence.py`` and
@@ -110,9 +114,9 @@ the mean excess per time bin, every core's decay time and the exposures;
    the mean over cores of the saturated pixels (blue), of the pixels one
    pixel from them (orange) and two pixels from them (green), with the
    power law fitted to the saturated pixels, the 5 mDN/s threshold
-   (dashed), and the 99th percentile of the per-core decay times (dotted),
-   which the step uses. Error bars are the standard error over cores; bins
-   at or below zero are not drawn.
+   (dashed), and the times the step uses (dotted), the 99th percentile of
+   the per-core decay times. Error bars are the standard error over cores;
+   bins at or below zero are not drawn.
 
 The saturated pixels are those flagged SATURATED, so ``ring_width`` and the
 one-pixel growth are counted from the SATURATED flags. With the jwst

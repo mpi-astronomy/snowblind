@@ -20,6 +20,7 @@ import numpy as np
 
 THRESHOLD = 0.005  # DN/s, as for the PersistenceFlagStep times
 CLEAN_AFTER = 100000.0  # s; with 10 ks, baselines on the slow detectors held persistence still at 1-2 mDN/s
+MIN_CLEAN = 2  # clean integrations a pixel's baseline needs
 TIME_EDGES = np.array([0, 100, 200, 400, 700, 1000, 1500, 2000, 3000, 4000, 6000, 8000, 12000, 16000, 25000])
 CORE_SIZES = [(1, 9), (10, 29), (30, 99), (100, 100000)]
 DWELLS = [(0, 300), (300, 1000), (1000, 1e9)]
@@ -81,7 +82,7 @@ def hits_of_pixels(d):
     return [sorted(held.get((y, x), set())) for y, x in zip(d["pix_y"], d["pix_x"])]
 
 
-def pixel_excess(d, rng, clean_after=CLEAN_AFTER):
+def pixel_excess(d, rng, clean_after=CLEAN_AFTER, min_clean=MIN_CLEAN):
     """Excess (npix, nblocks) of every series pixel, its pixel-diff weights (0 where there is no rate), the
     usable-pixel mask, the control-pixel mask, and the core index given to each control pixel for the null."""
     hit_ints = hits_of_pixels(d)
@@ -96,7 +97,7 @@ def pixel_excess(d, rng, clean_after=CLEAN_AFTER):
     med = np.nanmedian(cb)
     sigma = 1.4826 * np.nanmedian(np.abs(cb - med))
     typical = np.abs(base - med) <= 5 * sigma
-    usable = typical & (d["pix_dq"] == 0) & (n_clean >= 2)
+    usable = typical & (d["pix_dq"] == 0) & (n_clean >= min_clean)
 
     excess = d["rate"] - base[:, None]
     w = np.where(np.isfinite(excess), d["count"], 0).astype(float)

@@ -11,8 +11,16 @@ snowball_persistence_<detector>.asdf holds:
 and the measurement behind them: the fits, the mean excess per time bin, every core's decay time and its
 null, and the exposures.
 
+A later dataset's decay files (--later, matched by detector) check that the persistence has not grown
+since: the ratio of its mean excess over cores of the saturated pixels to the main dataset's, averaged
+over the time bins both have (inverse-variance weighted), and when that ratio is above 1 both times are
+lengthened as if every core's excess were higher by it, each by its own alpha (time * ratio**(1/alpha)).
+Its neighbors are not compared: their mean excess falls under the noise before the bins a later dataset
+of long gaps covers.  The check is saved under later_check.
+
 usage:
   package_snowball_persistence.py --dataset TEXT decay1.npz [decay2.npz ...] [--outdir DIR]
+                                  [--later decay1.npz ... --later-dataset TEXT]
 The series files named in each decay file are looked for next to it, for their exposure names.
 """
 import argparse
@@ -70,11 +78,51 @@ def selection_tree(z, key, threshold):
     return tree
 
 
-def package(decay_path, dataset, outdir):
+def later_ratio(z, later):
+    """Weighted mean ratio of the later to the main mean excess of the saturated pixels, its error, the
+    ratio and error per time bin, and the time bins used."""
+    if not np.array_equal(z["time_edges"], later["time_edges"]):
+        raise ValueError("the later decay file has other time bins")
+    main, late = z["stack_saturated"], later["stack_saturated"]
+    both = np.isfinite(main[:, 0]) & np.isfinite(late[:, 0]) & (main[:, 0] > 0)
+    ratio = late[both, 0] / main[both, 0]
+    error = np.abs(ratio) * np.hypot(late[both, 1] / late[both, 0], main[both, 1] / main[both, 0])
+    weight = error**-2.0
+    bins = np.stack([z["time_edges"][:-1][both], z["time_edges"][1:][both]], axis=1)
+    return float(np.sum(weight * ratio) / np.sum(weight)), float(np.sum(weight) ** -0.5), ratio, error, bins
+
+
+def later_check(z, later_path, later_dataset):
+    later = np.load(later_path)
+    mean, error, ratio, ratio_error, bins = later_ratio(z, later)
+    exposures = exposures_of(later_path, later)
+    return {
+        "dataset": later_dataset,
+        "exposures": exposures,
+        "n_exposures": len(exposures),
+        "ratio": mean,
+        "ratio_error": error,
+        "time_bins": bins.astype(np.float32),
+        "bin_ratio": ratio.astype(np.float32),
+        "bin_ratio_error": ratio_error.astype(np.float32),
+        "time_scale": {name: max(1.0, mean) ** (1.0 / float(z[f"alpha_{key}"])) for name, key in SELECTIONS.items()},
+        "baseline": f"integrations ending before the hit or starting more than {float(later['clean_after']):.0f} s "
+                    f"after the end of its integration, at least {int(later['min_clean'])}",
+        "cores": f"cores with data in their first {float(later['early_by']):.0f} s after the end of the "
+                 "integration of the hit",
+    }
+
+
+def package(decay_path, dataset, outdir, later_path=None, later_dataset=None):
     z = np.load(decay_path)
     detector = str(z["detector"])
     threshold = float(z["threshold"])
     selections = {name: selection_tree(z, key, threshold) for name, key in SELECTIONS.items()}
+    check = None
+    if later_path is not None:
+        check = later_check(z, later_path, later_dataset)
+        for name, selection in selections.items():
+            selection["time"] *= check["time_scale"][name]
     exposures = exposures_of(decay_path, z)
     tree = {
         "description": (
@@ -83,7 +131,8 @@ def package(decay_path, dataset, outdir):
             "of the integration of the hit at which the excess rate of a core's saturated pixels falls to "
             "threshold (DN/s), each core's from a power law with the detector's alpha, scaled by the measured "
             "over the fitted time at which the mean over cores does when above 1; neighbor_time, the same for "
-            "the pixels one pixel from the saturated ones"
+            "the pixels one pixel from the saturated ones; both lengthened where later_check, a later dataset, "
+            "shows more excess"
         ),
         "detector": detector,
         "core_time": selections["saturated"]["time"],
@@ -113,10 +162,16 @@ def package(decay_path, dataset, outdir):
             "cores": "cores with data in their first 1000 s after the end of the integration of the hit",
         },
     }
+    if check is not None:
+        tree["later_check"] = check
     out = Path(outdir) / f"snowball_persistence_{detector.lower()}.asdf"
     asdf.AsdfFile(tree).write_to(out)
     print(f"{detector:9s} core_time {tree['core_time']:7.0f} s  neighbor_time {tree['neighbor_time']:6.0f} s  "
           f"({selections['saturated']['n_cores']} cores, {len(exposures)} exposures) -> {out}")
+    if check is not None:
+        print(f"          later / main excess {check['ratio']:.2f} +- {check['ratio_error']:.2f} over "
+              f"{len(check['bin_ratio'])} bins: times x{check['time_scale']['saturated']:.3f} (saturated), "
+              f"x{check['time_scale']['neighbors']:.3f} (neighbors)")
 
 
 if __name__ == "__main__":
@@ -124,6 +179,11 @@ if __name__ == "__main__":
     parser.add_argument("decay", nargs="+")
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--outdir", default=str(Path(__file__).resolve().parents[1] / "src" / "snowblind" / "data"))
+    parser.add_argument("--later", nargs="+", default=[], help="decay files of a later dataset")
+    parser.add_argument("--later-dataset", help="the later dataset, as --dataset")
     args = parser.parse_args()
+    if args.later and not args.later_dataset:
+        parser.error("--later needs --later-dataset")
+    later = {str(np.load(path)["detector"]): path for path in args.later}
     for path in args.decay:
-        package(path, args.dataset, args.outdir)
+        package(path, args.dataset, args.outdir, later.get(str(np.load(path)["detector"])), args.later_dataset)

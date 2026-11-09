@@ -496,10 +496,14 @@ def test_ramp_without_any_packaged_times_leaves_later_integrations(monkeypatch, 
 
 
 @pytest.mark.parametrize(
-    "detector", ["NRCA1", "NRCA2", "NRCA3", "NRCA4", "NRCALONG", "NRCB1", "NRCB2", "NRCB3", "NRCB4", "NRCBLONG", "NIS"]
+    "detector",
+    [
+        "NRCA1", "NRCA2", "NRCA3", "NRCA4", "NRCALONG", "NRCB1", "NRCB2", "NRCB3", "NRCB4", "NRCBLONG", "NIS",
+        "NRS1", "NRS2",
+    ],
 )
 def test_packaged_snowball_times_has_a_core_time_longer_than_the_neighbor_time(detector):
-    """packaged_snowball_times for each NIRCam and NIRISS detector returns a core time longer than the neighbor time."""
+    """packaged_snowball_times for each NIRCam, NIRISS and NIRSpec detector returns a core time longer than the neighbor time."""
     core_time, neighbor_time = packaged_snowball_times(detector)
 
     assert core_time > neighbor_time > 0

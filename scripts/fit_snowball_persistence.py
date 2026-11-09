@@ -24,6 +24,7 @@ that noise alone gives.
 
 usage:
   fit_snowball_persistence.py series1.npz [series2.npz ...] [--fit-from SECONDS] [--clean-after SECONDS]
+                              [--min-clean N] [--early-by SECONDS]
 Writes <detector>_decay.npz next to the first series file of each detector.
 """
 import argparse
@@ -32,8 +33,8 @@ from pathlib import Path
 import numpy as np
 from scipy.optimize import curve_fit
 
-from snowball_persistence_excess import (CLEAN_AFTER, THRESHOLD, TIME_EDGES, binned, clean_integrations, load,
-                                         per_integration_rates, pixel_excess)
+from snowball_persistence_excess import (CLEAN_AFTER, MIN_CLEAN, THRESHOLD, TIME_EDGES, binned,
+                                         clean_integrations, load, per_integration_rates, pixel_excess)
 
 FIT_TO = 16000.0
 EARLY_BY = 1000.0
@@ -58,10 +59,10 @@ def weighted_mean_over(groups, select, excess, w, n):
         return total / weight, weight
 
 
-def in_fit_window(t, weights, fit_from):
-    """Rows with data from fit_from to EARLY_BY s: a core whose only data are hours later has its amplitude
+def in_fit_window(t, weights, fit_from, early_by=EARLY_BY):
+    """Rows with data from fit_from to early_by s: a core whose only data are hours later has its amplitude
     set by points where the power law is tens of times smaller, and so by their noise."""
-    return ((t > fit_from) & (t <= EARLY_BY) & (weights > 0)).any(axis=1)
+    return ((t > fit_from) & (t <= early_by) & (weights > 0)).any(axis=1)
 
 
 def bin_times(t, weights, rows):
@@ -129,10 +130,10 @@ def null_curves(d, usable, control, n_pix, rng, clean_after):
     return curves, weights
 
 
-def curves_of_file(path, fit_from, clean_after, rng):
+def curves_of_file(path, fit_from, clean_after, min_clean, early_by, rng):
     """Each core's excess curve for every selection (and the null for the fitted ones) in one series file."""
     d = load(path)
-    excess, w, usable, control, _ = pixel_excess(d, rng, clean_after)
+    excess, w, usable, control, _ = pixel_excess(d, rng, clean_after, min_clean)
     n_cores = len(d["core"]["int"])
     t = (d["block_mid"][None, :] - d["core"]["t_end"][:, None]) * 86400
     out = {"detector": str(d["detector"]), "t": t, "n_core": d["core"]["n_core"],
@@ -143,7 +144,7 @@ def curves_of_file(path, fit_from, clean_after, rng):
         out[f"{name}|curves"], out[f"{name}|weights"] = curves, weights
         if name in FITTED:
             n_pix = np.bincount(d["pix_core"][select], minlength=n_cores)
-            keep = in_fit_window(t, weights, fit_from)
+            keep = in_fit_window(t, weights, fit_from, early_by)
             null, null_w = null_curves(d, usable, control, np.where(keep, n_pix, 0), rng, clean_after)
             out[f"{name}|null"], out[f"{name}|null_w"] = null, null_w
     return out
@@ -158,9 +159,9 @@ def pooled(files, key, fill):
     return np.concatenate([np.pad(a, ((0, 0), (0, width - a.shape[1])), constant_values=fill) for a in arrays])
 
 
-def fit_selection(curves, weights, t, null, null_w, fit_from):
+def fit_selection(curves, weights, t, null, null_w, fit_from, early_by):
     """Stack, alpha, per-core amplitudes and decay times for one selection, and the null's."""
-    keep = in_fit_window(t, weights, fit_from)
+    keep = in_fit_window(t, weights, fit_from, early_by)
     stack = binned(curves, weights, t, keep)
     mids = bin_times(t, weights, keep)
     a, alpha, (a_err, alpha_err) = fit_alpha(stack, mids, fit_from)
@@ -201,14 +202,14 @@ def print_fit(name, f, n_core, dwell):
             print(f"    saturated {lo:.0f}-{hi:.0f} s [{m.sum()}]: {percentiles(tc, m)}")
 
 
-def report(paths, fit_from, clean_after, rng):
-    files = [curves_of_file(path, fit_from, clean_after, rng) for path in paths]
+def report(paths, fit_from, clean_after, min_clean, early_by, rng):
+    files = [curves_of_file(path, fit_from, clean_after, min_clean, early_by, rng) for path in paths]
     detector = files[0]["detector"]
     t = pooled(files, "t", np.nan)
     n_core, dwell = pooled(files, "n_core", 0), pooled(files, "dwell", 0)
-    baseline = f"before the hit or more than {clean_after:.0f} s after"
+    baseline = f"before the hit or more than {clean_after:.0f} s after, at least {min_clean}"
     print(f"\n=== {detector}: {len(n_core)} cores from {len(paths)} series file(s); fits from {fit_from:.0f} to "
-          f"{FIT_TO:.0f} s; baselines {baseline}")
+          f"{FIT_TO:.0f} s; baselines {baseline}; cores with data in their first {early_by:.0f} s")
     print("Excess (mDN/s) by distance from the saturated pixels, stacked over cores, by time bin (s); "
           "where the stack falls to 5 mDN/s:")
     bins = zip(TIME_EDGES[:-1], TIME_EDGES[1:])
@@ -216,7 +217,7 @@ def report(paths, fit_from, clean_after, rng):
     saved = {}
     for name in SELECTIONS:
         curves, weights = pooled(files, f"{name}|curves", np.nan), pooled(files, f"{name}|weights", 0.0)
-        keep = in_fit_window(t, weights, fit_from)
+        keep = in_fit_window(t, weights, fit_from, early_by)
         stack, mids = binned(curves, weights, t, keep), bin_times(t, weights, keep)
         key = name.replace(" ", "")
         saved[f"stack_{key}"], saved[f"mids_{key}"] = stack, mids
@@ -224,11 +225,11 @@ def report(paths, fit_from, clean_after, rng):
               + f"   {measured_crossing(stack, mids):.0f} s")
         if name in FITTED:
             null, null_w = pooled(files, f"{name}|null", np.nan), pooled(files, f"{name}|null_w", 0.0)
-            null_stack = binned(null, null_w, t, in_fit_window(t, null_w, fit_from))
+            null_stack = binned(null, null_w, t, in_fit_window(t, null_w, fit_from, early_by))
             saved[f"null_stack_{key}"] = null_stack
             print("  " + "  its null".ljust(18) + "".join(f"{1000 * v:12.2f}" for v in null_stack[:, 0]))
             print("  " + "  +-".ljust(18) + "".join(f"{1000 * v:12.2f}" for v in null_stack[:, 1]))
-            f = fit_selection(curves, weights, t, null, null_w, fit_from)
+            f = fit_selection(curves, weights, t, null, null_w, fit_from, early_by)
             saved.update({f"{k}_{key}": v for k, v in f.items() if k not in ("stack", "mids")})
             saved[f"print_{key}"] = f
     for name in FITTED:
@@ -236,7 +237,8 @@ def report(paths, fit_from, clean_after, rng):
 
     out = Path(paths[0]).with_name(f"{detector.lower()}_decay.npz")
     np.savez(out, detector=detector, series=[str(p) for p in paths], fit_from=fit_from, fit_to=FIT_TO,
-             clean_after=clean_after, threshold=THRESHOLD, time_edges=TIME_EDGES, n_core=n_core, dwell=dwell,
+             clean_after=clean_after, min_clean=min_clean, early_by=early_by, threshold=THRESHOLD,
+             time_edges=TIME_EDGES, n_core=n_core, dwell=dwell,
              **saved)
 
 
@@ -245,9 +247,11 @@ if __name__ == "__main__":
     parser.add_argument("series", nargs="+")
     parser.add_argument("--fit-from", type=float, default=100.0)
     parser.add_argument("--clean-after", type=float, default=CLEAN_AFTER)
+    parser.add_argument("--min-clean", type=int, default=MIN_CLEAN)
+    parser.add_argument("--early-by", type=float, default=EARLY_BY)
     args = parser.parse_args()
     by_detector = {}
     for path in args.series:
         by_detector.setdefault(str(np.load(path)["detector"]), []).append(path)
     for paths in by_detector.values():
-        report(paths, args.fit_from, args.clean_after, np.random.default_rng(3))
+        report(paths, args.fit_from, args.clean_after, args.min_clean, args.early_by, np.random.default_rng(3))

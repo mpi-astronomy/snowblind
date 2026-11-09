@@ -680,8 +680,9 @@ def packaged_snowball_times(detector):
     ``snowblind/data/snowball_persistence_<detector>.asdf`` holds ``core_time``: the
     99th percentile over the detector's snowballs of the time, in seconds from the end of
     the integration of the hit, at which a core's saturated pixels fall to the file's
-    ``threshold`` (DN/s); ``neighbor_time``, the same for the pixels next to them; and
-    the measurement behind them.  ``scripts/measure_snowball_persistence.py`` measures
+    ``threshold`` (DN/s); ``neighbor_time``, the same for the pixels next to them, both
+    lengthened where later darks show more excess (``later_check``); and the
+    measurement behind them.  ``scripts/measure_snowball_persistence.py`` measures
     the excess in dark exposures, ``scripts/fit_snowball_persistence.py`` fits it and
     ``scripts/package_snowball_persistence.py`` writes the files.
 
