@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-09
+
+### Changed
+
+- `StreamCleanStep`'s default `background_method` is `'mean'`, the mean
+  of each group difference's background pixels. The background only sets
+  the level put back after the clean: the mean leaves the sky as it was,
+  while `'median'`, still available, puts it at the median of the
+  background pixels. On darks the default keeps the dark current, which
+  `None` removes, and the docs no longer recommend `None` for darks. WFSS
+  exposures still switch to `crds_background`.
+- `prepare_difference`, `clean_difference` and `estimate_channel_gains` no
+  longer take `background_box_size`, which only jwst's per-difference
+  `model` background used, and their parameters after `slowaxis` (after
+  `mask` for `prepare_difference`) are keyword-only, so a call written for
+  the old order fails instead of passing values to the wrong parameters.
+  `clean_ramp` and `prepare_difference` raise a `ValueError` for a
+  `background_method` other than `mean`, `median`, None or a model method
+  given its background.
+
+### Fixed
+
+- `StreamCleanStep` with `background_method='median'` (the default until
+  now) no longer removes the pixels the median clips from the pixels the
+  noise is fitted on. The clip is redone on every group difference, so
+  each difference was cleaned over a slightly different set of pixels, and
+  what one difference took out of a group's read noise was not given back
+  by the next. The leftovers added up from group to group as row and
+  column banding in the rate, growing with the number of groups and most
+  visible where the sky is faint. The median is now computed by
+  snowblind's own `clipped_median_background`, which gives the same value
+  as jwst's `background_level` without changing the mask.
+
 ## [1.3.0] - 2026-11-03
 
 ### Added
@@ -306,7 +339,8 @@ First release.
 - Steps register as stpipe plugins and run with `strun` or as pipeline
   hooks.
 
-[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.3.0...HEAD
+[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.3.1...HEAD
+[1.3.1]: https://github.com/mpi-astronomy/snowblind/compare/1.3.0...1.3.1
 [1.3.0]: https://github.com/mpi-astronomy/snowblind/compare/1.2.0...1.3.0
 [1.2.0]: https://github.com/mpi-astronomy/snowblind/compare/1.1.0...1.2.0
 [1.1.0]: https://github.com/mpi-astronomy/snowblind/compare/1.0.1...1.1.0

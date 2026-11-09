@@ -5377,3 +5377,57 @@ packaged from that.
 - The figures of docs/persistence.rst come from these files
   (`python scripts/make_persistence_figures.py`); the decay figure shows
   NRCALONG only, its faint-pixel panel dropped as too much for user docs.
+
+### 2026-11-09: the median background's clip leaked into the noise-fit mask
+
+The default `snowblind_detector1` rates of the 8758 NRCA1/NRCA2 darks (2
+integrations of 150 RAPID groups) kept 1/f banding. Cause: with
+`background_method='median'` (the default since 2026-10-26) the step called
+jwst's `background_level`, which clips the mask it is given (3 sigma, the
+spread from the lower half of the values) on every group difference, and
+that clipped mask went on to the even-odd and column offsets and the stream
+filter. Each difference was cleaned over a different set of pixels, chosen
+by its own noise, so a group's read noise was no longer taken out and given
+back by its two differences, and the leftovers added up along the ramp.
+`background_method=None` never clipped, which is why the dark figures,
+made with None, did not show it.
+
+Measured on one integration of each ramp, fitted with `OLS_C`. "Banding
+ratio": the scatter of each output channel's row averages (512 columns,
+reference pixels and 5-sigma outliers left out) over the same after
+shuffling the pixels, so 1 is what pixel noise alone gives. "Added": the
+row-average scatter of the old-code rate minus the fixed rate, where sky
+and sources cancel. "White": the shuffled row-average scatter.
+
+| data | groups | sky (DN/s) | white (DN/s) | added (DN/s) | banding ratio, old / fixed |
+|---|---|---|---|---|---|
+| dark NRCA2 | 50 RAPID | 0 | | | 3.05 / 0.81 |
+| dark NRCA2 | 10 RAPID | 0 | 0.0026 | 0.0021 | 1.07 / 0.59 |
+| 2234 F470N NRCBLONG | 10 MEDIUM8 | 0.026 | 0.00031 | 0.00010 | 1.09 / 1.01 |
+| 2234 F470N NRCALONG | 10 MEDIUM8 | 0.026 | 0.00031 | 0.00011 | 2.11 / 1.95 |
+| CEERS F444W NRCALONG | 9 MEDIUM8 | 0.69 | 0.0022 | 0.0002 | not usable |
+
+- The banding ratio is about 7 on CEERS F444W with or without cleaning: the
+  row averages there are dominated by sky and sources, so only the "added"
+  column applies. What keeps NRCALONG F470N at 1.95 after the fix is not
+  this; not looked into.
+- Pixel noise is not affected (added pixel scatter 0.00018 DN/s on 0.0067
+  for F470N).
+- `background_method=None` reaches the same banding as the fix (0.82 at 50
+  groups, 0.60 at 10) but removes each column's mean level: the dark
+  current on darks (-0.0135 DN/s at 50 groups), the whole sky on CEERS
+  F444W (-0.68 DN/s).
+- Done (branch stream-clean-median-random-walk): the median comes from
+  snowblind's own `clipped_median_background`, the same clip and value as
+  jwst's `background_level` (identical on 9 real differences and 5 random
+  images) without touching the mask; the F470N NRCBLONG rate is
+  bit-identical to the mask-copy fix. The docs no longer recommend None
+  for darks.
+- jwst's `clean_flicker_noise` has the same clip and, on purpose, a second
+  per-difference clip at `n_sigma` (2) on the same mask before its noise
+  fit; our figures' jwst curves used no background and so show only its
+  per-row median part.
+- To do: rerun the darks (cluster) and the fields made with the median
+  since 2026-10-26.
+- Scripts: results/2026-11-09_median_clip_random_walk/ (each variant of a
+  10-group full-frame ramp takes about 40 s and 4 GB).
