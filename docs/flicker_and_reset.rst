@@ -82,7 +82,7 @@ flagging in place of the hook.
 Parameters of the reset fit go through the ``ramp_fit`` step
 (``--steps.ramp_fit.reset_calib=my_calib.asdf``), parameters of the stream
 clean through the hook
-(``--steps.jump.post_hooks="snowblind.StreamCleanStep(background_method='median')",``).
+(``--steps.jump.post_hooks="snowblind.StreamCleanStep(background_method='integration_model')",``).
 Either substitution switches off, ``--stream_clean=False`` or
 ``--reset_fit=False``, which gives the jwst step back. The jump setup stays
 either way. The default algorithm of the jwst ramp fit, ``OLS_C``, does no
@@ -162,20 +162,23 @@ calibration with the reset offset anchored to each exposure's own sky.
 What to change for other data:
 
 Darks
-   ``background_method=None``. The filter then removes all structure
-   slower than its cutoff, which on a dark is all 1/f noise; a
-   background model would hand the slow part of it back.
+   The default works. Both it and ``background_method=None`` remove the
+   1/f noise and each column's own level; the default then puts back the
+   mean level of each difference, so the rate keeps the dark current,
+   while None sets it to zero. A background model (``integration_model``)
+   would give back the slow part of the 1/f noise.
 
 Sky-limited imaging (the default)
-   ``background_method='median'``, one number per difference. Sparse
-   fields of galaxies and stars on a smooth sky need nothing else.
+   ``background_method='mean'``, one number per difference that leaves
+   the sky as it was (see `The background`_). Sparse fields of galaxies
+   and stars on a smooth sky need nothing else.
 
 Extended emission
    In one exposure, extended emission and slow 1/f noise cannot be told
    apart: both are smooth structure at scales of hundreds of pixels.
    Under a scalar background the filter removes such structure, and the
-   step warns when the unmasked background under the median has that
-   much of it. ``background_method='integration_model'`` keeps it: a
+   step warns when the unmasked background holds that much of it.
+   ``background_method='integration_model'`` keeps it: a
    box-spline background (``background_box_size``, default 32 by 32
    pixels) fitted to the integration's least-squares slope image and
    scaled to every difference. It keeps whatever it holds above the box
@@ -293,7 +296,12 @@ scene mask, the background model (fitted to the least-squares slope
 image and scaled to each difference by its time) and the filter are the
 same for every difference, and the even-odd and column offsets are masked
 means. The whole clean is one linear operation on the ramp and cannot
-add noise to the rate.
+add noise to the rate. The default background, the mean of each
+difference's background pixels, is such an operation too, and it is put
+back after the clean, so the clean leaves the mean of the background
+pixels as it was. A ``median`` background is not linear, but it also only
+sets the level put back: the sky then ends at the median, and the pixels
+its clip leaves out stay in the mask the noise is fitted on.
 
 .. figure:: figures/dark_rate_images.png
    :width: 100%
@@ -302,9 +310,9 @@ add noise to the rate.
    short-wavelength dark, fitted with OLS_C, after the median
    reference-pixel correction, SIRS, SIRS with the jwst
    ``clean_flicker_noise`` step (median method) and SIRS with the stream
-   clean, both cleaning steps with no background model, as is right on a
-   dark. Stretch +- 2.5 sigma about the median. The jwst step removes the
-   banding from every group difference, yet the rate image keeps about as
+   clean, both cleaning steps with ``background_method=None``. Stretch
+   +- 2.5 sigma about the median. The jwst step removes the banding from
+   every group difference, yet the rate image keeps about as
    much row structure as with SIRS alone: over 20 groups the
    per-difference medians accumulate into as much as they removed. The
    stream clean leaves the read noise, and its even-odd and column offset
@@ -342,26 +350,78 @@ the masked mean of the residual, so a robust estimator such as
 the sky level is recorded in ``meta.snowblind.stream_clean`` of the ASDF
 extension, in DN/s of the flat-fielded sky and averaged over the group
 differences and integrations: ``sky_mean_minus_median``, the masked mean
-minus the masked median of the background pixels (the shift a scalar
-median background imposes), and ``sky_change_by_cleaning``, the change of
+minus the masked median of the background pixels (the shift a median
+background would impose), and ``sky_change_by_cleaning``, the change of
 the sky made by the cleaning, negative when lowered. Both are also in
 the primary header, as ``SKYMNMED`` and ``SKYCHG``, and their values for
 each integration are in ``sky_mean_minus_median_per_integration`` and
 ``sky_change_by_cleaning_per_integration``. The reset fit carries them to
 the rate file, and calwebb_image2 keeps them in the ``_cal`` files.
 
-The background model
-~~~~~~~~~~~~~~~~~~~~
+The background
+~~~~~~~~~~~~~~
 
-The step subtracts a background model from each difference before it
+The step subtracts a background from each difference before it
 estimates the noise and adds it back afterwards. Since the gain is 1 at
-the longest periods, structure at scales above a few rows that the model
-does not hold is removed as noise, and whatever the model holds is kept,
-including any 1/f noise it has fitted; this is why the right model
-depends on the data (see `Choosing the settings`_). The background of a
-sky field is the sky times the detector response, while the 1/f noise is
-additive in raw DN, so the step measures the background on the
-flat-fielded difference and subtracts that background times the flat
+the longest periods, structure at scales above a few rows that the
+background does not hold is removed as noise, and whatever it holds is
+kept, including any 1/f noise it has fitted; this is why the right
+background depends on the data (see `Choosing the settings`_). The
+``background_method`` values fall in two groups.
+
+**One number per difference.** A single level does not decide what is
+removed: the noise removed is the same for all three, and the value only
+sets the level put back.
+
+``'mean'`` (the default)
+   The mean of the background pixels of each difference. The noise fit
+   removes each column's mean, so putting the mean back leaves the sky as
+   it was. Use it for sky-limited imaging, and for darks, where it keeps
+   the dark current.
+
+``'median'``
+   The median of the background pixels after a 3-sigma clip, with the
+   spread taken from the lower half of the values. The noise removed is
+   the same as with the mean, but the sky ends at the median of the
+   background pixels instead of their mean.
+
+``None``
+   No background: each column's mean level goes out with the noise, and
+   the sky or dark current with it. Use it only where the level does not
+   matter, as in noise studies.
+
+**A background model, fixed for the integration or the exposure.** The
+model also decides which large-scale structure is kept: whatever it
+holds at scales above a few rows survives the filter, the 1/f noise
+there included.
+
+``'integration_model'``
+   The masked mean in boxes of ``background_box_size`` (32 by 32 pixels
+   by default), interpolated between the boxes, fitted once per
+   integration to the least-squares slope image and scaled to each
+   difference by its time. A larger box removes more noise and keeps
+   less of the emission. Use it for extended emission that must be kept:
+   nebulosity, nearby galaxies, the halos of bright stars.
+
+``'exposure_model'``
+   The same model fitted once to the mean slope of all integrations and
+   used for every integration, for exposures whose single integrations
+   are too noisy for a model of their own.
+
+``'crds_background'``
+   The CRDS background reference of the grism and filter, scaled once to
+   the exposure. The step switches to it on WFSS exposures; see
+   `Dispersed exposures`_.
+
+``scene_model``
+   A parameter rather than a ``background_method`` value: a FITS image of
+   the scene in DN/s, in the detector frame before flat-fielding, such as
+   a mosaic of the other dithers blotted back to the exposure. It takes
+   the place of the background model.
+
+The background of a sky field is the sky times the detector response,
+while the 1/f noise is additive in raw DN, so the step measures the
+background on the flat-fielded difference and subtracts that background times the flat
 from the raw difference (``apply_flat_field``). Without this the response
 pattern of the long-wavelength detectors, about 10 percent at large
 scales, would be read as noise. The box model is the masked mean per
