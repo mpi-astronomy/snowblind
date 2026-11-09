@@ -1,4 +1,8 @@
 import logging
+import warnings
+from importlib.resources import files
+
+import asdf
 import skimage
 import numpy as np
 from scipy import ndimage
@@ -11,6 +15,15 @@ log = logging.getLogger(__name__)
 JUMP_DET = datamodels.dqflags.group["JUMP_DET"]
 SATURATED = datamodels.dqflags.group["SATURATED"]
 REFERENCE_PIXEL = datamodels.dqflags.pixel["REFERENCE_PIXEL"]
+SECONDS_PER_DAY = 86400.0
+SQUARE = np.ones((3, 3), dtype=bool)
+PACKAGED_TIME_PATTERN = "snowball_persistence_{detector}.asdf"
+# the folder of the packaged times; tests point it elsewhere
+PACKAGED_DIR = files("snowblind").joinpath("data")
+AFTER_JUMPS_DEPRECATION = (
+    "SnowblindStep's after_jumps is deprecated and will be removed in a future release. Left at None, the "
+    "default, the ring around each snowball core is flagged to the end of its integration."
+)
 
 
 class SnowblindStep(Step):
@@ -20,10 +33,21 @@ class SnowblindStep(Step):
     region of JUMP_DET pixels, its holes filled, that holds pixels saturating in its
     group or the next and contains a disk of ``min_radius`` is dilated by
     ``growth_factor`` times its equal-area radius, and its saturated core is dilated by
-    ``ring_width`` pixels and carried into the ``after_jumps`` following groups.  In a ramp
-    the core itself is also flagged in every group of the next integration, where it
-    persists after the reset.  A rate image or rateints cube has no saturation per group,
-    so there the holes in the region take the place of the core.
+    ``ring_width`` pixels in every group from the hit to the end of the integration
+    (the ring, where charge from the core leaks into its neighbors).  In a ramp the core
+    persists after the reset: in the later integrations of the exposure the core is
+    flagged for ``core_persistence_time`` seconds after the end of the integration of the
+    hit, and the core grown by one pixel for ``neighbor_persistence_time`` seconds.  Both
+    default to the times measured for the detector and packaged with snowblind.  A rate
+    image or rateints cube has no saturation per group, so there the holes in the region
+    take the place of the core.
+
+    The cores are the SATURATED pixels of the event, so ``ring_width`` and the one-pixel
+    growth for the neighbors are counted from the SATURATED flags.  With the jwst
+    saturation step's default, ``n_pix_grow_sat=1``, those include a one-pixel ring
+    around the pixels that reached the saturation threshold, and the ring reaches
+    ``ring_width`` + 1 pixels from them; ``snowblind_detector1`` runs the saturation step
+    with ``n_pix_grow_sat=0`` and ``ring_width=3``.
 
     Part of an event can lie on the reference pixels or past the array border, where the
     jump step cannot see it.  There the disk of ``min_radius`` may hang over the edge as
@@ -39,15 +63,21 @@ class SnowblindStep(Step):
 
     Options from ``spec``: ``min_radius`` (minimum radius in pixels of a region to treat
     as a large event), ``growth_factor`` (dilation scale; 0 leaves the regions undilated,
-    a negative value erodes them), ``after_jumps`` (number of groups after the jump that
-    receive the saturated-core ring), ``ring_width`` (dilation radius in pixels around
-    saturated cores) and ``new_jump_flag`` (DQ bit value set on the grown pixels).
+    a negative value erodes them), ``ring_width`` (dilation radius in pixels around the
+    saturated cores), ``after_jumps`` (deprecated: when set, the ring is flagged in the
+    group of the jump and this many groups after it instead of to the end of the
+    integration), ``core_persistence_time`` and ``neighbor_persistence_time`` (seconds
+    after the end of the integration of the hit during which the core, and the pixels
+    next to it, are flagged in later integrations; None takes the detector's packaged
+    times) and ``new_jump_flag`` (DQ bit value set on the grown pixels).
     """
     spec = f"""
         min_radius = integer(default=2) # Minimum radius of connected pixels in CR
         growth_factor = float(default=2.0) # scale factor to dilate large CR events
-        after_jumps = integer(default=2) # number of groups to flag around saturated cores after a jump
-        ring_width = float(default=2.0) # number of pixels to dilate around saturated cores
+        ring_width = float(default=2.0) # pixels to dilate around saturated cores, counted from the SATURATED flags
+        after_jumps = integer(default=None) # deprecated; None flags the ring to the end of the integration
+        core_persistence_time = float(default=None) # s after the hit's integration to flag cores; None: packaged
+        neighbor_persistence_time = float(default=None) # the same for the pixels next to the cores
         new_jump_flag = integer(default={JUMP_DET}) # DQ flag to set for dilated jumps
     """
 
@@ -74,12 +104,16 @@ class SnowblindStep(Step):
         -------
         RampModel or ImageModel or CubeModel
             Copy of the input with ``new_jump_flag`` set in ``groupdq`` (ramps) or ``dq``
-            (rate products) on the grown pixels and, in a ramp, on each core in every group
-            of the next integration, and ``meta.cal_step.snowblind`` set to
+            (rate products) on the grown pixels and, in a ramp, on the rings around the
+            cores and on the cores and their neighbors in later integrations (see
+            `cores_in_later_integrations`), and ``meta.cal_step.snowblind`` set to
             ``"COMPLETE"``.  For a ramp, ``meta.exposure.extended_emission_events`` (FITS
             keyword EXTNCRS) is set to the number of large events found per million
             pixels per second, replacing the value written by the jump step.
         """
+        if self.after_jumps is not None:
+            warnings.warn(AFTER_JUMPS_DEPRECATION, DeprecationWarning, stacklevel=2)
+            log.warning(AFTER_JUMPS_DEPRECATION)
         self._n_events = 0
         with datamodels.open(input_data) as jump:
             result = jump.copy()
@@ -101,13 +135,14 @@ class SnowblindStep(Step):
         # bitwise OR together the dilated masks with the original GROUPDQ mask
         # We set the dilated saturated cores as jumps, as they are not saturated
         if self._has_groups:
-            # Expand saturated cores within large event jumps by 2 pixels
             dilated_sats = self.dilate_saturated_cores(cores)
-            persisting = self.cores_in_next_integration(cores)
-
             result.groupdq |= (dilated_jumps * self.new_jump_flag).astype(np.uint32)
             result.groupdq |= (dilated_sats * self.new_jump_flag).astype(np.uint32)
-            result.groupdq |= (persisting * self.new_jump_flag).astype(np.uint32)
+            del dilated_sats
+            if cores[:-1].any():
+                persisting = self._cores_persisting(result, cores)
+                if persisting is not None:
+                    result.groupdq |= (persisting * self.new_jump_flag).astype(np.uint32)
             self.set_event_rate(result, self._n_events)
         else:
             result.dq |= (dilated_jumps * self.new_jump_flag).astype(np.uint32)
@@ -444,7 +479,7 @@ class SnowblindStep(Step):
 
     def dilate_saturated_cores(self, cores):
         """
-        Dilate the saturated cores of large cosmic ray events and propagate them to subsequent groups
+        Dilate the saturated cores of large cosmic ray events and carry them to the end of the integration
 
         Parameters
         ----------
@@ -455,9 +490,28 @@ class SnowblindStep(Step):
         Returns
         -------
         ndarray of bool, shape (nints, ngroups, nrows, ncols)
-            Cores carried into the ``self.after_jumps`` following groups of each
-            integration and dilated by ``self.ring_width`` pixels.
+            Each core dilated by ``self.ring_width`` pixels in its group and every later
+            group of its integration; with ``self.after_jumps`` set (deprecated), in its
+            group and the ``self.after_jumps`` following groups only.
         """
+        if self.after_jumps is not None:
+            return self._ring_for_after_jumps_groups(cores)
+        dilated_sats = np.zeros_like(cores, dtype=bool)
+        for i, integration in enumerate(cores):
+            hit = np.zeros(cores.shape[-2:], dtype=bool)
+            ring = None
+            for g, group in enumerate(integration):
+                # the ring changes only in the groups that bring new cores
+                if (group & ~hit).any():
+                    hit |= group
+                    ring = skimage.morphology.isotropic_dilation(hit, radius=self.ring_width)
+                if ring is not None:
+                    dilated_sats[i, g] = ring
+        return dilated_sats
+
+    def _ring_for_after_jumps_groups(self, cores):
+        """`dilate_saturated_cores` with ``self.after_jumps`` set: the ring in the group of the jump and the
+        ``self.after_jumps`` following groups of the integration."""
         dilated_sats = np.zeros_like(cores, dtype=bool)
 
         sat_from_jump = cores.copy()
@@ -484,24 +538,167 @@ class SnowblindStep(Step):
 
         return dilated_sats
 
-    @staticmethod
-    def cores_in_next_integration(cores):
-        """
-        Carry the saturated cores of each integration's large events into every group of the next integration
+    def _cores_persisting(self, model, cores):
+        """`cores_in_later_integrations` for a ramp, with its group times and its persistence times.
 
-        The cores persist after the reset for the whole next integration; their neighbors do not.
+        Returns None, after a warning, when the group times are unknown.
+        """
+        times = group_difference_times(model)
+        if times is None:
+            log.warning("The frame time is unknown, so the snowball cores are not flagged in later integrations")
+            return None
+        core_time, neighbor_time = self._persistence_times(model.meta.instrument.detector)
+        log.info(f"Snowball cores flagged in later integrations for {core_time:.0f} s after the end of the "
+                 f"integration of the hit, the pixels next to them for {neighbor_time:.0f} s")
+        return self.cores_in_later_integrations(cores, *times, core_time, neighbor_time)
+
+    def _persistence_times(self, detector):
+        """``core_persistence_time`` and ``neighbor_persistence_time``, each taken from the detector's packaged
+        file when None; 0 s, after a warning, when the package has no file for the detector."""
+        core_time, neighbor_time = self.core_persistence_time, self.neighbor_persistence_time
+        if core_time is None or neighbor_time is None:
+            packaged = packaged_snowball_times(detector)
+            if packaged is None:
+                log.warning(
+                    f"No snowball persistence times are packaged for detector {detector}: the cores are not "
+                    "flagged in later integrations unless core_persistence_time and neighbor_persistence_time "
+                    "are set"
+                )
+                packaged = (0.0, 0.0)
+            core_time = packaged[0] if core_time is None else core_time
+            neighbor_time = packaged[1] if neighbor_time is None else neighbor_time
+        return core_time, neighbor_time
+
+    @staticmethod
+    def cores_in_later_integrations(cores, difference_starts, integration_ends, core_time, neighbor_time):
+        """
+        Flag the cores of each integration's large events, and the pixels next to them, in the later integrations
+
+        A core persists after the reset: the excess rate of its pixels falls with the time
+        since the end of the integration of the hit, and that of the pixels next to it
+        (one pixel away, the 3x3 dilation of the core) faster.  A group of a later
+        integration is flagged when the difference it ends starts less than the given time
+        after that end, group 0 included, so that a fit from the reset leaves out the
+        reset difference.
 
         Parameters
         ----------
         cores : ndarray of bool, shape (nints, ngroups, nrows, ncols)
             Cores of the large events found in each group, from
             ``dilate_large_area_jumps``.
+        difference_starts : ndarray, shape (nints, ngroups)
+            Time, in seconds, at which the difference ending at each group starts: the
+            start of the integration for group 0, the read of the group before for the others.
+        integration_ends : ndarray, shape (nints,)
+            Time, in seconds on the same scale, of the last read of each integration.
+        core_time : float
+            Seconds after the end of the integration of the hit during which the core is flagged.
+        neighbor_time : float
+            Seconds after the end of the integration of the hit during which the core
+            grown by one pixel is flagged.
 
         Returns
         -------
         ndarray of bool, shape (nints, ngroups, nrows, ncols)
-            True in every group of integration i + 1 on the cores of integration i.
+            True in the groups of later integrations where a core, or a pixel next to it,
+            is still within its time.
         """
         persisting = np.zeros_like(cores, dtype=bool)
-        persisting[1:] = cores[:-1].any(axis=1)[:, np.newaxis]
+        for i in range(len(cores) - 1):
+            core = cores[i].any(axis=0)
+            if not core.any():
+                continue
+            grown = ndimage.binary_dilation(core, structure=SQUARE)
+            for j in range(i + 1, len(cores)):
+                since = difference_starts[j] - integration_ends[i]
+                persisting[j, since < neighbor_time] |= grown
+                persisting[j, since < core_time] |= core
         return persisting
+
+
+def group_difference_times(model):
+    """When each group's difference starts and each integration ends, in seconds from the first integration's start.
+
+    The integration start and end times come from the ``int_times`` table when it holds
+    every integration of the model with each ending after it starts; otherwise from the
+    frame counts: an integration spans ``ngroups * (nframes + groupgap)`` frames from its
+    start to its end, and ``nresets_between_ints`` (default 1) reset frames separate it
+    from the next.  A group is read at the end of its last frame.
+
+    Parameters
+    ----------
+    model : RampModel
+        The ramp, with ``meta.exposure.frame_time``, ``nframes`` and ``groupgap``.
+
+    Returns
+    -------
+    tuple of ndarray or None
+        ``difference_starts`` of shape (nints, ngroups), the start of the integration for
+        group 0 and the read of the group before for the others, and
+        ``integration_ends`` of shape (nints,); None when the frame time is unknown.
+    """
+    nints, ngroups = model.groupdq.shape[:2]
+    exposure = model.meta.exposure
+    if not exposure.frame_time:
+        return None
+    frame_time = float(exposure.frame_time)
+    nframes = exposure.nframes or 1
+    frames_per_group = nframes + (exposure.groupgap or 0)
+    starts, ends = _integration_times_from_table(model, nints)
+    if starts is None:
+        span = ngroups * frames_per_group * frame_time
+        starts = np.arange(nints) * (span + (exposure.nresets_between_ints or 1) * frame_time)
+        ends = starts + span
+    reads = (np.arange(ngroups) * frames_per_group + nframes) * frame_time
+    difference_starts = starts[:, np.newaxis] + np.concatenate([[0.0], reads[:-1]])
+    return difference_starts, ends
+
+
+def _integration_times_from_table(model, nints):
+    """Start and end, in seconds from the first start, of each integration of the model from its ``int_times``
+    table; (None, None) when the table lacks one of them or has one that does not end after it starts."""
+    table = getattr(model, "int_times", None)
+    if table is None or len(table) == 0:
+        return None, None
+    first = model.meta.exposure.integration_start or 1
+    numbers = np.asarray(table["integration_number"])
+    rows = [np.flatnonzero(numbers == first + k) for k in range(nints)]
+    if any(len(row) == 0 for row in rows):
+        return None, None
+    rows = [row[0] for row in rows]
+    starts = np.asarray(table["int_start_MJD_UTC"], dtype=float)[rows] * SECONDS_PER_DAY
+    ends = np.asarray(table["int_end_MJD_UTC"], dtype=float)[rows] * SECONDS_PER_DAY
+    if not (ends > starts).all():
+        return None, None
+    return starts - starts[0], ends - starts[0]
+
+
+def packaged_snowball_times(detector):
+    """The snowball persistence times measured for a detector and packaged with snowblind.
+
+    ``snowblind/data/snowball_persistence_<detector>.asdf`` holds ``core_time``: the
+    99th percentile over the detector's snowballs of the time, in seconds from the end of
+    the integration of the hit, at which a core's saturated pixels fall to the file's
+    ``threshold`` (DN/s); ``neighbor_time``, the same for the pixels next to them; and
+    the measurement behind them.  ``scripts/measure_snowball_persistence.py`` measures
+    the excess in dark exposures, ``scripts/fit_snowball_persistence.py`` fits it and
+    ``scripts/package_snowball_persistence.py`` writes the files.
+
+    Parameters
+    ----------
+    detector : str or None
+        Detector name as in ``meta.instrument.detector``; case does not matter.
+
+    Returns
+    -------
+    tuple of float or None
+        ``(core_time, neighbor_time)`` in seconds; None when the package has no file for
+        the detector.
+    """
+    if detector is None:
+        return None
+    path = PACKAGED_DIR.joinpath(PACKAGED_TIME_PATTERN.format(detector=str(detector).lower()))
+    if not path.is_file():
+        return None
+    with asdf.open(str(path), lazy_load=False, memmap=False) as handle:
+        return float(handle.tree["core_time"]), float(handle.tree["neighbor_time"])

@@ -11,9 +11,9 @@ The entries in section 3 up to 2026-11-08 were moved here on 2026-11-08 from
 `PLAN-1f-cleaning-and-reset-anchored-rampfit.md`, where they were written.
 Facts about the jwst pipeline are for jwst 3.0.0 and stcal 1.20.0.
 
-## 1. Status, 2026-11-08
+## 1. Status, 2026-11-09
 
-Done on branch `snowballs-near-edges` (uncommitted):
+Done on branch `snowballs-near-edges` (committed f807f0b):
 
 - An event needs a saturated core (issue #5): in a ramp, pixels that
   saturate in the jump group or the next; in a rate image or rateints
@@ -31,6 +31,32 @@ Done on branch `snowballs-near-edges` (uncommitted):
   (`cores_in_next_integration`). Written before the duration was settled;
   see the decision below.
 
+Done 2026-11-09 evening, uncommitted (replaces the provisional rule above):
+
+- The ring is flagged to the end of the integration (`after_jumps`
+  defaults to None; set, it warns that it is deprecated and keeps the old
+  group count).
+- In later integrations of a ramp the core is flagged for
+  `core_persistence_time` and the core grown by one pixel for
+  `neighbor_persistence_time` (`cores_in_later_integrations`): a group
+  while the difference it ends starts within the time of the end of the
+  hit's integration, group 0 included; group times from `int_times`, or
+  the frame counts (`group_difference_times`). Defaults: the packaged
+  `snowblind/data/snowball_persistence_<detector>.asdf` (10 NIRCam + NIS),
+  read by `packaged_snowball_times`; no file: a warning, no flagging.
+- `snowblind.saturation.flag_saturation_neighbors` (function hook):
+  CHARGELOSS | DO_NOT_USE on the 8 neighbors of each group's SATURATED
+  pixels; IRS2 grown in the normal layout via `x_irs2`.
+- `snowblind_detector1`: `n_pix_grow_sat=0` in `STEP_DEFAULTS`, the hook
+  added while it is 0, `SnowblindStep(ring_width=3.0)`.
+- Scripts in `scripts/`: `measure_snowball_persistence.py` (saturation
+  pinned to `n_pix_grow_sat=1`), `snowball_persistence_excess.py`,
+  `fit_snowball_persistence.py`, `package_snowball_persistence.py`,
+  `make_snowball_persistence_figure.py`. Docs (new subsection and figure
+  `docs/figures/snowball_persistence.png`), README, CHANGES, tests
+  (530 pass).
+- Still to add: NRS1 and NRS2 files when their measurement is in.
+
 Decided 2026-11-08 (James):
 
 - The dilated core (the ring of charge leaking from the saturated core) is
@@ -45,9 +71,63 @@ Decided 2026-11-08 (James):
   chosen conservatively: cover the longest decays, including any variation
   across a detector.
 
+Decided 2026-11-08 evening, confirmed 2026-11-09 (James):
+
+- `after_jumps` stays for one release with a deprecation warning and
+  defaults to None: the ring is then flagged to the end of the
+  integration; a value set by the user keeps the old group count.
+- The core persistence time applies to the later integrations of the same
+  exposure (the step sees one exposure). The times are packaged with
+  snowblind as a small .asdf reference file per detector.
+- The conservative choice is made from the distribution of decay times
+  per detector, and the data for it are kept.
+
+Decided 2026-11-09 (James):
+
+- `snowblind_detector1` runs `SaturationStep` with `n_pix_grow_sat=0`, so
+  SATURATED marks only the pixels that reached the saturation threshold.
+  A snowball's core is then its un-dilated saturated pixels, flagged for
+  the measured per-detector time (the 2026-11-09 times are of exactly
+  these pixels). The pixels around the core are the ring, flagged to the
+  end of the integration.
+- `SnowblindStep` keeps its defaults. The `ring_width` documentation says
+  the ring is drawn around the SATURATED flags, so how far it reaches
+  from the saturated pixels depends on the `n_pix_grow_sat` that
+  `SaturationStep` ran with (jwst default 1).
+- Better still would be for `SaturationStep` to mark its grown pixels with
+  a flag other than SATURATED, separating a saturated pixel (which
+  persists) from a neighbor flagged for the charge leaking out of it.
+
+Decided 2026-11-09 evening (James):
+
+- `ring_width=3` in `snowblind_detector1`.
+- The 99th percentile of the per-core decay times, per detector.
+- The pixels 1 px from a snowball's saturated pixels get their own time:
+  in the later integrations of the exposure the saturated pixels are
+  flagged for the first time and the core grown by 1 px for the second
+  (both in the per-detector .asdf file).
+- A function post-hook of the saturation step in `snowblind_detector1`
+  grows each group's saturated pixels by 1 px with CHARGELOSS and
+  DO_NOT_USE in place of SATURATED.
+- NIRSpec (NRS1, NRS2) to be measured the same way. Data chosen
+  2026-11-09 from a MAST search of every full-frame NIRSpec dark: the
+  dark monitors (1484, 4455, 6633, 9273, 12550) take one 2932 s
+  integration per visit, hours to days apart, so a hit's core stays
+  saturated to the end of its exposure and nothing follows it soon after.
+  Main set: commissioning program 1121, visits 136-140 on 2022-03-23, 9
+  IRS2 exposures back to back (gaps 58-263 s, 23.5 ks). Check: program
+  9273 visits 86-89 on 2026-01-27, 4 exposures with gaps of 1.6 ks, whose
+  stack shows whether the 2022 decay holds now from 1.6 to 13 ks (no data
+  in a core's first 1000 s, so no per-core times from it). File lists in
+  results/2026-11-08_snowball_persistence/cluster/.
+
 ## 2. Open items
 
-1. Snowball core persistence time, every detector (NIRCam x10, NIRISS):
+1. Snowball core persistence time, every detector (NIRCam x10, NIRISS);
+   2026-11-09: all ten NIRCam detectors measured (entries of that date);
+   James chose the 99th percentile of the per-core times (darks are the
+   strict case: with sky, the excess sinks into the sky noise sooner);
+   NIRISS not yet run:
    measure the decay of the core's excess against the time since the end of
    the hit's integration, to the 0.005 DN/s threshold of the
    `PersistenceFlagStep` times, and pick a conservative time. Data: program
@@ -68,6 +148,18 @@ Decided 2026-11-08 (James):
    at a radius of 200 pixels); the step only warns above 1000 pixels.
 6. Events centered past the edge are grown from the part on the detector,
    a lower bound; a circle fitted to the arc was not tried.
+7. With `n_pix_grow_sat=0` in `snowblind_detector1` (decided 2026-11-09):
+   `ring_width=3` there, keeping today's reach of 3 px from the saturated
+   pixels (agreed). The neighbors of saturated stars, which no step then
+   flags: a function post-hook of the saturation step growing each group's
+   saturated pixels by 1 px with CHARGELOSS and DO_NOT_USE in place of
+   SATURATED (James: probably right, not decided). `PersistenceFlagStep`
+   reads SATURATED from the rate DQ and would then flag only the saturated
+   pixels of earlier exposures; the pixels 1 px from a saturated pixel do
+   persist (2026-11-09 later entry), so it would need the hook's flag too.
+8. The pixels 1 px from a snowball's saturated pixels persist after the
+   reset, for about a quarter of the saturated pixels' time (2026-11-09
+   later entry); the ring is flagged only to the end of the integration.
 
 Related, in `PLAN-1f-cleaning-and-reset-anchored-rampfit.md`: "2026-10-28:
 bimodal snowball rates on the 8758 NRCA1 dark (a step at group 59)", a
@@ -426,3 +518,223 @@ both exposures without them (control within 0.07, one cell 0.16 +- 0.11).
   `combined_nrcalong_nis.txt`, `persist_nrcalong_nis.txt` and
   `combined_robust.txt` the tables; `*_robust_*` files are the reruns with
   the outlier cuts).
+
+### 2026-11-09: snowball core persistence times on the 9022 NIRCam darks
+
+Run by James on an MPCDF astronode with `measure.py`
+(results/2026-11-08_snowball_persistence/), snowblind f807f0b, jwst 3.0.0,
+stcal 1.20.0. Program 9022 observation 4, all ten NIRCam detectors, five
+exposures back to back: 02101 BRIGHT1 10 x 10, 02102 SHALLOW4 5 x 10,
+02103 SHALLOW4 10 x 10, 02104 and 02105 MEDIUM8 7 x 10 (integrations x
+groups); 39 integrations over 25.5 ks. Every integration goes through
+Detector1 to the jump step with the `snowblind_detector1` settings (the
+jwst snowball expansion off). Each group difference has the median of its
+line segment (one amplifier, along the fast axis) subtracted, and the
+differences are averaged per pixel in blocks of about 100 s, leaving out
+those next to a SATURATED, JUMP_DET or DO_NOT_USE group. Cores are found
+with `SnowblindStep`'s rule (pixels that saturate in the jump group or the
+next); 860 to 1100 per SW detector, 2904 on NRCBLONG.
+
+NRCALONG's series holds exposure 02101 only: its test ran before the other
+four were on the cluster, and the full run skipped it because its output
+existed. To rerun.
+
+Definitions:
+
+- Excess: a pixel's block rate minus its baseline, the median of its
+  per-integration rates over the integrations that end before the hit's
+  integration or start more than 10 ks after its end. Pixels with a
+  pixeldq flag, fewer than 2 such integrations, or a baseline more than 5
+  robust sigma from the control pixels' are left out.
+- t: from the end of the hit's integration (its last read; the reset
+  follows) to the block's mean time.
+- Inner pixels: core pixels whose 8 neighbors are all in the core (2 px or
+  more from the core's edge), the 3 x 3 erosion of the core.
+  `SaturationStep` (`n_pix_grow_sat=1`, the default) adds a 1 px ring
+  around each saturated area in every group, so a core's edge pixels are
+  mostly that ring and its inner pixels the ones that saturated; most
+  cores are 3 x 3, one saturated pixel. Checked on the CEERS NRCALONG
+  (14201_00001) and NRCA3 (10201_00001) exposures by running
+  `SaturationStep` with `n_pix_grow_sat` 0 and 1: in every group the grown
+  flags are the 3 x 3 dilation of the ungrown ones, and eroding them with
+  a 3 x 3 square (outside the array counted as flagged) gives the ungrown
+  ones back exactly (702 px in 267 areas; 110 px in 47). In general the
+  erosion also fills 1 px gaps in a saturated area (it is a closing).
+- Stack: the mean over cores of each core's excess (count-weighted over
+  its selected pixels) per time bin.
+- Decay time of a core: its excess curve fitted from 100 to 16000 s with
+  A (t / 1000 s)^-alpha, alpha fixed for the detector from a fit to its
+  stack; the time at which that curve falls to 5 mDN/s.
+- Null: for each core, as many random control pixels (10 px or more from
+  every core) as it has selected pixels, given its hit integration and
+  fitted the same way: the spread from noise alone.
+
+Inner pixels (times in s; "fit" and "measured" are where the stack's fit
+and the stack itself fall to 5 mDN/s, the latter interpolated between
+bins):
+
+| Detector | cores | alpha | fit | measured | per core 50% / 90% / 95% / 99% | null 95% / 99% |
+|----------|------:|------:|----:|---------:|-------------------------------:|---------------:|
+| NRCA1    |  942  | 1.58 | 1273 | 1304 | 1097 / 1399 / 1527 / 1771     | 484 / 707   |
+| NRCA2    |  808  | 1.53 | 1452 | 1572 | 1287 / 1747 / 1918 / 2297     | 554 / 879   |
+| NRCA3    | 1027  | 1.09 | 5267 | 5497 | 4769 / 7924 / 8960 / 11443    | 608 / 1234  |
+| NRCA4    | 1041  | 1.68 | 1071 | 1147 | 921 / 1079 / 1156 / 1309      | 465 / 642   |
+| NRCB1    |  802  | 1.62 | 1206 | 1358 | 1033 / 1286 / 1416 / 1608     | 507 / 708   |
+| NRCB2    |  841  | 1.11 | 3699 | 4055 | 3207 / 5549 / 6402 / 8442     | 695 / 1092  |
+| NRCB3    |  837  | 1.12 | 4120 | 4348 | 3563 / 6407 / 7110 / 9206     | 675 / 1078  |
+| NRCB4    | 1028  | 1.02 | 5921 | 5965 | 4864 / 10127 / 11890 / 16691  | 694 / 1335  |
+| NRCBLONG | 2649  | 1.21 | 2131 | 2229 | 1964 / 2838 / 3292 / 4258     | 655 / 1162  |
+
+- Two kinds of SW detector: NRCA1, A2, A4 and B1 decay fast (alpha 1.5 to
+  1.7, stack below 5 mDN/s at 1.1 to 1.6 ks); NRCA3, B2, B3 and B4 slowly
+  (alpha 1.0 to 1.1, 4.1 to 6.0 ks, and a wide spread between cores, 99%
+  at 8.4 to 16.7 ks). NRCBLONG is between (2.2 ks, 99% 4.3 ks).
+- The whole-core mean (all core pixels, ring included) has about a third
+  of the inner pixels' amplitude: its stack falls to 5 mDN/s at 0.5 to 2.1
+  ks. The threshold applies pixel by pixel, so the inner pixels set the
+  time.
+- Core size changes the inner pixels' times little: cores of 1-9, 10-29
+  and 30-99 px have medians within 25% of each other (NRCBLONG 1922, 1991,
+  1919 s), except on NRCB4 (4099, 5769, 5441 s).
+- Longer saturation, longer decay: medians for hits 0-300 / 300-600 / over
+  600 s before the end of their integration are 934 / 1108 / 1190 s on
+  NRCA1, 1661 / 1963 / 2175 on NRCBLONG, 4154 / 4837 / 5325 on NRCA3. The
+  longest integrations here are 1.05 ks; longer ones are not covered.
+- The power law falls faster than the stacks at late times: the measured
+  stacks reach 5 mDN/s 1 to 10% later than the fits, so the per-core times
+  are short by up to that much.
+- Noise alone gives per-core times up to 0.6 to 1.3 ks (null 99%). On the
+  fast detectors this is a large part of the spread between cores, so
+  their upper percentiles overstate the real spread; on the slow ones it
+  is small.
+- Files: `out_9022/<detector>_series.npz` (the data), `<detector>.log`,
+  `<detector>_report.txt` (analyze.py: stacks by core size, saturation
+  time and quadrant, and the null), `<detector>_decay.txt` and
+  `_decay.npz` (decay_times.py: per-core amplitudes and times),
+  `test_saturation_closing*.txt`.
+
+### 2026-11-09 (later): NRCALONG, and persistence by distance from the saturated pixels
+
+NRCALONG rerun on the astronode with all five exposures (2312 cores).
+Two changes to the analysis, applied to all ten detectors:
+
+- A pixel's baseline now also leaves out the integrations after the hits
+  of cores that have it within 2 px, not only of cores that hold it.
+  Before, a pixel next to a core took its baseline over every
+  integration, persisting ones included. The saturated-pixel times of the
+  entry above move by under 1%.
+- Pixels are grouped by their distance from the saturated pixels (the
+  core's 3 x 3 erosion, see the entry above): saturated; 1 px (the core's
+  edge pixels, the ring `SaturationStep` adds); 2 px and 3 px (1 and 2 px
+  outside the core). The earlier "1 px / 2 px from core" shells and the
+  2026-11-08 "neighbors 1-5 px out" were measured from the grown core, so
+  they are 2 px and more from the saturated pixels.
+
+The fits start at 100 s. Starting them at 300 or 500 s moves the fitted
+stack crossing little (NRCB1 1207, 1275, 1286 s against 1358 measured)
+and widens the null (99%: 690, 1160, 1955 s), so the per-core times are
+instead scaled by each detector's ratio of measured to fitted stack
+crossing where it is above 1 ("ratio" below).
+
+Saturated pixels (s):
+
+| Detector | alpha | stack, measured | ratio | per core 50% / 95% / 99% | 99% x ratio | null 99% |
+|----------|------:|---------:|------:|-------------------------:|-----------:|---------:|
+| NRCA1    | 1.58 | 1305 | 1.02 | 1100 / 1528 / 1773    | 1817  | 707  |
+| NRCA2    | 1.53 | 1572 | 1.08 | 1284 / 1918 / 2296    | 2486  | 879  |
+| NRCA3    | 1.09 | 5495 | 1.04 | 4768 / 8957 / 11439   | 11939 | 1234 |
+| NRCA4    | 1.68 | 1147 | 1.07 | 921 / 1156 / 1310     | 1402  | 642  |
+| NRCB1    | 1.62 | 1358 | 1.13 | 1033 / 1416 / 1608    | 1810  | 690  |
+| NRCB2    | 1.11 | 4050 | 1.10 | 3203 / 6394 / 8430    | 9238  | 1092 |
+| NRCB3    | 1.12 | 4363 | 1.06 | 3576 / 7134 / 9239    | 9753  | 1079 |
+| NRCB4    | 1.02 | 5969 | 1.01 | 4869 / 11906 / 16716  | 16833 | 1336 |
+| NRCALONG | 1.29 | 2504 | 1.07 | 2069 / 3173 / 3804    | 4065  | 1102 |
+| NRCBLONG | 1.21 | 2232 | 1.05 | 1969 / 3298 / 4267    | 4463  | 1163 |
+
+Pixels 1 px from a saturated pixel (s; the fits here run slightly long,
+ratio 0.94 to 0.99, so no scaling):
+
+| Detector | alpha | stack, measured | per core 50% / 95% / 99% | null 99% |
+|----------|------:|---------:|-------------------------:|---------:|
+| NRCA1    | 1.68 | 391  | 319 / 538 / 649     | 386 |
+| NRCA2    | 1.76 | 401  | 345 / 566 / 668     | 432 |
+| NRCA3    | 1.06 | 1161 | 1000 / 2156 / 3048  | 467 |
+| NRCA4    | 1.87 | 313  | 256 / 433 / 533     | 360 |
+| NRCB1    | 1.64 | 362  | 320 / 549 / 653     | 446 |
+| NRCB2    | 1.20 | 707  | 608 / 1198 / 1479   | 484 |
+| NRCB3    | 1.11 | 831  | 739 / 1594 / 2215   | 518 |
+| NRCB4    | 1.01 | 1067 | 932 / 2089 / 3182   | 351 |
+| NRCALONG | 1.49 | 581  | 497 / 800 / 991     | 478 |
+| NRCBLONG | 1.45 | 534  | 482 / 775 / 935     | 480 |
+
+- The pixels 1 px from a saturated pixel persist at about a fifth of the
+  saturated pixels' excess (NRCA1 0-100 s: 48 against 276 mDN/s; NRCA3:
+  93 against 392), far more than inter-pixel capacitance would carry, so
+  they hold charge of their own from the hit. They fall to 5 mDN/s at
+  0.3 to 1.2 ks (stack), 99% per core 0.5 to 3.2 ks.
+- Pixels 2 and 3 px from a saturated pixel never reach 5 mDN/s: at most
+  4.6 and 2.5 mDN/s (NRCA3, 0-100 s), under 2.8 and 1.5 on the fast and
+  long-wavelength detectors.
+- NRCALONG and NRCBLONG behave alike: saturated pixels at 2.5 and 2.2 ks
+  (stack), 99% per core 4.1 and 4.5 ks after scaling.
+- Figure: `out_9022/core_persistence_9022.png` (`plot_decay.py`), one
+  panel per detector: the three stacks, the saturated pixels' fit, the
+  threshold and the 99% times.
+
+### 2026-11-09 (evening): NIRISS, a longer baseline window, and the times for all eleven detectors
+
+NIRISS: program 9279, two pairs of exposures run on the astronode with
+`measure.py --per-series 2` (`out_9279/nis_01`: exposures 001 and 002,
+13 ks apart; `nis_02`: 004 and 005, 11 days apart); 5 integrations of 120
+groups each, 1935 cores. `decay_times.py` now pools the cores of every
+series file of a detector. A third pair was still running.
+
+Two changes to the analysis, applied to all eleven detectors:
+
+- Baseline window: a pixel's baseline now leaves out every integration
+  that starts less than 100 ks after a hit near it (was 10 ks). On the
+  25 ks NIRCam sequence this means baselines from before the hit only.
+  With 10 ks, baselines after the hit still held persistence: on NRCB4
+  the stack at 8-25 ks rose by 1 to 1.6 mDN/s with the longer window,
+  while the control pixels' stack stayed within 0.3 mDN/s of zero with
+  either window (no drift). The saturated pixels' times rose 3 to 7% on
+  the fast detectors, 10 to 27% on the slow ones.
+- Per-core fits use only cores with data in their first 1000 s. A NIRISS
+  core hit in the last integration of an exposure has no data until the
+  pair's other exposure, 13 ks or days later, where the power law is tens
+  of times smaller: its fitted amplitude is mostly noise (before this
+  rule the NIRISS null 99% was 15 ks). No NIRCam core is dropped by it.
+
+Times, 99th percentile of the per-core decay times (s), scaled by the
+measured / fitted stack crossing where above 1 (James chose the 99th
+percentile):
+
+| Detector | cores | alpha | stack, measured | saturated pixels | null 99% | 1 px: alpha | stack | 1 px from saturated |
+|----------|------:|------:|---------:|------:|------:|-----:|-----:|------:|
+| NRCA1    |  920 | 1.56 | 1375 | 1935  | 763  | 1.66 | 390  | 701  |
+| NRCA2    |  799 | 1.53 | 1560 | 2493  | 941  | 1.77 | 393  | 670  |
+| NRCA3    |  998 | 1.04 | 6274 | 14094 | 2010 | 1.00 | 1200 | 3814 |
+| NRCA4    | 1014 | 1.68 | 1133 | 1409  | 712  | 1.89 | 309  | 554  |
+| NRCB1    |  778 | 1.61 | 1382 | 1850  | 865  | 1.62 | 364  | 700  |
+| NRCB2    |  821 | 1.06 | 4448 | 10606 | 1580 | 1.17 | 718  | 1656 |
+| NRCB3    |  820 | 1.10 | 4692 | 10690 | 1677 | 1.11 | 811  | 2373 |
+| NRCB4    | 1010 | 0.97 | 6793 | 21204 | 1970 | 0.98 | 1084 | 3633 |
+| NRCALONG | 2057 | 1.28 | 2627 | 4438  | 1502 | 1.46 | 596  | 1062 |
+| NRCBLONG | 2606 | 1.19 | 2344 | 4924  | 1895 | 1.43 | 540  | 993  |
+| NIS      | 1309 | 1.16 | 3187 | 6459  | 1986 | 1.28 | 987  | 1924 |
+
+("cores": cores with usable saturated pixels and data in their first
+1000 s; "null 99%": the same for control pixels, saturated selection.)
+
+- NIRISS sits with the long-wavelength NIRCam detectors: slope 1.16, the
+  stack at 3.2 ks, 99% 6.5 ks. Its first 100 s are stronger than on any
+  NIRCam detector (627 mDN/s saturated, 191 at 1 px, 8 at 2 px), and its
+  pixels 2 px from a saturated pixel are the only ones above 5 mDN/s, in
+  the first 100 s after the end of the integration only.
+- NIRISS data cover 0 to 5 ks after a hit (the rest of the exposure) and
+  13 to 19 ks (pair `nis_01`), nothing at 6 to 12 ks; its 99% time rests
+  on the power law across that gap.
+- Figure: `core_persistence.png` (`plot_decay.py`; it replaces
+  `out_9022/core_persistence_9022.png` of the entry above, which used the
+  10 ks window). The `_decay.txt` and `_decay.npz` files in `out_9022/`
+  and `out_9279/` are from this run.

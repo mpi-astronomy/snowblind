@@ -67,9 +67,11 @@ or, in Python:
 The pipeline also sets up the jump step for the two. It runs at 7 sigma
 (the three- and four-group thresholds too), flags the four neighbors of
 jumps above 20 sigma, and leaves the snowball expansion to
-``SnowblindStep(after_jumps=5)`` as its first post-hook; its
+``SnowblindStep(ring_width=3)`` as its first post-hook; its
 flagging of the groups after large jumps (``after_jump_flag_*``) stays as
-the jwst step and CRDS set it. At
+the jwst step and CRDS set it. The saturation step runs with
+``n_pix_grow_sat=0`` and flags the pixels next to saturated ones with
+CHARGELOSS instead (see :doc:`snowballs_and_flags`). At
 7 sigma the jump step flags what would disturb the stream clean, and the
 reset fit's own jump search (4.5 sigma) finds the fainter jumps on the
 cleaned ramp; a clean with no jump flags at all leaves more striping in the

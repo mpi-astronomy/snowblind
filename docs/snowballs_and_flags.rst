@@ -17,15 +17,14 @@ keeps affecting the following groups. ``SnowblindStep`` takes each
 contiguous region of jump-flagged pixels, with its holes filled, that holds
 a core and contains a disk of ``min_radius`` pixels, and grows it by
 ``growth_factor`` times its equal-area radius, so the mask follows the
-actual shape of the event; the core is grown by ``ring_width`` pixels and
-flagged in the ``after_jumps`` following groups too. In a ramp the core is
-the pixels that saturate in the jump group or the next; a rate image or
-rateints cube keeps no saturation per group, so there the holes in the
-region take its place. The core persists after the reset: in a ramp it is
-also flagged, not grown, in every group of the next integration (group 0
-included, so the reset-anchored fit leaves out its reset difference too);
-its neighbors show no persistence, and later integrations none either.
-Large jump regions without a core, such as
+actual shape of the event; the core grown by ``ring_width`` pixels, the
+ring, is flagged from the jump group to the end of the integration. In a
+ramp the core is the pixels that saturate in the jump group or the next; a
+rate image or rateints cube keeps no saturation per group, so there the
+holes in the region take its place. In a ramp the core persists after the
+reset, and is flagged in the later integrations of the exposure for a time
+measured for each detector (see `The charge leak ring and the persistence
+of the core`_). Large jump regions without a core, such as
 cosmic-ray tracks, are left as the jump step flagged them. The jwst jump
 step's own snowball flagging (``expand_large_events``) also looks for a
 saturated core, and draws enclosing circles or ellipses. The default
@@ -48,6 +47,85 @@ core past the edge, and is kept without one if it holds a disk of
 ``min_radius`` that does not extend past the edge. An event whose center
 lies past the edge is measured from the part on the detector, so it is
 grown less than its full size.
+
+The charge leak ring and the persistence of the core
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Charge leaks from the saturated core into the pixels around it, as from
+any saturated pixel (brighter-fatter at saturation). The ring, the core
+grown by ``ring_width`` pixels, is flagged in every group from the jump to
+the end of the integration. The core and the pixels next to it also hold
+charge after the reset, which they release over the next hours. In each
+later integration of the exposure, a group is flagged on the core while the
+difference it ends starts less than ``core_persistence_time`` seconds after
+the end of the integration of the hit, and on the core grown by one pixel
+while it starts less than ``neighbor_persistence_time`` seconds after it.
+Group 0 counts from the start of its integration, so the reset-anchored fit
+leaves out its reset difference too. The times come from the
+``int_times`` table of the exposure, or from its frame counts when the
+table is missing. The step sees one exposure, so nothing carries into the
+next one.
+
+Both times default to those measured for the detector and packaged with
+snowblind (``snowblind/data/snowball_persistence_<detector>.asdf``), for
+the ten NIRCam detectors and NIRISS. A detector without a file, or a model
+without its detector, gets a warning and no flagging in later integrations
+unless both times are given. Each time is the 99th percentile over the
+detector's snowballs of the time at which a pixel falls to 0.005 DN/s, the
+threshold of the ``PersistenceFlagStep`` times: from about 1400 s (NRCA4) to
+21000 s (NRCB4) for the saturated pixels, and from about 550 s to 3800 s for
+the pixels next to them. Pixels two pixels from the saturated ones never
+reach the threshold, so the one-pixel growth is enough.
+
+The times were measured in dark exposures taken back to back, where
+nothing but the cosmic rays saturates. Every integration goes through
+Detector1 to the jump step (saturation step with ``n_pix_grow_sat=1``),
+the snowball cores are found with the step's own rule, and each group
+difference, with the median of its line in each amplifier subtracted to
+take out the 1/f noise, is averaged per pixel in blocks of about 100 s. A
+pixel's excess is its rate in a block less its median rate over the
+integrations that end before the hit or start more than 100 ks after it.
+The pixels of a core whose eight neighbors are all in the core are the ones
+that saturated (the rest is the saturation step's one-pixel growth); the
+core's other pixels are their neighbors. For each, the mean excess over
+cores falls as a power law, A (t / 1000 s) to the power -alpha, with t the
+time since the end of the integration of the hit; alpha is fitted to that
+mean, and A to each core with alpha fixed, which gives the core's decay
+time. The power law falls faster than the data at late times, so where the
+mean over cores crosses the threshold later than its fit, the percentile is
+scaled by the ratio. Control pixels far from every core, given the
+integration of a hit and treated the same way, show the spread that noise
+alone gives (99th percentile 0.6 ks to 2 ks). Each file holds the fits,
+the mean excess per time bin, every core's decay time and the exposures;
+``scripts/measure_snowball_persistence.py``,
+``scripts/fit_snowball_persistence.py`` and
+``scripts/package_snowball_persistence.py`` make them.
+
+.. figure:: figures/snowball_persistence.png
+   :width: 100%
+
+   The excess rate of snowball cores in dark exposures against the time
+   since the end of the integration of the hit, one panel per detector:
+   the mean over cores of the saturated pixels (blue), of the pixels one
+   pixel from them (orange) and two pixels from them (green), with the
+   power law fitted to the saturated pixels, the 5 mDN/s threshold
+   (dashed), and the 99th percentile of the per-core decay times (dotted),
+   which the step uses. Error bars are the standard error over cores; bins
+   at or below zero are not drawn.
+
+The saturated pixels are those flagged SATURATED, so ``ring_width`` and the
+one-pixel growth are counted from the SATURATED flags. With the jwst
+saturation step's default, ``n_pix_grow_sat=1``, these include a one-pixel
+ring around the pixels that reached the saturation threshold: the ring
+then reaches ``ring_width`` + 1 pixels from them, and the core's time
+covers its neighbors too. ``snowblind_detector1`` runs the saturation step
+with ``n_pix_grow_sat=0``, so SATURATED marks only the pixels that reached
+the threshold, and flags their neighbors with CHARGELOSS and DO_NOT_USE
+instead (``snowblind.saturation.flag_saturation_neighbors`` as a post-hook
+of the saturation step), which keeps them out of the fits as before; its
+``SnowblindStep`` runs with ``ring_width=3`` to reach as far.
+``after_jumps``, which flagged the ring in that many groups after the jump
+only, is deprecated; set, it still does.
 
 Running it
 ~~~~~~~~~~
@@ -78,9 +156,10 @@ The same in Python:
     Detector1Pipeline.call("jw001234_010203_00001_nrcalong_uncal.fits", steps=steps, save_results=True)
 
 A hook given as a class runs with the step's default parameters; give a step
-instance, ``SnowblindStep(after_jumps=5)``, for others. The
+instance, ``SnowblindStep(ring_width=3)``, for others. The
 ``snowblind_detector1`` pipeline (see :doc:`flicker_and_reset`) runs it as a
-post-hook of its jump step, with those settings.
+post-hook of its jump step, with ``ring_width=3`` and the saturation step
+set up as described above.
 
 JumpPlusStep (deprecated)
 -------------------------
@@ -117,6 +196,7 @@ bad-pixel mask was made by self-calibration: it takes all the images of a
 visit or program, groups them by detector, and flags in every image of a
 detector the pixels that stand out above the local background in the median
 of that detector's images (with ``flag_low_signal_pix``, also those below
-it), setting ``DO_NOT_USE`` and ``ADJ_OPEN``. Run it on flat-fielded images, after ``calwebb_image2``, or as
-a pre-hook of ``calwebb_image3`` before resampling. It is experimental: use
-it with caution, and expect to tune ``threshold``.
+it), setting ``DO_NOT_USE`` and ``ADJ_OPEN``. Run it on flat-fielded images,
+after ``calwebb_image2``, or as a pre-hook of ``calwebb_image3`` before
+resampling. It is experimental: use it with caution, and expect to tune
+``threshold``.

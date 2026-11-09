@@ -98,20 +98,56 @@
   corner too. An event centered on the outermost light-sensitive row or
   column needs no core in view if it holds a disk of `min_radius` that does
   not extend past the edge.
-- `SnowblindStep` flags each snowball's core in every group of the next
-  integration of a ramp, group 0 included, where the core shows
-  persistence from the hit; the core is not grown there, as its neighbors
-  show none. The jwst jump step does the same with
-  `mask_snowball_core_next_int`.
+- `SnowblindStep` flags each snowball's core, and the pixels next to it, in
+  the later integrations of a ramp, where they persist after the reset: a
+  group is flagged on the core while the difference it ends starts less
+  than `core_persistence_time` seconds after the end of the integration of
+  the hit, and on the core grown by one pixel while it starts less than
+  `neighbor_persistence_time` seconds after it, group 0 included. The
+  group times come from `int_times`, or from the frame counts. Both default
+  to times measured for each detector and packaged with snowblind
+  (`snowblind/data/snowball_persistence_<detector>.asdf`, read by
+  `snowblind.snowblind.packaged_snowball_times`): for the ten NIRCam
+  detectors and NIRISS, the 99th percentile over the detector's snowballs
+  of the time at which a pixel falls to 0.005 DN/s, from about 1400 s to
+  21000 s for the saturated pixels and 550 s to 3800 s for their
+  neighbors. A detector without a file gets a warning and no flagging in
+  later integrations unless both times are given.
+  `scripts/measure_snowball_persistence.py` measures the excess at the
+  cores in dark exposures, `scripts/fit_snowball_persistence.py` fits the
+  decay of each core, `scripts/package_snowball_persistence.py` writes the
+  files and `scripts/make_snowball_persistence_figure.py` draws them.
+- `snowblind.saturation.flag_saturation_neighbors`, a post-hook for the
+  saturation step run with `n_pix_grow_sat=0`: it flags the eight pixels
+  around each saturated pixel, group by group, with CHARGELOSS and
+  DO_NOT_USE, which keeps them out of the fits and the jump search as the
+  jwst step's default growth does, while SATURATED marks only the pixels
+  that reached the saturation threshold. NIRSpec IRS2 groups are grown in
+  their normal layout, as the saturation step grows them.
 - `SnowblindStep`'s `min_radius` defaults to 2 (was 4), close to the jump
   step's `min_jump_area` of 15 pixels; with a core required, small
   cosmic-ray hits no longer pass at that size. `snowblind_detector1` uses
-  the default (was 3): its hook is `SnowblindStep(after_jumps=5)`.
+  the default (was 3).
 - `SnowblindStep` opens and grows each event in a window around it instead
   of over the whole frame, a few times faster on full-frame ramps.
   `dilate_jump_slice` and `dilate_large_area_jumps` take the saturated and
   reference pixels and return the cores with the grown regions;
   `dilate_saturated_cores` takes the cores.
+
+### Changed
+
+- `SnowblindStep` flags the ring, each snowball's core grown by
+  `ring_width` pixels, from the jump group to the end of the integration,
+  where the charge leaking from the core keeps affecting its neighbors
+  (`after_jumps` now defaults to None). The ring is drawn around the cores
+  only, and `ring_width` is counted from the SATURATED flags, so its reach
+  from the pixels that saturated depends on the saturation step's
+  `n_pix_grow_sat`.
+- `snowblind_detector1` runs the saturation step with `n_pix_grow_sat=0`
+  and `flag_saturation_neighbors` as its post-hook, so SATURATED marks only
+  the pixels that saturated, and `SnowblindStep` with `ring_width=3` (was
+  `after_jumps=5`), which reaches as far from them as before. A caller's
+  `n_pix_grow_sat` above 0 leaves the hook out.
 
 ### Deprecated
 
@@ -119,6 +155,9 @@
   deprecated and will be removed. `True` still resolves `fit_method='auto'`
   to `'wiener'` on a grism that disperses along the readout stream; name
   the `fit_method` instead.
+- `SnowblindStep`'s `after_jumps` warns that it is deprecated and will be
+  removed. Set, it still flags the ring in that many groups after the jump
+  only, instead of to the end of the integration.
 - `JumpPlusStep` warns that it is deprecated and will be removed. The
   jwst saturation step (since jwst 1.16) flags the group before saturation
   when its frames may have saturated, the jump step flags a group that a

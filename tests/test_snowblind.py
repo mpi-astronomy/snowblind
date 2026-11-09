@@ -5,6 +5,7 @@ from astropy.io import fits
 from stdatamodels.jwst import datamodels
 
 from snowblind import SnowblindStep
+from snowblind.snowblind import group_difference_times, packaged_snowball_times
 
 
 JUMP_DET = datamodels.dqflags.group['JUMP_DET']
@@ -57,10 +58,8 @@ def test_ramp():
     # Verify single pixel area did not get expanded
     assert result.groupdq[0, 1, 6, 6] == GOOD
 
-    # Verify that the saturated core grew for only 2 subsequent groups
-    assert result.groupdq[0, 2, 21, 20] == JUMP_DET
-    assert result.groupdq[0, 3, 22, 20] == JUMP_DET
-    assert result.groupdq[0, 4, 22, 20] == GOOD
+    # Verify that the ring around the saturated core is flagged to the end of the integration
+    assert result.groupdq[0, 5, 22, 20] == JUMP_DET
 
 
 def test_rate():
@@ -289,6 +288,37 @@ def test_dilate_saturated_cores_stops_at_the_end_of_the_integration():
     assert ring[0].any(axis=(1, 2)).tolist() == [False, False, False, True, True, True]
 
 
+def test_dilate_saturated_cores_flags_the_ring_to_the_end_of_the_integration():
+    """SnowblindStep().dilate_saturated_cores on a core in group 1 of 6 flags the ring in groups 1 to 5."""
+    cores = np.zeros((1, 6, 9, 9), dtype=bool)
+    cores[0, 1, 4, 4] = True
+
+    ring = SnowblindStep().dilate_saturated_cores(cores)
+
+    assert ring[0].any(axis=(1, 2)).tolist() == [False, True, True, True, True, True]
+
+
+def test_dilate_saturated_cores_with_after_jumps_flags_that_many_groups_after_the_jump():
+    """SnowblindStep(after_jumps=1).dilate_saturated_cores on a core in group 1 of 6 flags the ring in groups 1 and 2."""
+    cores = np.zeros((1, 6, 9, 9), dtype=bool)
+    cores[0, 1, 4, 4] = True
+
+    ring = SnowblindStep(after_jumps=1).dilate_saturated_cores(cores)
+
+    assert ring[0].any(axis=(1, 2)).tolist() == [False, True, True, False, False, False]
+
+
+def test_ramp_with_after_jumps_warns_that_it_is_deprecated():
+    """SnowblindStep(after_jumps=2).process on a ramp raises a DeprecationWarning.
+
+    process, not call: stpipe's call turns warnings into log records.
+    """
+    im = datamodels.RampModel((1, 6, 40, 40))
+
+    with pytest.warns(DeprecationWarning, match="after_jumps is deprecated"):
+        SnowblindStep(after_jumps=2).process(im)
+
+
 def test_ramp_without_jumps_flags_nothing():
     """SnowblindStep.call on a ramp with no flags in groupdq leaves groupdq all GOOD.
 
@@ -302,32 +332,146 @@ def test_ramp_without_jumps_flags_nothing():
 
 
 def ramp_with_snowball_in_first_integration(nints):
-    """A ramp of nints integrations with one snowball in group 2 of the first, its core the pixel [20, 20]."""
+    """A ramp of nints integrations of 6 groups of one 10 s frame, with one snowball in group 2 of the first.
+
+    Its core is the pixel [20, 20].  Each integration lasts 60 s and the next starts after a
+    10 s reset frame, so the differences of integration 2 start 10, 20, ..., 60 s after the
+    end of integration 1, and those of integration 3 80, 90, ..., 130 s after it.
+    """
     im = datamodels.RampModel((nints, 6, 40, 40))
+    im.meta.instrument.detector = "NRCA1"
+    im.meta.exposure.frame_time = 10.0
+    im.meta.exposure.group_time = 10.0
+    im.meta.exposure.nframes = 1
+    im.meta.exposure.groupgap = 0
     im.groupdq[0, 2, 15:26, 15:26] = JUMP_DET
     im.groupdq[0, 2:, 20, 20] = SATURATED
     return im
 
 
-def test_ramp_core_flagged_in_every_group_of_the_next_integration():
-    """SnowblindStep.call on a ramp with a snowball in integration 1 sets JUMP_DET on its core in all groups of integration 2."""
-    result = SnowblindStep.call(ramp_with_snowball_in_first_integration(2))
+def int_times_with_gap(gap):
+    """An int_times table of two 60 s integrations, the second starting gap seconds after the first ends."""
+    names = ["integration_number", "int_start_MJD_UTC", "int_mid_MJD_UTC", "int_end_MJD_UTC",
+             "int_start_BJD_TDB", "int_mid_BJD_TDB", "int_end_BJD_TDB"]
+    table = np.zeros(2, dtype=[(names[0], "i4")] + [(name, "f8") for name in names[1:]])
+    table["integration_number"] = [1, 2]
+    table["int_start_MJD_UTC"] = np.array([0.0, 60.0 + gap]) / 86400 + 60000.0
+    table["int_end_MJD_UTC"] = table["int_start_MJD_UTC"] + 60.0 / 86400
+    return table
+
+
+def test_ramp_core_flagged_in_the_next_integration_for_the_core_persistence_time():
+    """SnowblindStep.call with core_persistence_time=35 s flags the core in groups 0 to 2 of integration 2.
+
+    Their differences start 10, 20 and 30 s after the end of integration 1.
+    """
+    result = SnowblindStep.call(
+        ramp_with_snowball_in_first_integration(2), core_persistence_time=35.0, neighbor_persistence_time=15.0
+    )
+
+    assert result.groupdq[1, :, 20, 20].tolist() == [JUMP_DET] * 3 + [GOOD] * 3
+
+
+def test_ramp_core_neighbor_flagged_in_the_next_integration_for_the_neighbor_persistence_time():
+    """SnowblindStep.call with neighbor_persistence_time=15 s flags the pixel next to the core in group 0 of integration 2."""
+    result = SnowblindStep.call(
+        ramp_with_snowball_in_first_integration(2), core_persistence_time=35.0, neighbor_persistence_time=15.0
+    )
+
+    assert result.groupdq[1, :, 21, 21].tolist() == [JUMP_DET] + [GOOD] * 5
+
+
+def test_ramp_pixel_two_pixels_from_the_core_not_flagged_in_the_next_integration():
+    """SnowblindStep.call with both persistence times at 1000 s leaves a pixel 2 px from the core GOOD in integration 2."""
+    result = SnowblindStep.call(
+        ramp_with_snowball_in_first_integration(2), core_persistence_time=1000.0, neighbor_persistence_time=1000.0
+    )
+
+    assert (result.groupdq[1, :, 20, 22] == GOOD).all()
+
+
+def test_ramp_core_flagged_two_integrations_later_for_the_core_persistence_time():
+    """SnowblindStep.call with core_persistence_time=100 s flags the core in groups 0 and 1 of integration 3.
+
+    Their differences start 80 and 90 s after the end of integration 1.
+    """
+    result = SnowblindStep.call(
+        ramp_with_snowball_in_first_integration(3), core_persistence_time=100.0, neighbor_persistence_time=15.0
+    )
+
+    assert result.groupdq[2, :, 20, 20].tolist() == [JUMP_DET] * 2 + [GOOD] * 4
+
+
+def test_ramp_core_persistence_timed_from_int_times():
+    """SnowblindStep.call with core_persistence_time=500 s on integrations 1000 s apart in int_times leaves the core GOOD."""
+    im = ramp_with_snowball_in_first_integration(2)
+    im.int_times = int_times_with_gap(1000.0)
+
+    result = SnowblindStep.call(im, core_persistence_time=500.0, neighbor_persistence_time=500.0)
+
+    assert (result.groupdq[1, :, 20, 20] == GOOD).all()
+
+
+def test_ramp_takes_the_packaged_core_time_of_the_detector():
+    """SnowblindStep.call on an NRCA1 ramp, integrations 1000 s apart, flags the core in integration 2 (packaged 1935 s)."""
+    im = ramp_with_snowball_in_first_integration(2)
+    im.int_times = int_times_with_gap(1000.0)
+
+    result = SnowblindStep.call(im)
 
     assert (result.groupdq[1, :, 20, 20] == JUMP_DET).all()
 
 
-def test_ramp_core_neighbor_not_flagged_in_the_next_integration():
-    """SnowblindStep.call on a ramp with a snowball in integration 1 leaves a pixel 3 px from its core GOOD in integration 2."""
-    result = SnowblindStep.call(ramp_with_snowball_in_first_integration(2))
+def test_ramp_takes_the_packaged_neighbor_time_of_the_detector():
+    """SnowblindStep.call on an NRCA1 ramp, integrations 1000 s apart, leaves the core's neighbor GOOD (packaged 701 s)."""
+    im = ramp_with_snowball_in_first_integration(2)
+    im.int_times = int_times_with_gap(1000.0)
 
-    assert (result.groupdq[1, :, 20, 23] == GOOD).all()
+    result = SnowblindStep.call(im)
+
+    assert (result.groupdq[1, :, 20, 21] == GOOD).all()
 
 
-def test_ramp_core_not_flagged_two_integrations_later():
-    """SnowblindStep.call on a ramp with a snowball in integration 1 leaves its core GOOD in integration 3."""
-    result = SnowblindStep.call(ramp_with_snowball_in_first_integration(3))
+def test_ramp_without_packaged_times_warns_and_leaves_later_integrations(monkeypatch, tmp_path, caplog):
+    """SnowblindStep.call on a ramp whose detector has no packaged times logs a warning and leaves integration 2 GOOD."""
+    monkeypatch.setattr("snowblind.snowblind.PACKAGED_DIR", tmp_path)
 
-    assert (result.groupdq[2, :, 20, 20] == GOOD).all()
+    with caplog.at_level(logging.WARNING, logger="snowblind.snowblind"):
+        result = SnowblindStep.call(ramp_with_snowball_in_first_integration(2))
+
+    assert "No snowball persistence times are packaged for detector NRCA1" in caplog.text
+    assert (result.groupdq[1] == GOOD).all()
+
+
+@pytest.mark.parametrize(
+    "detector", ["NRCA1", "NRCA2", "NRCA3", "NRCA4", "NRCALONG", "NRCB1", "NRCB2", "NRCB3", "NRCB4", "NRCBLONG", "NIS"]
+)
+def test_packaged_snowball_times_has_a_core_time_longer_than_the_neighbor_time(detector):
+    """packaged_snowball_times for each NIRCam and NIRISS detector returns a core time longer than the neighbor time."""
+    core_time, neighbor_time = packaged_snowball_times(detector)
+
+    assert core_time > neighbor_time > 0
+
+
+def test_group_difference_times_from_the_frame_counts():
+    """group_difference_times on 2 integrations of 3 groups of 4 frames plus 1 dropped, 10 s frames, gives their starts.
+
+    An integration spans 15 frames (150 s) and the next starts after one reset frame, at 160 s.
+    """
+    im = datamodels.RampModel((2, 3, 4, 4))
+    im.meta.exposure.frame_time = 10.0
+    im.meta.exposure.nframes = 4
+    im.meta.exposure.groupgap = 1
+
+    starts, ends = group_difference_times(im)
+
+    assert starts.tolist() == [[0.0, 40.0, 90.0], [160.0, 200.0, 250.0]]
+    assert ends.tolist() == [150.0, 310.0]
+
+
+def test_group_difference_times_without_a_frame_time_is_none():
+    """group_difference_times on a ramp with no frame_time returns None."""
+    assert group_difference_times(datamodels.RampModel((2, 3, 4, 4))) is None
 
 
 def test_rate_without_hole():

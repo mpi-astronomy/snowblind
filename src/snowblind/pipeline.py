@@ -6,9 +6,12 @@ parameter of the jwst pipeline, including the parameters CRDS holds for
 it, and makes two substitutions: `StreamCleanStep` runs as a post-hook of
 the jump step with the jwst flicker step skipped, and `ResetRampFitStep`
 takes the ramp-fit slot.  The jump step gets its own defaults for these
-two (`JUMP_DEFAULTS`, with `SnowblindStep` as its first post-hook), and the
+two (`JUMP_DEFAULTS`, with `SnowblindStep` as its first post-hook), the
 reference-pixel step runs with SIRS
-(`REFPIX_DEFAULTS`), whose output the stream clean is matched to.  The superbias slot holds `snowblind.superbias.SuperBiasStep`,
+(`REFPIX_DEFAULTS`), whose output the stream clean is matched to, and the
+saturation step flags only the pixels that saturate as SATURATED, their
+neighbors as CHARGELOSS (`SATURATION_DEFAULTS`, `SATURATION_HOOK`).  The superbias slot holds
+`snowblind.superbias.SuperBiasStep`,
 the jwst step without the zeroframe zeros its subtraction makes.  It runs
 as ``strun snowblind_detector1`` or through `Detector1Pipeline.call`.
 """
@@ -44,15 +47,26 @@ REFPIX_DEFAULTS = {
     "refpix_algorithm": "sirs",
 }
 
+# The saturation step's parameters: SATURATED marks only the pixels that reach the saturation threshold, which
+# persist after the reset, and SATURATION_HOOK flags their neighbors for the charge leaking into them instead.  They
+# take precedence over the CRDS parameter references and give way to the caller's.
+SATURATION_DEFAULTS = {
+    "n_pix_grow_sat": 0,
+}
+SATURATION_HOOK = "snowblind.saturation.flag_saturation_neighbors"
+
 # the defaults above, by step
 STEP_DEFAULTS = {
+    "saturation": SATURATION_DEFAULTS,
     "refpix": REFPIX_DEFAULTS,
     "jump": JUMP_DEFAULTS,
 }
 
-# The jump step's post-hooks in place of its expand_large_events, in their order
+# The jump step's post-hooks in place of its expand_large_events, in their order.  The ring is drawn around the
+# SATURATED flags, which do not include the jwst step's one-pixel growth here, so it is one pixel wider than
+# SnowblindStep's default to reach as far from the saturated pixels.
 SNOWBALL_HOOKS = (
-    (SnowblindStep, "snowblind.SnowblindStep(after_jumps=5)"),
+    (SnowblindStep, "snowblind.SnowblindStep(ring_width=3.0)"),
 )
 
 
@@ -73,10 +87,19 @@ class Detector1Pipeline(JwstDetector1Pipeline):
     The reference-pixel step runs with SIRS (`REFPIX_DEFAULTS`) and the jump
     step with `JUMP_DEFAULTS` (7 sigma, no large-event expansion), over the
     CRDS parameters; with
-    ``expand_large_events`` off `SnowblindStep` is its first post-hook; the
+    ``expand_large_events`` off `SnowblindStep` is its first post-hook, with
+    ``ring_width=3``; the
     caller's ``--steps.refpix...`` and ``--steps.jump...`` parameters still
     win, and ``--steps.jump.expand_large_events=True`` gives the jwst
     snowball flagging back instead of the hook.
+
+    The saturation step runs with ``n_pix_grow_sat=0``
+    (`SATURATION_DEFAULTS`), so that SATURATED marks only the pixels that
+    reach the saturation threshold, which persist after the reset, and
+    `snowblind.saturation.flag_saturation_neighbors` as its first post-hook
+    sets CHARGELOSS and DO_NOT_USE on the pixels next to them, which the
+    jwst step's default would have set SATURATED on.  With the caller's
+    ``--steps.saturation.n_pix_grow_sat`` above 0 the hook is left out.
 
     The ``superbias`` slot holds `snowblind.superbias.SuperBiasStep`, the
     jwst step, which also keeps the zeroframe pixels its subtraction makes
@@ -100,9 +123,11 @@ class Detector1Pipeline(JwstDetector1Pipeline):
         *args
             Passed to the jwst pipeline.
         **kwargs
-            Passed to the jwst pipeline.  The ``refpix`` and ``jump``
+            Passed to the jwst pipeline.  The ``saturation``, ``refpix`` and ``jump``
             entries of the ``steps`` mapping get each parameter of
-            `STEP_DEFAULTS` they do not hold, and the ``jump`` entry, while ``expand_large_events`` is off, a
+            `STEP_DEFAULTS` they do not hold; the ``saturation`` entry,
+            while ``n_pix_grow_sat`` is 0, `SATURATION_HOOK` first in
+            ``post_hooks`` unless it is there already; and the ``jump`` entry, while ``expand_large_events`` is off, a
             `SnowblindStep` in ``post_hooks`` unless one is there already,
             ahead of a stream clean listed there.
             ``expand_large_events`` must be a boolean, or the string of
@@ -135,6 +160,13 @@ class Detector1Pipeline(JwstDetector1Pipeline):
             section = steps.setdefault(name, {})
             for key, value in defaults.items():
                 section.setdefault(key, value)
+        saturation = steps["saturation"]
+        if int(saturation["n_pix_grow_sat"]) == 0:
+            saturation_hooks = saturation.get("post_hooks") or []
+            saturation_hooks = [saturation_hooks] if isinstance(saturation_hooks, str) else list(saturation_hooks)
+            if not any(isinstance(hook, str) and hook.strip() == SATURATION_HOOK for hook in saturation_hooks):
+                saturation_hooks.insert(0, SATURATION_HOOK)
+            saturation["post_hooks"] = saturation_hooks
         jump = steps["jump"]
         hooks = jump.get("post_hooks") or []
         hooks = [hooks] if isinstance(hooks, str) else list(hooks)

@@ -622,7 +622,7 @@ class StreamCleanStep(Step):
                     )
             stars = getattr(self, "_spike_stars", 0)
             log.info(
-                f"Background mask: {100 * (~background_mask).mean():.1f} percent of pixels are sources"
+                f"Background mask: {100 * (~background_mask).mean():.1f} percent of pixels are masked as sources"
                 + (f", the diffraction spikes of {stars} bright star{'s' if stars != 1 else ''} among them" if stars else "")
             )
             mask_model = make_intermediate_model(image_model, background_mask) if self.save_mask else None
