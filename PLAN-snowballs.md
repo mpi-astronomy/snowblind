@@ -40,7 +40,7 @@ caf30db; replaces the provisional rule above):
   group count).
 - In later integrations of a ramp the core is flagged for
   `core_persistence_time` and the core grown by one pixel for
-  `neighbor_persistence_time` (`cores_in_later_integrations`): a group
+  `neighbor_persistence_time` (`flag_cores_in_later_integrations`): a group
   while the difference it ends starts within the time of the end of the
   hit's integration, group 0 included; group times from `int_times`, or
   the frame counts (`group_difference_times`). Defaults: the packaged

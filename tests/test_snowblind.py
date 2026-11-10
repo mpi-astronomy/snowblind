@@ -431,6 +431,22 @@ def test_ramp_core_flagged_two_integrations_later_for_the_core_persistence_time(
     assert result.groupdq[2, :, 20, 20].tolist() == [JUMP_DET] * 2 + [GOOD] * 4
 
 
+def test_ramp_core_hit_in_two_integrations_flagged_from_the_later_hit():
+    """SnowblindStep.call with core_persistence_time=35 s on a ramp whose core is hit in integrations 1 and 2 flags it
+    in groups 0 to 2 of integration 3.
+
+    Their differences start 10, 20 and 30 s after the end of integration 2, and 80 s or more after that of
+    integration 1.
+    """
+    im = ramp_with_snowball_in_first_integration(3)
+    im.groupdq[1, 2, 15:26, 15:26] = JUMP_DET
+    im.groupdq[1, 2:, 20, 20] = SATURATED
+
+    result = SnowblindStep.call(im, core_persistence_time=35.0, neighbor_persistence_time=15.0)
+
+    assert result.groupdq[2, :, 20, 20].tolist() == [JUMP_DET] * 3 + [GOOD] * 3
+
+
 def test_ramp_core_persistence_timed_from_int_times():
     """SnowblindStep.call with core_persistence_time=500 s on integrations 1000 s apart in int_times leaves the core GOOD."""
     im = ramp_with_snowball_in_first_integration(2)

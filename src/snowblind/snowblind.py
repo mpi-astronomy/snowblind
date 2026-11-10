@@ -108,7 +108,7 @@ class SnowblindStep(Step):
             Copy of the input with ``new_jump_flag`` set in ``groupdq`` (ramps) or ``dq``
             (rate products) on the grown pixels and, in a ramp, on the rings around the
             cores and on the cores and their neighbors in later integrations (see
-            `cores_in_later_integrations`), and ``meta.cal_step.snowblind`` set to
+            `flag_cores_in_later_integrations`), and ``meta.cal_step.snowblind`` set to
             ``"COMPLETE"``.  For a ramp, ``meta.exposure.extended_emission_events`` (FITS
             keyword EXTNCRS) is set to the number of large events found per million
             pixels per second, replacing the value written by the jump step.
@@ -135,20 +135,18 @@ class SnowblindStep(Step):
         dilated_jumps, cores = self.dilate_large_area_jumps(bool_jump, bool_sat, refpix)
         log.info(f"Total snowballs = {self._n_events}")
 
-        # bitwise OR together the dilated masks with the original GROUPDQ mask
-        # We set the dilated saturated cores as jumps, as they are not saturated
+        # The rings around the saturated cores are flagged as jumps, as they are not saturated
         if self._has_groups:
+            np.bitwise_or(result.groupdq, self.new_jump_flag, out=result.groupdq, where=dilated_jumps)
+            del dilated_jumps
             dilated_sats = self.dilate_saturated_cores(cores)
-            result.groupdq |= (dilated_jumps * self.new_jump_flag).astype(np.uint32)
-            result.groupdq |= (dilated_sats * self.new_jump_flag).astype(np.uint32)
+            np.bitwise_or(result.groupdq, self.new_jump_flag, out=result.groupdq, where=dilated_sats)
             del dilated_sats
             if cores[:-1].any():
-                persisting = self._cores_persisting(result, cores)
-                if persisting is not None:
-                    result.groupdq |= (persisting * self.new_jump_flag).astype(np.uint32)
+                self._flag_cores_persisting(result, cores)
             self.set_event_rate(result, self._n_events)
         else:
-            result.dq |= (dilated_jumps * self.new_jump_flag).astype(np.uint32)
+            np.bitwise_or(result.dq, self.new_jump_flag, out=result.dq, where=dilated_jumps)
 
         # Update the metadata with the step completion status
         self.set_cal_step(result, "COMPLETE")
@@ -568,19 +566,21 @@ class SnowblindStep(Step):
 
         return dilated_sats
 
-    def _cores_persisting(self, model, cores):
-        """`cores_in_later_integrations` for a ramp, with its group times and its persistence times.
+    def _flag_cores_persisting(self, model, cores):
+        """`flag_cores_in_later_integrations` on a ramp's groupdq, with its group times and its persistence times.
 
-        Returns None, after a warning, when the group times are unknown.
+        Warns and flags nothing when the group times are unknown.
         """
         times = group_difference_times(model)
         if times is None:
             log.warning("The frame time is unknown, so the snowball cores are not flagged in later integrations")
-            return None
+            return
         core_time, neighbor_time = self._persistence_times(model.meta.instrument.detector)
         log.info(f"Snowball cores flagged in later integrations for {core_time:.0f} s after the end of the "
                  f"integration of the hit, the pixels next to them for {neighbor_time:.0f} s")
-        return self.cores_in_later_integrations(cores, *times, core_time, neighbor_time)
+        self.flag_cores_in_later_integrations(
+            model.groupdq, cores, *times, core_time, neighbor_time, self.new_jump_flag
+        )
 
     def _persistence_times(self, detector):
         """``core_persistence_time`` and ``neighbor_persistence_time``, each taken from the detector's packaged
@@ -600,7 +600,9 @@ class SnowblindStep(Step):
         return core_time, neighbor_time
 
     @staticmethod
-    def cores_in_later_integrations(cores, difference_starts, integration_ends, core_time, neighbor_time):
+    def flag_cores_in_later_integrations(
+        groupdq, cores, difference_starts, integration_ends, core_time, neighbor_time, flag
+    ):
         """
         Flag the cores of each integration's large events, and the pixels next to them, in the later integrations
 
@@ -609,10 +611,13 @@ class SnowblindStep(Step):
         (one pixel away, the 3x3 dilation of the core) faster.  A group of a later
         integration is flagged when the difference it ends starts less than the given time
         after that end, group 0 included, so that a fit from the reset leaves out the
-        reset difference.
+        reset difference.  A pixel's latest hit is the one that flags it longest, so only
+        that one is kept, and the integrations are gone through once.
 
         Parameters
         ----------
+        groupdq : ndarray, shape (nints, ngroups, nrows, ncols)
+            Group DQ of the ramp, updated in place.
         cores : ndarray of bool, shape (nints, ngroups, nrows, ncols)
             Cores of the large events found in each group, from
             ``dilate_large_area_jumps``.
@@ -626,24 +631,22 @@ class SnowblindStep(Step):
         neighbor_time : float
             Seconds after the end of the integration of the hit during which the core
             grown by one pixel is flagged.
-
-        Returns
-        -------
-        ndarray of bool, shape (nints, ngroups, nrows, ncols)
-            True in the groups of later integrations where a core, or a pixel next to it,
-            is still within its time.
+        flag : int
+            DQ value set on the flagged groups.
         """
-        persisting = np.zeros_like(cores, dtype=bool)
-        for i in range(len(cores) - 1):
-            core = cores[i].any(axis=0)
-            if not core.any():
-                continue
-            grown = ndimage.binary_dilation(core, structure=SQUARE)
-            for j in range(i + 1, len(cores)):
-                since = difference_starts[j] - integration_ends[i]
-                persisting[j, since < neighbor_time] |= grown
-                persisting[j, since < core_time] |= core
-        return persisting
+        # the time before which a difference must start to be flagged on each pixel, from its latest hit
+        core_until = np.full(cores.shape[-2:], -np.inf)
+        neighbor_until = np.full(cores.shape[-2:], -np.inf)
+        for integration, (starts, end) in enumerate(zip(difference_starts, integration_ends)):
+            for until in (core_until, neighbor_until):
+                groups_flagged = np.searchsorted(starts, until)
+                for group in range(groups_flagged.max()):
+                    dq = groupdq[integration, group]
+                    np.bitwise_or(dq, flag, out=dq, where=groups_flagged > group)
+            core = cores[integration].any(axis=0)
+            if core.any():
+                core_until[core] = end + core_time
+                neighbor_until[ndimage.binary_dilation(core, structure=SQUARE)] = end + neighbor_time
 
 
 def group_difference_times(model):
