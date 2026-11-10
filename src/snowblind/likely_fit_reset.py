@@ -55,7 +55,6 @@ from stcal.ramp_fitting.likely_fit import (
     compute_ThetaDs,
     compute_Thetas,
     compute_thetas,
-    determine_diffs2use,
     get_ramp_result,
     get_readtimes,
     initial_count_rate_guess,
@@ -254,7 +253,9 @@ def likely_ramp_fit_reset(
         allrateguesses = np.zeros((nrows, ncols))
 
         for row in range(nrows):
-            d2use = determine_diffs2use(row, diff, gdq)
+            d2use = np.ones((diff.shape[0], ncols), np.uint8)
+            d2use[gdq[1:, row, :] != 0] = 0
+            d2use[gdq[:-1, row, :] != 0] = 0
             d2use_copy = d2use.copy()
             sb_row = sigma_b[row]
             if ramp_data.rejection_threshold is not None:

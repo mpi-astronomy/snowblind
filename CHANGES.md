@@ -127,6 +127,8 @@ the readout stream.
 - `SnowblindStep` no longer flags JUMP_DET at pixels (0, 0), (0, 1) and
   (1, 0) in every group of a ramp. In a subarray where that corner is
   light-sensitive, they lost their whole ramp.
+- `ResetRampFitStep` runs with stcal 1.21.0, which changed a function the
+  step borrowed.
 
 ## [1.3.1] - 2026-11-09
 
