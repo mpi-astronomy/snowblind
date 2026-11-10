@@ -16,11 +16,20 @@ log = logging.getLogger(__name__)
 JUMP_DET = datamodels.dqflags.group["JUMP_DET"]
 SATURATED = datamodels.dqflags.group["SATURATED"]
 REFERENCE_PIXEL = datamodels.dqflags.pixel["REFERENCE_PIXEL"]
+DO_NOT_USE = datamodels.dqflags.pixel["DO_NOT_USE"]
 PACKAGED_KIND = "snowball_persistence"
 AFTER_JUMPS_DEPRECATION = (
     "SnowblindStep's after_jumps is deprecated and will be removed in a future release. Left at None, the "
     "default, the ring around each snowball core is flagged to the end of its integration."
 )
+
+# Hits whose core is SATURATED already in group 0 (SnowblindStep.cores_saturated_in_group_0), measured on programs
+# 6154, 2234 and 1345 (PLAN-snowballs.md, 2026-11-10): no saturated star's area grew by less than 1.39 times by a
+# read 3 times later than group 0's, while no such hit's area grew and every hit's core value fell.
+GROUP_0_MIN_CORE = 5  # pixels SATURATED in group 0, outside the bad-pixel mask
+GROUP_0_MAX_GROWTH = 1.1  # SATURATED area in the last group over that in group 0
+GROUP_0_MIN_FALL = 0.005  # fraction by which the core's median value falls from group 0 to the last group
+GROUP_0_MIN_READ_RATIO = 3.0  # time of the last group's read over group 0's, both from the reset
 
 
 class SnowblindStep(Step):
@@ -47,6 +56,16 @@ class SnowblindStep(Step):
     around the pixels that reached the saturation threshold, and the ring reaches
     ``ring_width`` + 1 pixels from them; ``snowblind_detector1`` sets ``ring_width`` to
     reach 3 pixels from them whatever ``n_pix_grow_sat`` it runs with.
+
+    A hit before group 0 is read, or during its frames, has its core SATURATED already
+    in group 0, so the core never newly saturates.  In a ramp, an area SATURATED in
+    group 0 that does not grow by the last group and whose value falls, unlike a
+    saturated star's, is taken as such a core (`cores_saturated_in_group_0`), a
+    snowball's or an energetic cosmic ray's.  It gets its ring from group 0 and its
+    persistence, and counts as a core in group 1, where the jump of a hit during group
+    0's frames shows, so a halo flagged there is grown.  A hit before the first read
+    leaves no jump: its halo's charge is in every read, which a fit to the group
+    differences does not see.
 
     Part of an event can lie on the reference pixels or past the array border, where the
     jump step cannot see it.  There the disk of ``min_radius`` may hang over the edge as
@@ -128,22 +147,24 @@ class SnowblindStep(Step):
                 bool_sat = (jump.dq & SATURATED) == SATURATED
                 refpix = np.any((jump.dq & REFERENCE_PIXEL) != 0, axis=tuple(range(jump.dq.ndim - 2)))
 
+        group_0_cores = self.cores_saturated_in_group_0(result, bool_sat) if self._has_groups else None
         # Expand jumps with large areas around saturated cores by self.growth_factor
-        dilated_jumps, cores = self.dilate_large_area_jumps(bool_jump, bool_sat, refpix)
+        dilated_jumps, cores = self.dilate_large_area_jumps(bool_jump, bool_sat, refpix, group_0_cores)
         log.info(f"Total snowballs = {self._n_events}")
-
-        # The rings around the saturated cores are flagged as jumps, as they are not saturated
-        if self._has_groups:
+        if not self._has_groups:
+            np.bitwise_or(result.dq, self.new_jump_flag, out=result.dq, where=dilated_jumps)
+        else:
             np.bitwise_or(result.groupdq, self.new_jump_flag, out=result.groupdq, where=dilated_jumps)
             del dilated_jumps
+            # a core saturated in group 0 gets its ring and persistence, whether a halo was found around it or not
+            cores[:, 0] |= group_0_cores
+            # The rings around the saturated cores are flagged as jumps, as they are not saturated
             dilated_sats = self.dilate_saturated_cores(cores, result.groupdq)
             np.bitwise_or(result.groupdq, self.new_jump_flag, out=result.groupdq, where=dilated_sats)
             del dilated_sats
             if cores[:-1].any():
                 self._flag_cores_persisting(result, cores)
             self.set_event_rate(result, self._n_events)
-        else:
-            np.bitwise_or(result.dq, self.new_jump_flag, out=result.dq, where=dilated_jumps)
 
         # Update the metadata with the step completion status
         self.set_cal_step(result, "COMPLETE")
@@ -444,7 +465,7 @@ class SnowblindStep(Step):
         y1, x1 = min(top + canvas.shape[0], nrows), min(left + canvas.shape[1], ncols)
         dilated[y0:y1, x0:x1] |= canvas[y0 - top:y1 - top, x0 - left:x1 - left]
 
-    def dilate_large_area_jumps(self, bool_jump, bool_sat, refpix=None):
+    def dilate_large_area_jumps(self, bool_jump, bool_sat, refpix=None, group_0_cores=None):
         """
         Dilate a boolean mask with contiguous large areas by a self.growth_factor
 
@@ -459,6 +480,10 @@ class SnowblindStep(Step):
             SATURATED pixels, same shape as ``bool_jump``.
         refpix : ndarray of bool, shape (nrows, ncols), or None
             Reference pixels.
+        group_0_cores : ndarray of bool, shape (nints, nrows, ncols), or None
+            For a ramp, the cores SATURATED already in group 0
+            (`cores_saturated_in_group_0`), which also count as cores in group 1, where
+            the jump of a hit during group 0's frames shows.
 
         Returns
         -------
@@ -478,6 +503,8 @@ class SnowblindStep(Step):
         if self._has_groups:
             for i, integration in enumerate(bool_jump):
                 saturating = self._saturating_in_group_or_next(bool_sat[i])
+                if group_0_cores is not None and len(saturating) > 1:
+                    saturating[1] |= group_0_cores[i]
                 for g, group in enumerate(integration):
                     # If there are no JUMP_DET in this group, skip it. True for the first group
                     # of an integration
@@ -511,6 +538,78 @@ class SnowblindStep(Step):
         saturating = newly.copy()
         saturating[:-1] |= newly[1:]
         return saturating
+
+    @staticmethod
+    def cores_saturated_in_group_0(model, saturated):
+        """
+        The cores of the hits that saturated already in group 0: snowballs and energetic cosmic rays, not stars
+
+        A hit before group 0 is read, or during its frames, has its core SATURATED from
+        group 0, so the core never newly saturates.  An area of at least
+        ``GROUP_0_MIN_CORE`` pixels SATURATED in group 0, outside the bad-pixel mask, is
+        such a core when by the last group its SATURATED area has grown by no more than
+        ``GROUP_0_MAX_GROWTH`` and its median value has fallen by more than
+        ``GROUP_0_MIN_FALL``: a saturated star keeps collecting light, so its saturated
+        area grows and its core does not empty.  An exposure whose last group is read less
+        than ``GROUP_0_MIN_READ_RATIO`` times later than group 0 is not searched, as a
+        star may not grow enough by then.
+
+        Parameters
+        ----------
+        model : RampModel
+            The ramp, with its ``data`` and ``pixeldq``.
+        saturated : ndarray of bool, shape (nints, ngroups, nrows, ncols)
+            SATURATED pixels.
+
+        Returns
+        -------
+        ndarray of bool, shape (nints, nrows, ncols)
+            The cores in each integration.
+        """
+        cores = np.zeros((saturated.shape[0],) + saturated.shape[2:], dtype=bool)
+        exposure = model.meta.exposure
+        nframes, groupgap = exposure.nframes or 1, exposure.groupgap or 0
+        read_ratio = 1 + (saturated.shape[1] - 1) * (nframes + groupgap) / nframes
+        if read_ratio < GROUP_0_MIN_READ_RATIO:
+            log.info(f"The last group is read {read_ratio:.1f} times later than group 0, less than "
+                     f"{GROUP_0_MIN_READ_RATIO:g}: cores saturated in group 0 are not looked for")
+            return cores
+        bad = (model.pixeldq & (DO_NOT_USE | REFERENCE_PIXEL)) != 0
+        n_found = 0
+        for i in range(saturated.shape[0]):
+            for rows, cols in SnowblindStep._areas_saturated_in_group_0_like_a_hit(saturated[i], model.data[i], bad):
+                cores[i, rows, cols] = True
+                n_found += 1
+        log.info(f"Cores saturated already in group 0 = {n_found}")
+        return cores
+
+    @staticmethod
+    def _areas_saturated_in_group_0_like_a_hit(saturated, data, bad):
+        """One integration's areas SATURATED in group 0 that pass the tests of `cores_saturated_in_group_0`.
+
+        Returns a list of ``(rows, cols)``, each area's pixels.
+        """
+        first = saturated[0] & ~bad
+        if not first.any():
+            return []
+        labels, _ = ndimage.label(first, structure=SQUARE)
+        last_labels, _ = ndimage.label(saturated[-1] & ~bad, structure=SQUARE)
+        last_sizes = np.bincount(last_labels.ravel())
+        found = []
+        for k, box in enumerate(ndimage.find_objects(labels), start=1):
+            area = labels[box] == k
+            size = int(area.sum())
+            if size < GROUP_0_MIN_CORE:
+                continue
+            last_ids = np.unique(last_labels[box][area])
+            if last_sizes[last_ids[last_ids > 0]].sum() > GROUP_0_MAX_GROWTH * size:
+                continue
+            first_values, last_values = data[0][box][area], data[-1][box][area]
+            if np.median((first_values - last_values) / np.maximum(first_values, 1.0)) <= GROUP_0_MIN_FALL:
+                continue
+            rows, cols = np.nonzero(area)
+            found.append((rows + box[0].start, cols + box[1].start))
+        return found
 
     def dilate_saturated_cores(self, cores, groupdq=None):
         """

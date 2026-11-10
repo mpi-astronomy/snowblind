@@ -101,6 +101,18 @@
   corner too. An event centered on the outermost light-sensitive row or
   column needs no core in view if it holds a disk of `min_radius` that does
   not extend past the edge.
+- `SnowblindStep` flags, in a ramp, the hits whose core is SATURATED
+  already in group 0, a snowball's or an energetic cosmic ray's that hit
+  before group 0 is read or during its frames, whose core never newly
+  saturates (`cores_saturated_in_group_0`): an area of at least 5 pixels
+  SATURATED in group 0, outside the bad-pixel mask, whose saturated area
+  grows by no more than 10% by the last group and whose value falls by more
+  than 0.5%, unlike a saturated star's. Ramps whose last group is read less
+  than 3 times later than group 0 are not searched. The core gets its ring
+  from group 0 to the end of the integration and its persistence in later
+  integrations, and counts as a core in group 1, where the jump of a hit
+  during group 0's frames shows, so a halo flagged there is grown; it is
+  given no halo of its own.
 - `SnowblindStep` flags each snowball's core, and the pixels next to it, in
   the later integrations of a ramp, where they persist after the reset: a
   group is flagged on the core while the difference it ends starts less

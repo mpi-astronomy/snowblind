@@ -52,6 +52,23 @@ core past the edge, and is kept without one if it holds a disk of
 lies past the edge is measured from the part on the detector, so it is
 grown less than its full size.
 
+A hit before group 0 is read, or during its frames, has its core
+SATURATED already in group 0, so in a ramp its core never newly saturates.
+The step takes as such a core an area of at least 5 pixels SATURATED in
+group 0, outside the bad-pixel mask, whose saturated area has grown by no
+more than 10% by the last group and whose value has fallen by more than
+0.5%. A saturated star keeps collecting light: its saturated area grows and
+its core does not empty. The test needs the last group to be read at least
+3 times later than group 0, as a star may not grow enough before that, so
+shorter ramps are not searched. Such cores are a snowball's or an energetic
+cosmic ray's, which cannot be told apart this way, so neither is given a
+halo of its own: the core gets its ring from group 0 to the end of the
+integration and its persistence in later integrations, as any snowball's,
+and it counts as a core in group 1, where the jump of a hit during group
+0's frames shows, so a halo the jump step flags there is grown. A hit
+before the first read leaves no jump at all; its halo's charge is in every
+read, so a fit to the differences between groups does not see it.
+
 The charge leak ring and the persistence of the core
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
