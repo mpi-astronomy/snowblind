@@ -12,6 +12,7 @@ from snowblind.snowblind import group_difference_times, longest_packaged_snowbal
 JUMP_DET = datamodels.dqflags.group['JUMP_DET']
 GOOD = datamodels.dqflags.group['GOOD']
 SATURATED = datamodels.dqflags.group['SATURATED']
+DO_NOT_USE = datamodels.dqflags.group['DO_NOT_USE']
 REFERENCE_PIXEL = datamodels.dqflags.pixel['REFERENCE_PIXEL']
 
 
@@ -325,6 +326,36 @@ def test_dilate_saturated_cores_flags_the_ring_to_the_end_of_the_integration():
     ring = SnowblindStep().dilate_saturated_cores(cores)
 
     assert ring[0].any(axis=(1, 2)).tolist() == [False, True, True, True, True, True]
+
+
+def test_dilate_saturated_cores_starts_at_the_group_the_core_saturated_during():
+    """SnowblindStep().dilate_saturated_cores on a core in group 1 of 6 that groupdq has DO_NOT_USE in group 0 and
+    SATURATED from group 1 flags the ring in groups 0 to 5.
+
+    The saturation step marks so the group during whose frames a pixel saturated, whose average holds part of the hit.
+    """
+    cores = np.zeros((1, 6, 9, 9), dtype=bool)
+    cores[0, 1, 4, 4] = True
+    groupdq = np.zeros((1, 6, 9, 9), dtype=np.uint8)
+    groupdq[0, 0, 4, 4] = DO_NOT_USE
+    groupdq[0, 1:, 4, 4] = SATURATED
+
+    ring = SnowblindStep().dilate_saturated_cores(cores, groupdq)
+
+    assert ring[0].any(axis=(1, 2)).tolist() == [True] * 6
+
+
+def test_ramp_ring_flagged_from_the_group_the_core_saturated_during():
+    """SnowblindStep.call on a ramp whose core is DO_NOT_USE in group 1 and SATURATED from group 2, with its jump region
+    in group 2, flags the ring from group 1."""
+    im = datamodels.RampModel((1, 6, 40, 40))
+    im.groupdq[0, 2, 15:26, 15:26] = JUMP_DET
+    im.groupdq[0, 1, 20, 20] = DO_NOT_USE
+    im.groupdq[0, 2:, 20, 20] = SATURATED
+
+    result = SnowblindStep.call(im)
+
+    assert result.groupdq[0, 1, 22, 20] == JUMP_DET
 
 
 def test_dilate_saturated_cores_with_after_jumps_flags_that_many_groups_after_the_jump():

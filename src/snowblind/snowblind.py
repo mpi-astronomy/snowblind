@@ -7,7 +7,7 @@ from scipy import ndimage
 from scipy.spatial import ConvexHull, QhullError
 from jwst import datamodels
 from .packaged import packaged_file, packaged_files, read_packaged
-from .saturation import SQUARE
+from .saturation import SQUARE, saturated_in_group
 from .step import SECONDS_PER_DAY, Step
 
 log = logging.getLogger(__name__)
@@ -33,7 +33,8 @@ class SnowblindStep(Step):
     rate image or rateints cube, which do not record when a pixel saturated, its
     SATURATED pixels.  In a ramp the core is also dilated by ``ring_width`` pixels in
     every group from the hit to the end of the integration (the ring, where charge from
-    the core leaks into its neighbors), and it persists after the reset: in the later
+    the core leaks into its neighbors), from the group before when the core saturated
+    during that group's frames, and it persists after the reset: in the later
     integrations of the exposure the core is flagged for ``core_persistence_time``
     seconds after the end of the integration of the hit, and the core grown by one pixel
     for ``neighbor_persistence_time`` seconds.  Both default to the times measured for
@@ -135,7 +136,7 @@ class SnowblindStep(Step):
         if self._has_groups:
             np.bitwise_or(result.groupdq, self.new_jump_flag, out=result.groupdq, where=dilated_jumps)
             del dilated_jumps
-            dilated_sats = self.dilate_saturated_cores(cores)
+            dilated_sats = self.dilate_saturated_cores(cores, result.groupdq)
             np.bitwise_or(result.groupdq, self.new_jump_flag, out=result.groupdq, where=dilated_sats)
             del dilated_sats
             if cores[:-1].any():
@@ -511,7 +512,7 @@ class SnowblindStep(Step):
         saturating[:-1] |= newly[1:]
         return saturating
 
-    def dilate_saturated_cores(self, cores):
+    def dilate_saturated_cores(self, cores, groupdq=None):
         """
         Dilate the saturated cores of large cosmic ray events and carry them to the end of the integration
 
@@ -520,28 +521,61 @@ class SnowblindStep(Step):
         cores : ndarray of bool, shape (nints, ngroups, nrows, ncols)
             Cores of the large events found in each group, from
             ``dilate_large_area_jumps``.
+        groupdq : ndarray, shape (nints, ngroups, nrows, ncols), or None
+            Group DQ of the ramp.  A core pixel that saturated during the frames of the
+            group before its own gets its ring from that group too (see
+            `_cores_from_the_group_they_saturated_in`).
 
         Returns
         -------
         ndarray of bool, shape (nints, ngroups, nrows, ncols)
-            Each core dilated by ``self.ring_width`` pixels in its group and every later
-            group of its integration; with ``self.after_jumps`` set (deprecated), in its
-            group and the ``self.after_jumps`` following groups only.
+            Each core dilated by ``self.ring_width`` pixels from the group its ring starts
+            in to the end of its integration; with ``self.after_jumps`` set (deprecated), in
+            its group and the ``self.after_jumps`` following groups only.
         """
         if self.after_jumps is not None:
             return self._ring_for_after_jumps_groups(cores)
         dilated_sats = np.zeros_like(cores, dtype=bool)
         for i, integration in enumerate(cores):
-            hit = np.zeros(cores.shape[-2:], dtype=bool)
-            ring = None
-            for g, group in enumerate(integration):
-                # the ring changes only in the groups that bring new cores
-                if (group & ~hit).any():
-                    hit |= group
-                    ring = skimage.morphology.isotropic_dilation(hit, radius=self.ring_width)
-                if ring is not None:
+            if groupdq is not None:
+                integration = self._cores_from_the_group_they_saturated_in(integration, groupdq[i])
+            # every core whose ring has started; the ring is redrawn only in the groups that add one
+            started = np.zeros(cores.shape[-2:], dtype=bool)
+            for g, group_cores in enumerate(integration):
+                if (group_cores & ~started).any():
+                    started |= group_cores
+                    ring = skimage.morphology.isotropic_dilation(started, radius=self.ring_width)
+                if started.any():
                     dilated_sats[i, g] = ring
         return dilated_sats
+
+    @staticmethod
+    def _cores_from_the_group_they_saturated_in(cores, groupdq):
+        """One integration's cores, each core pixel also set in the group before its own when it saturated during that
+        group's frames.
+
+        When a group averages several frames, a hit during its frames puts part of its
+        charge in that group's average while its jump shows only in the next group, where
+        the event is found.  The saturation step marks such a pixel DO_NOT_USE in the
+        earlier group (`snowblind.saturation.saturated_in_group`).
+
+        Parameters
+        ----------
+        cores : ndarray of bool, shape (ngroups, nrows, ncols)
+            The cores found in each group of the integration.
+        groupdq : ndarray, shape (ngroups, nrows, ncols)
+            Group DQ of the integration.
+
+        Returns
+        -------
+        ndarray of bool, shape (ngroups, nrows, ncols)
+            A copy of ``cores`` with those pixels also set in the group before.
+        """
+        moved = cores.copy()
+        for g in range(1, len(cores)):
+            if cores[g].any():
+                moved[g - 1] |= cores[g] & saturated_in_group(groupdq, g - 1)
+        return moved
 
     def _ring_for_after_jumps_groups(self, cores):
         """`dilate_saturated_cores` with ``self.after_jumps`` set: the ring in the group of the jump and the

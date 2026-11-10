@@ -31,6 +31,20 @@ def test_flag_saturation_neighbors_flags_every_group_from_the_saturation_on():
     assert result.groupdq[0, :, 5, 6].tolist() == [0, 0, CHARGELOSS | DO_NOT_USE, CHARGELOSS | DO_NOT_USE]
 
 
+def test_flag_saturation_neighbors_flags_the_group_the_pixel_saturated_during():
+    """flag_saturation_neighbors on a ramp with a pixel DO_NOT_USE in group 1 and SATURATED from group 2 flags its
+    neighbor from group 1.
+
+    The saturation step marks so the group during whose frames a pixel saturated.
+    """
+    model = ramp_with_saturated_pixel()
+    model.groupdq[0, 1, 5, 5] = DO_NOT_USE
+
+    result = flag_saturation_neighbors(model)
+
+    assert result.groupdq[0, :, 5, 6].tolist() == [0] + [CHARGELOSS | DO_NOT_USE] * 3
+
+
 def test_flag_saturation_neighbors_leaves_a_pixel_two_pixels_away():
     """flag_saturation_neighbors on a ramp with one saturated pixel leaves a pixel 2 px from it unflagged."""
     result = flag_saturation_neighbors(ramp_with_saturated_pixel())

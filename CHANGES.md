@@ -127,8 +127,12 @@
   around each saturated pixel, group by group, with CHARGELOSS and
   DO_NOT_USE, which keeps them out of the fits and the jump search as the
   jwst step's default growth does, while SATURATED marks only the pixels
-  that reached the saturation threshold. NIRSpec IRS2 groups are grown in
-  their normal layout, as the saturation step grows them.
+  that reached the saturation threshold. As with that growth, the
+  neighbors are flagged from the group during whose frames a pixel
+  saturated, which the saturation step marks DO_NOT_USE when a group
+  averages several frames (`snowblind.saturation.saturated_in_group`).
+  NIRSpec IRS2 groups are grown in their normal layout, as the saturation
+  step grows them.
 - `SnowblindStep`'s `min_radius` defaults to 2 (was 4), close to the jump
   step's `min_jump_area` of 15 pixels; with a core required, small
   cosmic-ray hits no longer pass at that size. `snowblind_detector1` uses
@@ -144,7 +148,9 @@
   (`after_jumps` now defaults to None). The ring is drawn around the cores
   only, and `ring_width` is counted from the SATURATED flags, so its reach
   from the pixels that saturated depends on the saturation step's
-  `n_pix_grow_sat`.
+  `n_pix_grow_sat`. When the core saturated during the frames of the group
+  before the jump group, which holds part of the hit, the ring is flagged
+  from that group (`dilate_saturated_cores` takes the group DQ).
 - `snowblind_detector1` runs the saturation step with `n_pix_grow_sat=0`
   and `flag_saturation_neighbors` as its post-hook, so SATURATED marks only
   the pixels that saturated, and `SnowblindStep` with `ring_width=3` (was

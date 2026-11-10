@@ -7,7 +7,7 @@ from jwst.lib import pipe_utils
 from jwst.saturation import x_irs2
 from scipy import ndimage
 
-__all__ = ["flag_saturation_neighbors"]
+__all__ = ["flag_saturation_neighbors", "saturated_in_group"]
 
 log = logging.getLogger(__name__)
 
@@ -16,6 +16,31 @@ CHARGELOSS = datamodels.dqflags.group["CHARGELOSS"]
 DO_NOT_USE = datamodels.dqflags.group["DO_NOT_USE"]
 # a pixel and its eight neighbors: the pixels this hook flags, and those SnowblindStep flags next to a core
 SQUARE = np.ones((3, 3), dtype=bool)
+
+
+def saturated_in_group(groupdq, group):
+    """The pixels saturated by the end of a group of an integration.
+
+    These are the pixels flagged SATURATED in the group, and those the saturation step
+    flagged DO_NOT_USE in it with SATURATED in the next group: when a group averages
+    several frames, the step marks so the group during whose frames a pixel saturated.
+
+    Parameters
+    ----------
+    groupdq : ndarray, shape (ngroups, nrows, ncols)
+        Group DQ of one integration.
+    group : int
+        Index of the group.
+
+    Returns
+    -------
+    ndarray of bool, shape (nrows, ncols)
+        True on the saturated pixels.
+    """
+    saturated = (groupdq[group] & SATURATED) != 0
+    if group + 1 < len(groupdq):
+        saturated |= ((groupdq[group] & DO_NOT_USE) != 0) & ((groupdq[group + 1] & SATURATED) != 0)
+    return saturated
 
 
 def flag_saturation_neighbors(input_model):
@@ -28,8 +53,10 @@ def flag_saturation_neighbors(input_model):
     neighbor flagged for the charge spilling out of it.  Here the neighbors
     leave the fits and the jump search as they do with the jwst default, while
     SATURATED keeps marking only the pixels that reached the saturation
-    threshold.  NIRSpec IRS2 groups are grown in their normal layout, without the
-    interleaved reference pixels, as the saturation step grows them.
+    threshold.  As with the jwst default, the neighbors are flagged from the group
+    during whose frames a pixel saturated (`saturated_in_group`).  NIRSpec IRS2
+    groups are grown in their normal layout, without the interleaved reference
+    pixels, as the saturation step grows them.
 
     Run as a hook, stpipe wraps it in a step when given its import path,
     ``"snowblind.saturation.flag_saturation_neighbors"``.
@@ -43,7 +70,7 @@ def flag_saturation_neighbors(input_model):
     -------
     RampModel
         The input, with CHARGELOSS and DO_NOT_USE set in each group on the pixels
-        next to that group's SATURATED pixels that are not SATURATED themselves.
+        next to that group's saturated pixels that are not saturated themselves.
     """
     irs2_mask, detector = None, None
     if pipe_utils.is_irs2(input_model):
@@ -52,8 +79,8 @@ def flag_saturation_neighbors(input_model):
     n_flagged = 0
     for integration in input_model.groupdq:
         saturated, neighbors = None, None
-        for plane in integration:
-            now = (plane & SATURATED) != 0
+        for group, plane in enumerate(integration):
+            now = saturated_in_group(integration, group)
             if not now.any():
                 continue
             # SATURATED carries to the later groups, so most groups repeat the one before

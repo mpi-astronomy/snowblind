@@ -58,8 +58,12 @@ The charge leak ring and the persistence of the core
 Charge leaks from the saturated core into the pixels around it, as from
 any saturated pixel (brighter-fatter at saturation). The ring, the core
 grown by ``ring_width`` pixels, is flagged in every group from the jump to
-the end of the integration. The core and the pixels next to it also hold
-charge after the reset, which they release over the next hours. In each
+the end of the integration. When a group averages several frames, a hit
+during its frames puts part of its charge in that group and the jump shows
+only in the next; the saturation step then marks the core DO_NOT_USE in the
+earlier group, and the ring is flagged from that group. The core and the
+pixels next to it also hold charge after the reset, which they release
+over the next hours. In each
 later integration of the exposure, a group is flagged on the core while the
 difference it ends starts less than ``core_persistence_time`` seconds after
 the end of the integration of the hit, and on the core grown by one pixel
@@ -131,7 +135,9 @@ covers its neighbors too. ``snowblind_detector1`` runs the saturation step
 with ``n_pix_grow_sat=0``, so SATURATED marks only the pixels that reached
 the threshold, and flags their neighbors with CHARGELOSS and DO_NOT_USE
 instead (``snowblind.saturation.flag_saturation_neighbors`` as a post-hook
-of the saturation step), which keeps them out of the fits as before.
+of the saturation step), which keeps them out of the fits as before. As
+with the jwst default, the neighbors are flagged from the group during
+whose frames a pixel saturated.
 CHARGELOSS is the flag the jwst pipeline uses for charge that spreads from
 a very bright pixel into its neighbors (its ``charge_migration`` step). The
 reset fit keeps it in the rate and rateints products, so
