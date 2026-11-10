@@ -697,6 +697,26 @@ def test_distance_to_empty_without_an_empty_pixel_counts_from_past_the_edge():
     assert distance[2, 2] == 3
 
 
+def test_distance_to_farthest_pixel_of_a_block():
+    """SnowblindStep._distance_to_farthest_pixel on a 3x5 block gives hypot(2, 4) at its corner pixel (0, 0)."""
+    event = np.ones((3, 5), dtype=bool)
+    rows, cols = np.nonzero(event)
+
+    farthest = SnowblindStep._distance_to_farthest_pixel(event, rows, cols)
+
+    assert farthest[0] == pytest.approx(np.hypot(2, 4))
+
+
+def test_distance_to_farthest_pixel_of_a_line():
+    """SnowblindStep._distance_to_farthest_pixel on a 1x5 line, which has no convex hull, gives 4 at its end pixel."""
+    event = np.ones((1, 5), dtype=bool)
+    rows, cols = np.nonzero(event)
+
+    farthest = SnowblindStep._distance_to_farthest_pixel(event, rows, cols)
+
+    assert farthest[0] == 4
+
+
 def test_events_at_edge_adds_nothing_to_an_event_covering_its_window():
     """SnowblindStep._events_at_edge on a 9x9 region that fills its window, with a 3x3 core at its middle, adds no
     pixels past the window to the event it finds.

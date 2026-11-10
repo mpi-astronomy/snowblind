@@ -6,6 +6,7 @@ import asdf
 import skimage
 import numpy as np
 from scipy import ndimage
+from scipy.spatial import ConvexHull, QhullError
 from jwst import datamodels
 from .step import Step
 
@@ -328,6 +329,23 @@ class SnowblindStep(Step):
             return ndimage.distance_transform_edt(np.pad(known, 1, constant_values=False))[1:-1, 1:-1]
         return ndimage.distance_transform_edt(known)
 
+    @staticmethod
+    def _distance_to_farthest_pixel(event, rows, cols):
+        """For each pixel ``(rows, cols)`` of ``event``, the distance to the event's farthest pixel.
+
+        The farthest pixel is always a corner of the event's convex hull, so only the
+        corners are measured, one at a time, which keeps memory to the event's size.
+        """
+        outline = np.argwhere(event & ~ndimage.binary_erosion(event))
+        try:
+            corners = outline[ConvexHull(outline).vertices]
+        except QhullError:  # fewer than three pixels, or all on one line
+            corners = outline
+        farthest = np.zeros(len(rows))
+        for corner_row, corner_col in corners:
+            np.maximum(farthest, np.hypot(rows - corner_row, cols - corner_col), out=farthest)
+        return farthest
+
     def _events_at_edge(self, region, window, cores, refpix):
         """
         Find the large events of one filled jump region that touches the edge, and complete them past it
@@ -371,9 +389,7 @@ class SnowblindStep(Step):
         for k in range(1, nevents + 1):
             event = event_labels == k
             rows, cols = np.nonzero(event)
-            outline_rows, outline_cols = np.nonzero(event & ~ndimage.binary_erosion(event))
-            farthest = np.hypot(rows[:, None] - outline_rows, cols[:, None] - outline_cols).max(axis=1)
-            best = np.argmax(distance[rows, cols] - farthest)
+            best = np.argmax(distance[rows, cols] - self._distance_to_farthest_pixel(event, rows, cols))
             center = (rows[best] + top, cols[best] + left)
             disk_rows, disk_cols = skimage.draw.disk(center, distance[rows[best], cols[best]])
             hidden = self._past_edge(disk_rows, disk_cols, refpix)
