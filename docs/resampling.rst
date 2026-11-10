@@ -12,11 +12,10 @@ reference, built from the input pixels of all the exposures at once.  The
 ``snowblind_image3`` pipeline is ``calwebb_image3`` with
 ``TiledOutlierStep`` and ``SparseResampleStep`` in place
 (``--outlier_step=sparse_outlier`` runs ``SparseOutlierDetectionStep``
-for the outliers instead).
-spizzle computes drizzle's square kernel as a sparse matrix for each
-exposure, applies it to the science data, the weights and the variance
-planes in double precision, and so gives the exact variance of each output
-pixel and the noise factor of the mosaic.
+for the outliers instead). spizzle builds drizzle's square-kernel weights
+once per exposure as a sparse matrix and applies it in double precision,
+which gives the exact variance of each output pixel and the noise factor of
+the mosaic.
 
 Summary
 -------
@@ -77,9 +76,9 @@ pixels, so their noise is correlated, and the variance of a sum over an
 aperture is more than the sum of the pixel variances in it. The noise
 factor of an output pixel is the sum of its covariance with every output
 pixel over its own variance: about the ratio of the two for a large
-aperture. The step computes it in a second pass over the exposures,
-rebuilding each exposure's matrix, and saves it next to the mosaic, with
-the file name in the mosaic's ``NFACFILE`` header card
+aperture. The step computes it in a second pass over the exposures and
+saves it next to the mosaic, with the file name in the mosaic's
+``NFACFILE`` header card
 (``meta.snowblind.sparse_resample.noise_factor_file``). ERR is
 ``sqrt((VAR_RNOISE + VAR_FLAT + VAR_POISSON) * noise factor)``.
 
@@ -143,7 +142,7 @@ core, the median cannot use the dithers to sharpen it, and the blot blurs it
 again. A star's peak pixel is then predicted too low and looks like an
 outlier, which jwst's rule allows for by loosening its threshold where the
 reference changes steeply (``scale * D``, ``D`` the largest difference
-between a reference pixel and its neighbors), and that also hides cosmic
+between a pixel of the reference and its neighbors), and that also hides cosmic
 rays on and next to stars.
 
 ``TiledOutlierStep`` builds one reference from the input pixels of all the
@@ -171,18 +170,19 @@ rays are positive. Where only one exposure covers a pixel, nothing can be
 flagged. jwst's step flags some pixels there by comparing the exposure with
 a blurred copy of itself; ``TiledOutlierStep`` does not.
 
-The grid is never allocated whole: it is processed in tiles of 1024 fine
-pixels with a small halo, and for each tile only the input pixels landing on
-it are drizzled, from geometry computed once per exposure. Memory therefore
-depends on the number and size of the exposures, not on the size of the
-mosaic. The outliers get DO_NOT_USE and OUTLIER in ``dq`` and NaN in the
+The grid is never allocated whole: it is processed in tiles, each with a
+small margin, and for each tile only the input pixels landing on it are
+drizzled. Memory therefore depends on the number and size of the exposures,
+not on the size of the mosaic. The outliers get DO_NOT_USE and OUTLIER in ``dq`` and NaN in the
 data, error and variance arrays, as with jwst's step.
 
 In simulations of dithered star fields with ``stpsf`` point spreads, for the
 NIRCam, NIRISS and NIRSpec imaging filters, the same parameters find more
 cosmic rays than jwst's step, many more within a few pixels of stars, and
 flag a few percent of star-core pixels or fewer where jwst's step flags up
-to about 15%.
+to about 15%. ``scripts/exp_injected_outliers.py`` repeats the comparison
+on real data: it injects cosmic rays into a set of ``_cal`` files and runs
+both methods on them.
 
 Agreement with the jwst steps
 -----------------------------
@@ -199,6 +199,10 @@ same context. Two differences come from drizzle:
 * drizzle's blot interpolates in single precision, so outlier detection
   flags a few pixels near its thresholds differently: on NIRCam exposures,
   about one pixel in a few million.
+
+``scripts/compare_sparse_resample.py`` and
+``scripts/compare_sparse_outlier_detection.py`` run a step and its jwst
+counterpart on the same ``_cal`` files and report these differences.
 
 Speed
 -----

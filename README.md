@@ -10,18 +10,18 @@ each step works and how to choose its settings.
 ## What it provides
 
 ### Steps
-- **`SnowblindStep`** masks the halos of snowballs, the jump-flagged regions
-  around a saturated core, by growing the shape of each region and the ring
-  around its core, including snowballs cut by the edge of the detector. In
-  a ramp the ring is flagged to the end of the integration, and the core
-  and its neighbors in later integrations, for times measured for each
-  detector and packaged with snowblind. It replaces the jump step's
-  `expand_large_events`, which draws circles or ellipses around them, and
-  works on rate products as well as ramps, so it can be applied after the
-  fact.
+- **`SnowblindStep`** flags snowballs, the large cosmic-ray events that
+  leave a saturated core inside a jump-flagged halo. It grows each halo to
+  follow the shape of the event, snowballs cut by the edge of the detector
+  included, flags the ring around the core to the end of the integration,
+  and flags the core's persistence in the later integrations of the ramp,
+  for times measured for each detector and packaged with snowblind. It
+  replaces the jump step's `expand_large_events`, which draws circles or
+  ellipses, and works on rate products as well as ramps, so it can be
+  applied after the fact.
 - **`PersistenceFlagStep`** flags the pixels that saturated in an earlier
-  exposure of the same detector, for a time measured for each detector and
-  packaged with snowblind. The jwst `persistence` step (as of jwst 3.0)
+  exposure of the same detector, and the pixels next to them, for a time
+  measured for each detector and packaged with snowblind. The jwst `persistence` step (as of jwst 3.0)
   needs a time chosen by hand and the exposures run one after another; this
   step takes a whole set of finished `_rate` or `_cal` files at once.
 - **`OpenPixelStep`** finds open and hot pixels that have appeared since the
@@ -75,13 +75,13 @@ spizzle as well:
 
 ## Getting started
 
-Run Detector1 with the 1/f cleaning, the reset fit and the snowball masking
-(and the SIRS reference-pixel correction, which the 1/f cleaning is matched
-to):
+Run Detector1 with the 1/f cleaning, the reset-anchored fit and the snowball
+flagging (and the SIRS reference-pixel correction, which the 1/f cleaning is
+matched to):
 
     strun snowblind_detector1 jw..._uncal.fits
 
-Or add only the snowball masking to the jwst pipeline, as a hook after its
+Or add only the snowball flagging to the jwst pipeline, as a hook after its
 jump step:
 
 ```python

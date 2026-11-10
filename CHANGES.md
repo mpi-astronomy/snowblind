@@ -2,208 +2,125 @@
 
 ## [Unreleased]
 
+Three changes make up this release. Images get new resampling and outlier
+detection steps built on spizzle, which build each exposure's weights once
+as a sparse matrix and give the exact variance of every mosaic pixel, and a
+`snowblind_image3` pipeline that runs them. Snowball flagging is rebuilt
+around the saturated core: only events with a core are grown, the ring
+around the core is flagged to the end of the integration and the core's
+persistence into the later integrations for times measured per detector,
+and snowballs cut by the detector edge are found and grown by their whole
+size. `StreamCleanStep` chooses its filter and column offsets from the
+grism dispersion direction, and no longer skips grisms that disperse along
+the readout stream.
+
 ### Added
 
-- `StreamCleanStep` accepts `fit_method=None`, no stream filter and only
-  the even-odd and column offsets, and `fit_method='auto'`, now the default:
-  `'wiener'`, except `'none'` on a grism that disperses along the readout
-  stream.
 - `SparseResampleStep` (`sparse_resample`): the jwst resample step for
-  images with drizzle replaced by spizzle, which builds each exposure's
-  square-kernel weights once as a sparse matrix and sums in double
-  precision. The variance planes are the exact variance of each output
-  pixel; the noise factor, what the correlation between neighboring output
-  pixels adds to the noise of a sum over many of them, is computed in a
-  second pass over the exposures and saved next to the mosaic as
-  `<product>_nfactor.fits` (header card `NFACFILE`); ERR is the root of the
-  summed variance planes times the noise factor. `variance="stcal"` gives
-  the jwst step's variance planes and ERR instead (header card `VARTYPE`).
-  There is no `kernel` (square only) or `propagate_dq`; `weight_type` is
-  `ivm` unless given, as the step does not read the jwst step's parameters
-  from CRDS; the context array is made only with `enable_ctx`; the pixel
-  map is interpolated with splines between the pixels where the WCS is
-  evaluated (`pixmap_stepsize` 16, `pixmap_order` 3).
-  `snowblind.resample.SparseResampleImage` is the class behind it, jwst's
-  `ResampleImage` with stcal's drizzle calls replaced.
-- `SparseOutlierDetectionStep` (`sparse_outlier_detection`): the jwst
-  outlier detection for images, its method unchanged, drizzling with
-  `SparseResampleImage` and blotting with spizzle. Images only; no
-  `resample_data`.
-- None of these steps has jwst's `good_bits`: each names the DQ flags of
-  the pixels it leaves out (resampling: DO_NOT_USE and NON_SCIENCE; the
-  outlier steps: DO_NOT_USE), through `snowblind.resample.drizzle_weights`,
-  which gives stcal's weights from them.
+  images with drizzle replaced by spizzle. The variance planes are the
+  exact variance of each output pixel, and the noise factor, which the ERR
+  plane includes, is saved next to the mosaic as `<product>_nfactor.fits`
+  (header card `NFACFILE`). `variance="stcal"` gives the jwst step's
+  variance planes and ERR instead (header card `VARTYPE`). Square kernel
+  only, no `propagate_dq`, and the context array only with `enable_ctx`;
+  the docs list the other parameters that differ from the jwst step.
+- `SparseOutlierDetectionStep` (`sparse_outlier_detection`): jwst's outlier
+  detection for images, its method unchanged, resampling and blotting with
+  spizzle. Images only.
 - `TiledOutlierStep` (`tiled_outlier`): outlier detection for images
-  against one reference built from the input pixels of all the exposures on
-  the outlier mosaic's grid sampled twice as finely (pixfrac 0.8, weighted
-  by overlap and inverse read-noise variance, weighted median then clipped
-  mean, one correction step), blotted onto each exposure and compared by
-  jwst's two-pass rule with `scale` 0.5 / 0.3. Where fewer than three
-  exposures overlap, the reference is their weighted mean and only pixels
-  above it are flagged. The grid is processed in tiles, so no mosaic-sized
-  array is allocated. `snowblind.outlier_reference` holds the method.
+  against one reference built from the input pixels of all the exposures
+  on a finer grid, blotted onto each exposure and compared by jwst's
+  two-pass rule. Where fewer than three exposures overlap, only pixels
+  above their weighted mean are flagged. The grid is processed in tiles,
+  so no mosaic-sized array is allocated.
 - `snowblind_image3` (`snowblind.Image3Pipeline`): `calwebb_image3` with
-  jwst's `outlier_detection` slot replaced by `tiled_outlier`
-  (`TiledOutlierStep`) and `sparse_outlier` (`SparseOutlierDetectionStep`),
-  `outlier_step` naming the one that runs (`tiled_outlier` by default),
-  and `SparseResampleStep` in its `resample` slot.
+  `SparseResampleStep` as its resample step and `TiledOutlierStep` as its
+  outlier detection; `outlier_step='sparse_outlier'` runs
+  `SparseOutlierDetectionStep` instead.
+- These steps have no `good_bits`: each names the DQ flags of the pixels
+  it leaves out, DO_NOT_USE and NON_SCIENCE for resampling and DO_NOT_USE
+  for outlier detection.
 - The optional extra `snowblind[spizzle]` installs spizzle and numba, which
   these steps need; snowblind imports without them.
-- `scripts/compare_sparse_resample.py` and
-  `scripts/compare_sparse_outlier_detection.py` compare the steps with the
-  jwst steps on a set of `_cal` files; `scripts/exp_injected_outliers.py`
-  injects cosmic rays into `_cal` files and compares jwst's outlier
-  detection with `TiledOutlierStep`'s method.
+- `StreamCleanStep` accepts `fit_method='auto'`, now the default:
+  `'wiener'`, except `'none'` on a grism that disperses along the readout
+  stream, where only the even-odd and column offsets are removed.
+  `fit_method=None` removes only the offsets on any exposure.
+- `SnowblindStep` flags snowball persistence in a ramp: each core, and the
+  pixels next to it, in the later integrations of the exposure, for
+  `core_persistence_time` and `neighbor_persistence_time` seconds after the
+  integration of the snowball. Both default to times measured for each
+  NIRCam, NIRISS and NIRSpec detector and packaged with snowblind; a
+  detector without a measurement gets the longest packaged times, with a
+  warning. The docs describe the measurement.
+- `snowblind.saturation.flag_saturation_neighbors`, a post-hook for the
+  saturation step run with `n_pix_grow_sat=0`. It flags the eight pixels
+  around each saturated pixel CHARGELOSS and DO_NOT_USE, group by group,
+  which keeps them out of the fits and the jump search as the jwst step's
+  default growth does, while SATURATED marks only the pixels that
+  saturated.
 
 ### Changed
 
-- `StreamCleanStep`: `column_offsets` and `even_odd_columns` now default to
-  `None`, which decides from the grism geometry: on for imaging and for
-  grisms that disperse along the readout stream (NIRISS GR150R, NIRCam
-  GRISMR), off for WFSS exposures whose traces run along the columns
-  (GR150C, GRISMC). `True` or `False` overrides, so the offsets can now be
-  kept on GR150C. `even_odd_columns` is therefore off by default on those
-  exposures, where it used to be on. The step no longer rewrites its own
-  parameters (issue #37).
-- `StreamCleanStep` no longer skips a grism that disperses along the readout
-  stream (NIRISS GR150R, NIRCam GRISMR). `fit_method='auto'` runs it with
-  `'none'`, which removes the even-odd and column offsets and no stream
-  noise. Naming `'wiener'` or `'row_median'` runs that filter there, with a
-  warning, as `allow_dispersion_along_stream=True` did.
-- `snowblind_detector1` no longer runs `JumpPlusStep` after its jump step;
-  `SnowblindStep` is the only snowball hook. With the reset fit, its
-  extra flags took one more good difference out of the ramp of every
-  jump-flagged pixel, the grown snowball halos included, which made the
-  halos noisier in the rate than with the jump step's `expand_large_events`
-  (issue #25).
-- `snowblind_detector1` no longer sets the jump step's
-  `after_jump_flag_time1` to 0: the flagging of the groups after large jumps
-  is left to the jwst defaults and the CRDS parameters, which set it for
-  NIRISS.
-- `SnowblindStep` grows only snowballs: jump regions that hold a saturated
-  core, the pixels that saturate in the jump group or the next (in a rate
-  image or rateints cube, its SATURATED pixels). Large jump regions without
-  one, such as cosmic-ray tracks, are no longer grown, and the ring carried
-  into the following groups is drawn around these cores only, not around
-  every saturated pixel inside a grown region (issue #5). A hole of more
-  than 200 pixels is filled too when it is made only of saturated pixels
-  and the pixels next to them, a large core; one that also holds sky, such
-  as the area around a saturated star in a rate image or one cut off by a
-  jump region that crosses the array, is not. EXTNCRS
-  counts the snowballs, and the step logs their number, summed over all
-  groups and integrations ("Total snowballs = N", as the jump step logs).
+- `StreamCleanStep` no longer skips a grism that disperses along the
+  readout stream (NIRISS GR150R, NIRCam GRISMR): `fit_method='auto'` runs
+  it there with `'none'`. Naming `'wiener'` or `'row_median'` runs that
+  filter there, with a warning.
+- `StreamCleanStep`'s `column_offsets` and `even_odd_columns` default to
+  `None`: on for imaging and for grisms that disperse along the readout
+  stream, off for WFSS exposures whose traces run along the columns
+  (GR150C, GRISMC), where `even_odd_columns` used to be on. `True` or
+  `False` overrides, so the offsets can now be kept on GR150C. The step no
+  longer rewrites its own parameters (issue #37).
+- `SnowblindStep` grows only snowballs, events with a saturated core.
+  Cosmic-ray tracks and other events without one are left as the jump step
+  flagged them (issue #5). The ring is drawn around the cores only and
+  flagged from the jump group to the end of the integration, `ring_width`
+  pixels out from the SATURATED flags. `min_radius` defaults to 2 (was 4);
+  with a core required, small cosmic rays no longer pass at that size.
 - `SnowblindStep` finds and grows snowballs cut by the edge of the
-  light-sensitive area (issue #16). Reference pixels (REFERENCE_PIXEL) and
-  the area past the array border may hold part of an event: the disk of
-  `min_radius` may extend over them as long as its center is on a
-  light-sensitive pixel, and the event is completed past the edge before
-  its equal-area radius is measured, so it grows by its whole size, in a
-  corner too. An event centered on the outermost light-sensitive row or
-  column needs no core in view if it holds a disk of `min_radius` that does
-  not extend past the edge.
-- `SnowblindStep` flags, in a ramp, the hits whose core is SATURATED
-  already in group 0, a snowball's or an energetic cosmic ray's that hit
-  before group 0 is read or during its frames, whose core never newly
-  saturates (`cores_saturated_in_group_0`): an area of at least 5 pixels
-  SATURATED in group 0, outside the bad-pixel mask, whose saturated area
-  grows by no more than 10% by the last group and whose value falls by more
-  than 0.5%, unlike a saturated star's. Ramps whose last group is read less
-  than 3 times later than group 0 are not searched. The core gets its ring
-  from group 0 to the end of the integration and its persistence in later
-  integrations, and counts as a core in group 1, where the jump of a hit
-  during group 0's frames shows, so a halo flagged there is grown; it is
-  given no halo of its own.
-- `SnowblindStep` flags each snowball's core, and the pixels next to it, in
-  the later integrations of a ramp, where they persist after the reset: a
-  group is flagged on the core while the difference it ends starts less
-  than `core_persistence_time` seconds after the end of the integration of
-  the hit, and on the core grown by one pixel while it starts less than
-  `neighbor_persistence_time` seconds after it, group 0 included. The
-  group times come from `int_times`, or from the frame counts. Both default
-  to times measured for each detector and packaged with snowblind
-  (`snowblind/data/snowball_persistence_<detector>.asdf`, read by
-  `snowblind.snowblind.packaged_snowball_times`): for the ten NIRCam
-  detectors, NIRISS and the two NIRSpec detectors, the 99th percentile over
-  the detector's snowballs of the time at which a pixel falls to
-  0.005 DN/s, from about 1400 s to 21000 s for the saturated pixels and
-  550 s to 3800 s for their neighbors. A detector without a file gets the
-  longest packaged times, each the largest over the files, with a warning.
-  `scripts/measure_snowball_persistence.py` measures the excess at the
-  cores in dark exposures, `scripts/fit_snowball_persistence.py` fits the
-  decay of each core, `scripts/package_snowball_persistence.py` writes the
-  files, lengthening both times where darks of the detector taken later
-  show more excess (`--later`), and
-  `scripts/make_snowball_persistence_figure.py` draws them.
-- `snowblind.saturation.flag_saturation_neighbors`, a post-hook for the
-  saturation step run with `n_pix_grow_sat=0`: it flags the eight pixels
-  around each saturated pixel, group by group, with CHARGELOSS and
-  DO_NOT_USE, which keeps them out of the fits and the jump search as the
-  jwst step's default growth does, while SATURATED marks only the pixels
-  that reached the saturation threshold. As with that growth, the
-  neighbors are flagged from the group during whose frames a pixel
-  saturated, which the saturation step marks DO_NOT_USE when a group
-  averages several frames (`snowblind.saturation.saturated_in_group`), and
-  the zero frame of the pixels next to a pixel whose zero frame saturated
-  is set to 0, which marks it unusable, as the saturation step does with
-  the saturated one.
-  NIRSpec IRS2 groups are grown in their normal layout, as the saturation
-  step grows them.
-- `SnowblindStep`'s `min_radius` defaults to 2 (was 4), close to the jump
-  step's `min_jump_area` of 15 pixels; with a core required, small
-  cosmic-ray hits no longer pass at that size. `snowblind_detector1` uses
-  the default (was 3).
-- `SnowblindStep` opens and grows each event in a window around it instead
-  of over the whole frame, a few times faster on full-frame ramps.
-  `dilate_jump_slice` and `dilate_large_area_jumps` take the saturated and
-  reference pixels and return the cores with the grown regions;
-  `dilate_saturated_cores` takes the cores.
-- `SnowblindStep` flags the ring, each snowball's core grown by
-  `ring_width` pixels, from the jump group to the end of the integration,
-  where the charge leaking from the core keeps affecting its neighbors
-  (`after_jumps` now defaults to None). The ring is drawn around the cores
-  only, and `ring_width` is counted from the SATURATED flags, so its reach
-  from the pixels that saturated depends on the saturation step's
-  `n_pix_grow_sat`. When the core saturated during the frames of the group
-  before the jump group, which holds part of the hit, the ring is flagged
-  from that group (`dilate_saturated_cores` takes the group DQ).
+  light-sensitive area, so an event that extends over the reference pixels
+  or past a subarray border grows by its whole size (issue #16).
+- `SnowblindStep` flags the cores that are SATURATED already in group 0,
+  from snowballs that struck before or during the first group and so never
+  newly saturate: they get their ring and their snowball persistence, and
+  count as the core of a halo flagged in group 1. A saturated star does
+  not.
+- `SnowblindStep` counts snowballs only in EXTNCRS, the rate of large
+  events the jump step records, and logs their total. It is a few times
+  faster on full-frame ramps.
 - `snowblind_detector1` runs the saturation step with `n_pix_grow_sat=0`
-  and `flag_saturation_neighbors` as its post-hook, so SATURATED marks only
-  the pixels that saturated, and `SnowblindStep` with `ring_width=3` (was
-  `after_jumps=5`), which reaches as far from them as before. A caller's
-  `n_pix_grow_sat` above 0 leaves the hook out and narrows `ring_width` by
-  as much, so the ring still reaches 3 pixels from the pixels that
-  saturated.
-- `ResetRampFitStep` sets CHARGELOSS in the DQ of the rate and rateints
-  products on each pixel that has it in a group of the integration, which
-  stcal's ramp fit does not carry over. `PersistenceFlagStep` flags the
-  pixels with CHARGELOSS in an earlier exposure as well as those with
-  SATURATED: the pixels next to saturated ones persist too, and its
-  packaged times were measured with the jwst saturation step's default,
-  which marks them SATURATED.
+  and `flag_saturation_neighbors` as its post-hook, so SATURATED marks
+  only the pixels that saturated, and `SnowblindStep` with the default
+  `min_radius` (was 3) and `ring_width=3`, which reaches as far from the
+  saturated pixels as before. A caller's `n_pix_grow_sat` above 0 leaves
+  the hook out and narrows the ring by as much.
+- `snowblind_detector1` no longer runs `JumpPlusStep` after the jump step,
+  whose extra flags made snowball halos noisier in the rate (issue #25),
+  and leaves the jump step's `after_jump_flag_time1` to the jwst defaults
+  and the CRDS parameters instead of setting it to 0.
+- `ResetRampFitStep` carries CHARGELOSS into the DQ of the rate and
+  rateints products, and `PersistenceFlagStep` flags the pixels with
+  CHARGELOSS in an earlier exposure as well as those with SATURATED, since
+  the pixels next to saturated ones persist too.
 
 ### Deprecated
 
-- `StreamCleanStep`'s `allow_dispersion_along_stream` warns that it is
-  deprecated and will be removed. `True` still resolves `fit_method='auto'`
-  to `'wiener'` on a grism that disperses along the readout stream; name
-  the `fit_method` instead.
-- `SnowblindStep`'s `after_jumps` warns that it is deprecated and will be
-  removed. Set, it still flags the ring in that many groups after the jump
-  only, instead of to the end of the integration.
-- `JumpPlusStep` warns that it is deprecated and will be removed. The
-  jwst saturation step (since jwst 1.16) flags the group before saturation
-  when its frames may have saturated, the jump step flags a group that a
-  cosmic ray hit partway through, and the ramp fits leave those groups out;
-  the likelihood fits also leave out the difference after a flagged group,
-  and in an OLS fit the jump left there is small. What the step adds is
-  mostly good data.
+- `StreamCleanStep`'s `allow_dispersion_along_stream`: name the
+  `fit_method` instead. `True` still resolves `'auto'` to `'wiener'` on a
+  grism that disperses along the readout stream.
+- `SnowblindStep`'s `after_jumps`: the ring is now flagged to the end of
+  the integration. Set, it still limits the ring to that many groups after
+  the jump.
+- `JumpPlusStep`: the jwst saturation and jump steps and the ramp fits now
+  leave out the groups it was made to flag, so what it adds is mostly good
+  data. It will be removed.
 
 ### Fixed
 
 - `SnowblindStep` no longer flags JUMP_DET at pixels (0, 0), (0, 1) and
-  (1, 0) in every group of a ramp. In a full frame these are reference
-  pixels; in a subarray where that corner is light-sensitive, they lost
-  their whole ramp.
+  (1, 0) in every group of a ramp. In a subarray where that corner is
+  light-sensitive, they lost their whole ramp.
 
 ## [1.3.1] - 2026-11-09
 

@@ -36,7 +36,7 @@ step run with the SIRS algorithm, which ``snowblind_detector1`` does; in the
 jwst pipeline, whose reference-pixel step defaults to a running median, give
 ``--steps.refpix.refpix_algorithm=sirs``.
 The stream clean takes full-frame NIRCam and NIRISS exposures and marks
-anything else SKIPPED. The reset fit needs a calibration of the detector's
+anything else SKIPPED. The reset-anchored fit needs a calibration of the detector's
 reset level; one is packaged for each of the ten NIRCam detectors and for
 NIRISS, and ``snowblind-reset-calib`` makes one from dark ramps.
 
@@ -74,7 +74,7 @@ the jwst step and CRDS set it. The saturation step runs with
 ``n_pix_grow_sat=0`` and flags the pixels next to saturated ones with
 CHARGELOSS instead (see :doc:`snowballs_and_flags`). At
 7 sigma the jump step flags what would disturb the stream clean, and the
-reset fit's own jump search (4.5 sigma) finds the fainter jumps on the
+reset-anchored fit's own jump search (4.5 sigma) finds the fainter jumps on the
 cleaned ramp; a clean with no jump flags at all leaves more striping in the
 rate image, and 7 sigma cleans as well as 5 sigma. These settings take
 precedence over the CRDS parameter references and give way to the caller's
@@ -82,7 +82,7 @@ precedence over the CRDS parameter references and give way to the caller's
 ``--steps.jump.expand_large_events=True`` gives back the jwst snowball
 flagging in place of the hook.
 
-Parameters of the reset fit go through the ``ramp_fit`` step
+Parameters of the reset-anchored fit go through the ``ramp_fit`` step
 (``--steps.ramp_fit.reset_calib=my_calib.asdf``), parameters of the stream
 clean through the hook
 (``--steps.jump.post_hooks="snowblind.StreamCleanStep(background_method='integration_model')",``).
@@ -96,7 +96,7 @@ while it is still at 7 sigma.
 
 The stock pipeline does the same with hooks alone: the stream clean as a
 post-hook of the jump step (``--steps.jump.post_hooks="snowblind.StreamCleanStep",``
-with ``--steps.clean_flicker_noise.skip=True``) and the reset fit as a
+with ``--steps.clean_flicker_noise.skip=True``) and the reset-anchored fit as a
 post-hook of a skipped ``ramp_fit`` in its ``as_hook`` form
 (``--steps.ramp_fit.skip=True
 --steps.ramp_fit.post_hooks="snowblind.ResetRampFitStep(as_hook=True)",``),
@@ -148,7 +148,7 @@ A snowblind step run as a hook inside a jwst pipeline sends its log
 messages to the pipeline's handlers, so they appear in the pipeline log
 like jwst's own. At INFO level each step says in plain words what it did:
 the background mask, the rms of the 1/f noise removed, how the reset
-level was anchored. What the reset fit used is also kept in the
+level was anchored. What the reset-anchored fit used is also kept in the
 ``meta.snowblind.reset_rampfit`` metadata of the ``_rate`` and
 ``_rateints`` products: the scatter of the reset level, the offset of the
 reset level over its prior and the first-read timing in each output
@@ -214,7 +214,7 @@ Dispersed (WFSS) exposures
 
 Detectors or epochs the packaged calibration does not cover
    Measure your own reset calibration from dark ramps of the detector
-   with ``snowblind-reset-calib`` and give it to the reset fit
+   with ``snowblind-reset-calib`` and give it to the reset-anchored fit
    (``reset_calib``): ``snowblind-reset-calib jw..._nrca1_uncal.fits -o
    nrca1_reset_calib.asdf``, then ``strun reset_rampfit jw..._nrca1_jump.fits
    --reset_calib=nrca1_reset_calib.asdf``. The file also carries the detector's mean reset
@@ -358,7 +358,7 @@ background would impose), and ``sky_change_by_cleaning``, the change of
 the sky made by the cleaning, negative when lowered. Both are also in
 the primary header, as ``SKYMNMED`` and ``SKYCHG``, and their values for
 each integration are in ``sky_mean_minus_median_per_integration`` and
-``sky_change_by_cleaning_per_integration``. The reset fit carries them to
+``sky_change_by_cleaning_per_integration``. The reset-anchored fit carries them to
 the rate file, and calwebb_image2 keeps them in the ``_cal`` files.
 
 The background
@@ -501,7 +501,7 @@ and drops out of the slope. The reset-anchored fit uses group 1 minus the
 reset prior as a difference of its own, so that banding would enter its
 rate. The step therefore also cleans group 1 (``clean_first_group``, on
 by default), against zero or, given the reset calibration file
-(``reset_calib``), against the reset prior the reset fit will use: the
+(``reset_calib``), against the reset prior the reset-anchored fit will use: the
 pedestal map with its row, even-odd and column structure removed, plus
 the channel offsets. The filter then sees only the 1/f noise of the reset
 frame and the first read. For frame-averaged readouts the pipeline keeps
@@ -573,7 +573,7 @@ step measures it per output channel from the exposure's own sky
 first-resultant signal is below ``anchor_max_signal`` (50 DN), when a
 channel has at least ``anchor_min_pixels`` (1000) of them; otherwise the
 calibration's offset is kept. This centers the first-difference residual,
-and the reset fit then agrees with the likelihood fit without the reset
+and the reset-anchored fit then agrees with the likelihood fit without the reset
 point to about 0.1 percent at every brightness. ``reset_offset`` adds a
 fixed number of DN on top.
 
@@ -612,7 +612,7 @@ The superbias step of ``snowblind_detector1``, a subclass of the jwst
 one, notes the zeros it is given and sets any other zeroframe pixel left
 at 0 to the smallest normal float32, which is 0 DN to every later step
 but not the marker, so those pixels keep the reference-pixel correction
-and the reset fit uses their zeroframe. The reset fit itself treats a
+and the reset-anchored fit uses their zeroframe. The reset-anchored fit itself treats a
 zero zeroframe as unusable (DO_NOT_USE in its zeroframe plane, so the
 rate DQ does not mark it SATURATED) and fits those pixels again without
 the zeroframe, so with the jwst superbias step, as in the stock-pipeline
