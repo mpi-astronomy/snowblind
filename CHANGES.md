@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-10
+
 Three changes make up this release. Images get new resampling and outlier
 detection steps built on spizzle, which build each exposure's weights once
 as a sparse matrix and give the exact variance of every mosaic pixel, and a
@@ -463,7 +465,8 @@ First release.
 - Steps register as stpipe plugins and run with `strun` or as pipeline
   hooks.
 
-[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.3.1...HEAD
+[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.4.0...HEAD
+[1.4.0]: https://github.com/mpi-astronomy/snowblind/compare/1.3.1...1.4.0
 [1.3.1]: https://github.com/mpi-astronomy/snowblind/compare/1.3.0...1.3.1
 [1.3.0]: https://github.com/mpi-astronomy/snowblind/compare/1.2.0...1.3.0
 [1.2.0]: https://github.com/mpi-astronomy/snowblind/compare/1.1.0...1.2.0
