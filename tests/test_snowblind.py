@@ -689,6 +689,31 @@ def test_ramp_snowball_with_its_core_past_the_edge():
     assert result.groupdq[0, 1, 20, 40] == JUMP_DET
 
 
+def test_distance_to_empty_without_an_empty_pixel_counts_from_past_the_edge():
+    """SnowblindStep._distance_to_empty on a 5x5 block with no empty pixel gives 3 at its center, the distance to just
+    past its edge."""
+    distance = SnowblindStep._distance_to_empty(np.ones((5, 5), dtype=bool))
+
+    assert distance[2, 2] == 3
+
+
+def test_events_at_edge_adds_nothing_to_an_event_covering_its_window():
+    """SnowblindStep._events_at_edge on a 9x9 region that fills its window, with a 3x3 core at its middle, adds no
+    pixels past the window to the event it finds.
+
+    Nothing in view is known to be empty, so the event is taken to end at the window's edge.
+    """
+    region = np.ones((9, 9), dtype=bool)
+    cores = np.zeros((9, 9), dtype=bool)
+    cores[3:6, 3:6] = True
+
+    [(event, completed)] = SnowblindStep()._events_at_edge(
+        region, (slice(0, 9), slice(0, 9)), cores, np.zeros((9, 9), dtype=bool)
+    )
+
+    assert len(completed[0]) == len(event[0])
+
+
 def test_ramp_small_jump_region_at_the_edge_without_core():
     """SnowblindStep.call on a ramp with a 3 by 7 jump region on the first 3 rows after the reference pixels, and no
     saturated core, leaves it ungrown.

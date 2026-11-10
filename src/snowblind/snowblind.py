@@ -317,6 +317,17 @@ class SnowblindStep(Step):
         past[inside] = refpix[rows[inside], cols[inside]]
         return past
 
+    @staticmethod
+    def _distance_to_empty(known):
+        """Each pixel's distance to the nearest pixel not in ``known``, or to just past the array when every pixel is.
+
+        scipy measures from the array's first corner when it has no empty pixel, as in a
+        small subarray that an event covers together with the reference pixels.
+        """
+        if known.all():
+            return ndimage.distance_transform_edt(np.pad(known, 1, constant_values=False))[1:-1, 1:-1]
+        return ndimage.distance_transform_edt(known)
+
     def _events_at_edge(self, region, window, cores, refpix):
         """
         Find the large events of one filled jump region that touches the edge, and complete them past it
@@ -350,7 +361,7 @@ class SnowblindStep(Step):
             pixels with the completion past the edge added, which may lie outside the array.
         """
         top, left = window[0].start, window[1].start
-        distance = ndimage.distance_transform_edt(region | refpix[window])
+        distance = self._distance_to_empty(region | refpix[window])
         centers = region & (distance > self.min_radius)
         big = region & ndimage.binary_dilation(centers, structure=skimage.morphology.disk(self.min_radius))
         centers_on_detector = ndimage.distance_transform_edt(np.pad(region, 1))[1:-1, 1:-1] > self.min_radius
