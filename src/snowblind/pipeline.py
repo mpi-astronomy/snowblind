@@ -62,12 +62,10 @@ STEP_DEFAULTS = {
     "jump": JUMP_DEFAULTS,
 }
 
-# The jump step's post-hooks in place of its expand_large_events, in their order.  The ring is drawn around the
-# SATURATED flags, which do not include the jwst step's one-pixel growth here, so it is one pixel wider than
-# SnowblindStep's default to reach as far from the saturated pixels.
-SNOWBALL_HOOKS = (
-    (SnowblindStep, "snowblind.SnowblindStep(ring_width=3.0)"),
-)
+# How far the ring that SnowblindStep, the jump step's post-hook in place of its expand_large_events, flags around a
+# snowball's core reaches from the pixels that saturated.  The ring is drawn around the SATURATED flags, which the
+# saturation step has grown by n_pix_grow_sat already, so the hook's ring_width is RING_REACH less that.
+RING_REACH = 3
 
 
 class Detector1Pipeline(JwstDetector1Pipeline):
@@ -86,12 +84,12 @@ class Detector1Pipeline(JwstDetector1Pipeline):
 
     The reference-pixel step runs with SIRS (`REFPIX_DEFAULTS`) and the jump
     step with `JUMP_DEFAULTS` (7 sigma, no large-event expansion), over the
-    CRDS parameters; with
-    ``expand_large_events`` off `SnowblindStep` is its first post-hook, with
-    ``ring_width=3``; the
-    caller's ``--steps.refpix...`` and ``--steps.jump...`` parameters still
-    win, and ``--steps.jump.expand_large_events=True`` gives the jwst
-    snowball flagging back instead of the hook.
+    CRDS parameters; with ``expand_large_events`` off `SnowblindStep` is its
+    first post-hook, its ``ring_width`` set so that the ring reaches
+    `RING_REACH` (3) pixels from the saturated pixels.  The caller's
+    ``--steps.refpix...`` and ``--steps.jump...`` parameters still win, and
+    ``--steps.jump.expand_large_events=True`` gives the jwst snowball
+    flagging back instead of the hook.
 
     The saturation step runs with ``n_pix_grow_sat=0``
     (`SATURATION_DEFAULTS`), so that SATURATED marks only the pixels that
@@ -99,7 +97,8 @@ class Detector1Pipeline(JwstDetector1Pipeline):
     `snowblind.saturation.flag_saturation_neighbors` as its first post-hook
     sets CHARGELOSS and DO_NOT_USE on the pixels next to them, which the
     jwst step's default would have set SATURATED on.  With the caller's
-    ``--steps.saturation.n_pix_grow_sat`` above 0 the hook is left out.
+    ``--steps.saturation.n_pix_grow_sat`` above 0 the hook is left out and
+    ``ring_width`` is smaller by as much (2 for the jwst default of 1).
 
     The ``superbias`` slot holds `snowblind.superbias.SuperBiasStep`, the
     jwst step, which also keeps the zeroframe pixels its subtraction makes
@@ -127,8 +126,10 @@ class Detector1Pipeline(JwstDetector1Pipeline):
             entries of the ``steps`` mapping get each parameter of
             `STEP_DEFAULTS` they do not hold; the ``saturation`` entry,
             while ``n_pix_grow_sat`` is 0, `SATURATION_HOOK` first in
-            ``post_hooks`` unless it is there already; and the ``jump`` entry, while ``expand_large_events`` is off, a
-            `SnowblindStep` in ``post_hooks`` unless one is there already,
+            ``post_hooks`` unless it is there already; and the ``jump`` entry,
+            while ``expand_large_events`` is off, a `SnowblindStep` whose ring
+            reaches `RING_REACH` pixels from the saturated pixels (given
+            ``n_pix_grow_sat``) in ``post_hooks`` unless one is there already,
             ahead of a stream clean listed there.
             ``expand_large_events`` must be a boolean, or the string of
             one that strun or a config file gives (``"True"``,
@@ -160,25 +161,18 @@ class Detector1Pipeline(JwstDetector1Pipeline):
             section = steps.setdefault(name, {})
             for key, value in defaults.items():
                 section.setdefault(key, value)
-        saturation = steps["saturation"]
-        if int(saturation["n_pix_grow_sat"]) == 0:
-            saturation_hooks = saturation.get("post_hooks") or []
-            saturation_hooks = [saturation_hooks] if isinstance(saturation_hooks, str) else list(saturation_hooks)
+        saturation, jump = steps["saturation"], steps["jump"]
+        n_pix_grow_sat = int(saturation["n_pix_grow_sat"])
+        if n_pix_grow_sat == 0:
+            saturation_hooks = _post_hooks_of(saturation)
             if not any(isinstance(hook, str) and hook.strip() == SATURATION_HOOK for hook in saturation_hooks):
                 saturation_hooks.insert(0, SATURATION_HOOK)
             saturation["post_hooks"] = saturation_hooks
-        jump = steps["jump"]
-        hooks = jump.get("post_hooks") or []
-        hooks = [hooks] if isinstance(hooks, str) else list(hooks)
-        if not _as_bool(jump["expand_large_events"]):
-            for k, (step_class, hook) in enumerate(SNOWBALL_HOOKS):
-                if any(_is_hook_of(listed, step_class) for listed in hooks):
-                    continue
-                later = [later_class for later_class, _ in SNOWBALL_HOOKS[k + 1:]] + [StreamCleanStep]
-                at = next(
-                    (i for i, listed in enumerate(hooks) if any(_is_hook_of(listed, c) for c in later)), len(hooks)
-                )
-                hooks.insert(at, hook)
+        hooks = _post_hooks_of(jump)
+        if not _as_bool(jump["expand_large_events"]) and not any(_is_hook_of(hook, SnowblindStep) for hook in hooks):
+            # ahead of a stream clean listed there
+            at = next((i for i, hook in enumerate(hooks) if _is_hook_of(hook, StreamCleanStep)), len(hooks))
+            hooks.insert(at, _snowblind_hook(n_pix_grow_sat))
         if kwargs.get("stream_clean", True):
             if not any(_is_hook_of(hook, StreamCleanStep) for hook in hooks):
                 hooks.append(StreamCleanStep)
@@ -253,6 +247,39 @@ def _parameters_unknown_to(step_class, section):
     """
     known = set(step_class.load_spec_file().keys())
     return [key for key in section if key not in known]
+
+
+def _snowblind_hook(n_pix_grow_sat):
+    """The jump step's `SnowblindStep` post-hook, its ring reaching `RING_REACH` pixels from the saturated pixels.
+
+    Parameters
+    ----------
+    n_pix_grow_sat : int
+        The saturation step's parameter, the pixels it has grown the SATURATED flags by.
+
+    Returns
+    -------
+    str
+        The hook, e.g. ``"snowblind.SnowblindStep(ring_width=3.0)"``.
+    """
+    return f"snowblind.SnowblindStep(ring_width={max(RING_REACH - n_pix_grow_sat, 0):.1f})"
+
+
+def _post_hooks_of(section):
+    """A step section's ``post_hooks`` as a new list; strun and config files may give a single string.
+
+    Parameters
+    ----------
+    section : mapping
+        A step's config section.
+
+    Returns
+    -------
+    list
+        Its post-hooks, empty when it has none.
+    """
+    hooks = section.get("post_hooks") or []
+    return [hooks] if isinstance(hooks, str) else list(hooks)
 
 
 def _is_hook_of(hook, step_class):

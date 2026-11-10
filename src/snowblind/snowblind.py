@@ -30,25 +30,25 @@ class SnowblindStep(Step):
     """Mask snowball halos by growing each large jump-detected region around a saturated core.
 
     A snowball is a saturated core inside a halo of JUMP_DET pixels.  Each contiguous
-    region of JUMP_DET pixels, its holes filled, that holds pixels saturating in its
-    group or the next and contains a disk of ``min_radius`` is dilated by
-    ``growth_factor`` times its equal-area radius, and its saturated core is dilated by
-    ``ring_width`` pixels in every group from the hit to the end of the integration
-    (the ring, where charge from the core leaks into its neighbors).  In a ramp the core
-    persists after the reset: in the later integrations of the exposure the core is
-    flagged for ``core_persistence_time`` seconds after the end of the integration of the
-    hit, and the core grown by one pixel for ``neighbor_persistence_time`` seconds.  Both
-    default to the times measured for the detector and packaged with snowblind, or to the
-    longest packaged ones for a detector without its own.  A rate
-    image or rateints cube has no saturation per group, so there the holes in the region
-    take the place of the core.
+    region of JUMP_DET pixels, its holes filled, that holds a core and contains a disk of
+    ``min_radius`` is dilated by ``growth_factor`` times its equal-area radius.  In a
+    ramp the core is the pixels that saturate in the region's group or the next; in a
+    rate image or rateints cube, which do not record when a pixel saturated, its
+    SATURATED pixels.  In a ramp the core is also dilated by ``ring_width`` pixels in
+    every group from the hit to the end of the integration (the ring, where charge from
+    the core leaks into its neighbors), and it persists after the reset: in the later
+    integrations of the exposure the core is flagged for ``core_persistence_time``
+    seconds after the end of the integration of the hit, and the core grown by one pixel
+    for ``neighbor_persistence_time`` seconds.  Both default to the times measured for
+    the detector and packaged with snowblind, or to the longest packaged ones for a
+    detector without its own.
 
     The cores are the SATURATED pixels of the event, so ``ring_width`` and the one-pixel
     growth for the neighbors are counted from the SATURATED flags.  With the jwst
     saturation step's default, ``n_pix_grow_sat=1``, those include a one-pixel ring
     around the pixels that reached the saturation threshold, and the ring reaches
-    ``ring_width`` + 1 pixels from them; ``snowblind_detector1`` runs the saturation step
-    with ``n_pix_grow_sat=0`` and ``ring_width=3``.
+    ``ring_width`` + 1 pixels from them; ``snowblind_detector1`` sets ``ring_width`` to
+    reach 3 pixels from them whatever ``n_pix_grow_sat`` it runs with.
 
     Part of an event can lie on the reference pixels or past the array border, where the
     jump step cannot see it.  There the disk of ``min_radius`` may hang over the edge as
@@ -98,8 +98,8 @@ class SnowblindStep(Step):
             array, shape (nints, ngroups, nrows, ncols), is treated as a ramp, whose
             cores are its newly saturated pixels and get dilated too; a model with only a
             ``dq`` array, shape (nrows, ncols) or (nints, nrows, ncols), is a rate image
-            or rateints cube, whose cores are the holes in its jump regions.  Reference
-            pixels are those with REFERENCE_PIXEL in ``pixeldq`` or ``dq``.
+            or rateints cube, whose cores are its SATURATED pixels.  Reference pixels are
+            those with REFERENCE_PIXEL in ``pixeldq`` or ``dq``.
 
         Returns
         -------
@@ -126,7 +126,8 @@ class SnowblindStep(Step):
             else:
                 self._has_groups = False
                 bool_jump = (jump.dq & JUMP_DET) == JUMP_DET
-                bool_sat = None
+                # the ramp fit sets SATURATED in dq (the same bit) on a pixel saturated in any group
+                bool_sat = (jump.dq & SATURATED) == SATURATED
                 refpix = np.any((jump.dq & REFERENCE_PIXEL) != 0, axis=tuple(range(jump.dq.ndim - 2)))
 
         # Expand jumps with large areas around saturated cores by self.growth_factor
@@ -184,12 +185,14 @@ class SnowblindStep(Step):
             1e6 * n_events / (group_time * total_groups * nrows * ncols)
         )
 
-    def dilate_jump_slice(self, jump_slice, sat_slice=None, refpix=None, ig=None):
+    def dilate_jump_slice(self, jump_slice, sat_slice, refpix=None, ig=None):
         """
         Dilate the large jump regions around saturated cores by a self.growth_factor
 
-        Holes in the jump regions are filled when they hold a saturated core or are
-        smaller than 200 pixels, regions without a core are dropped, regions smaller
+        Holes in the jump regions are filled when they are of up to 200 pixels or are
+        made only of saturated pixels and their neighbors (a core of any size), the
+        saturated pixels in a filled region are its core, regions without one are
+        dropped, regions smaller
         than a disk of ``self.min_radius`` are removed by a binary opening, and each
         remaining region is dilated by ``self.growth_factor`` times its equal-area radius
         (eroded when the factor is negative; left as is when it is 0).  Regions away
@@ -200,9 +203,9 @@ class SnowblindStep(Step):
         ----------
         jump_slice : ndarray of bool, shape (nrows, ncols)
             Jump-detected pixels of one group (or of a rate image).
-        sat_slice : ndarray of bool, shape (nrows, ncols), or None
-            Pixels that saturate in this group or the next.  None for a rate image,
-            where the holes in the jump regions are the cores.
+        sat_slice : ndarray of bool, shape (nrows, ncols)
+            Pixels that saturate in this group or the next; for a rate image, its
+            SATURATED pixels.
         refpix : ndarray of bool, shape (nrows, ncols), or None
             Reference pixels.  None if there are none.
         ig : (int, int) or None
@@ -220,7 +223,7 @@ class SnowblindStep(Step):
 
         # Fill holes in the flagged areas (i.e. the saturated cores)
         filled = self._fill_jump_holes(jump_slice, sat_slice, refpix)
-        cores = filled & (~jump_slice if sat_slice is None else sat_slice)
+        cores = filled & sat_slice
 
         regions = skimage.measure.label(filled)
         with_core = np.unique(regions[cores])
@@ -281,20 +284,21 @@ class SnowblindStep(Step):
     @staticmethod
     def _fill_jump_holes(jump_slice, sat_slice, refpix):
         """
-        Fill the holes of up to 200 pixels in the jump regions, and any that holds a saturated pixel
+        Fill the holes of up to 200 pixels in the jump regions, and any made only of saturated pixels and their neighbors
 
-        Reference pixels count as jumps here, so that a core cut by the edge of the
-        light-sensitive area is a hole too.  The largest hole, the background around the
-        regions, stays open.  Returns the filled regions without the reference pixels.
+        A snowball's core is its saturated pixels and the pixels next to them, which the
+        saturation step flags so that no jump is found there.  A larger hole that also
+        holds pixels farther from them is sky: around a saturated star in a rate image,
+        or cut off by a jump region that crosses the array.  Reference pixels count as
+        jumps here, so that a core cut by the edge of the light-sensitive area is a hole
+        too.  Returns the filled regions without the reference pixels.
         """
         blocked = jump_slice | refpix
         holes, nholes = ndimage.label(~blocked)
         size = np.bincount(holes.ravel(), minlength=nholes + 1)
-        fill = size <= 200
-        if sat_slice is not None and nholes > 0:
-            holds_core = np.bincount(holes[sat_slice], minlength=nholes + 1) > 0
-            holds_core[np.argmax(size[1:]) + 1] = False
-            fill |= holds_core
+        near_saturated = ndimage.binary_dilation(sat_slice, structure=SQUARE)
+        far_from_saturated = np.bincount(holes[~near_saturated], minlength=nholes + 1)
+        fill = (size <= 200) | (far_from_saturated == 0)
         fill[0] = False
         return (jump_slice | fill[holes]) & ~refpix
 
@@ -413,7 +417,7 @@ class SnowblindStep(Step):
         y1, x1 = min(top + canvas.shape[0], nrows), min(left + canvas.shape[1], ncols)
         dilated[y0:y1, x0:x1] |= canvas[y0 - top:y1 - top, x0 - left:x1 - left]
 
-    def dilate_large_area_jumps(self, bool_jump, bool_sat=None, refpix=None):
+    def dilate_large_area_jumps(self, bool_jump, bool_sat, refpix=None):
         """
         Dilate a boolean mask with contiguous large areas by a self.growth_factor
 
@@ -424,9 +428,8 @@ class SnowblindStep(Step):
             ``self._has_groups`` is True; otherwise (nints, nrows, ncols) for a
             rateints cube or (nrows, ncols) for a rate image.  Each 2-d slice is
             passed to ``dilate_jump_slice``; slices with no jumps are skipped.
-        bool_sat : ndarray of bool or None
-            SATURATED pixels of a ramp, same shape as ``bool_jump``; None for rate
-            products.
+        bool_sat : ndarray of bool
+            SATURATED pixels, same shape as ``bool_jump``.
         refpix : ndarray of bool, shape (nrows, ncols), or None
             Reference pixels.
 
@@ -454,14 +457,13 @@ class SnowblindStep(Step):
                     dilated_jumps[i, g], cores[i, g] = self.dilate_jump_slice(
                         group, saturating[g], refpix, ig=(i, g)
                     )
+        elif bool_jump.ndim == 3:
+            # e.g., rateints
+            for g in range(bool_jump.shape[0]):
+                dilated_jumps[g], cores[g] = self.dilate_jump_slice(bool_jump[g], bool_sat[g], refpix, ig=(0, g))
         else:
-            if bool_jump.ndim == 3:
-                # e.g., rateints
-                for g in range(bool_jump.shape[0]):
-                    dilated_jumps[g], cores[g] = self.dilate_jump_slice(bool_jump[g], refpix=refpix, ig=(0, g))
-            else:
-                # e.g., rate
-                dilated_jumps, cores = self.dilate_jump_slice(bool_jump, refpix=refpix)
+            # e.g., rate
+            dilated_jumps, cores = self.dilate_jump_slice(bool_jump, bool_sat, refpix)
 
         return dilated_jumps, cores
 

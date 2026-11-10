@@ -4,10 +4,10 @@
 
 ### Added
 
-- `StreamCleanStep` accepts `fit_method='none'`, no stream filter and only
+- `StreamCleanStep` accepts `fit_method=None`, no stream filter and only
   the even-odd and column offsets, and `fit_method='auto'`, now the default:
   `'wiener'`, except `'none'` on a grism that disperses along the readout
-  stream (issue #37).
+  stream.
 - `SparseResampleStep` (`sparse_resample`): the jwst resample step for
   images with drizzle replaced by spizzle, which builds each exposure's
   square-kernel weights once as a sparse matrix and sums in double
@@ -82,11 +82,14 @@
   NIRISS.
 - `SnowblindStep` grows only snowballs: jump regions that hold a saturated
   core, the pixels that saturate in the jump group or the next (in a rate
-  image or rateints cube, a hole in the region). Large jump regions without
+  image or rateints cube, its SATURATED pixels). Large jump regions without
   one, such as cosmic-ray tracks, are no longer grown, and the ring carried
   into the following groups is drawn around these cores only, not around
   every saturated pixel inside a grown region (issue #5). A hole of more
-  than 200 pixels is filled too when it holds a saturated pixel. EXTNCRS
+  than 200 pixels is filled too when it is made only of saturated pixels
+  and the pixels next to them, a large core; one that also holds sky, such
+  as the area around a saturated star in a rate image or one cut off by a
+  jump region that crosses the array, is not. EXTNCRS
   counts the snowballs, and the step logs their number, summed over all
   groups and integrations ("Total snowballs = N", as the jump step logs).
 - `SnowblindStep` finds and grows snowballs cut by the edge of the
@@ -146,7 +149,9 @@
   and `flag_saturation_neighbors` as its post-hook, so SATURATED marks only
   the pixels that saturated, and `SnowblindStep` with `ring_width=3` (was
   `after_jumps=5`), which reaches as far from them as before. A caller's
-  `n_pix_grow_sat` above 0 leaves the hook out.
+  `n_pix_grow_sat` above 0 leaves the hook out and narrows `ring_width` by
+  as much, so the ring still reaches 3 pixels from the pixels that
+  saturated.
 
 ### Deprecated
 

@@ -67,7 +67,8 @@ or, in Python:
 The pipeline also sets up the jump step for the two. It runs at 7 sigma
 (the three- and four-group thresholds too), flags the four neighbors of
 jumps above 20 sigma, and leaves the snowball expansion to
-``SnowblindStep(ring_width=3)`` as its first post-hook; its
+``SnowblindStep(ring_width=3)`` as its first post-hook (``ring_width=2``
+if the saturation step is given ``n_pix_grow_sat=1``); its
 flagging of the groups after large jumps (``after_jump_flag_*``) stays as
 the jwst step and CRDS set it. The saturation step runs with
 ``n_pix_grow_sat=0`` and flags the pixels next to saturated ones with

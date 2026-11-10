@@ -336,7 +336,7 @@ class StreamCleanStep(Step):
         if self.even_odd_columns is not None:
             even_odd_columns = bool(self.even_odd_columns)
         if geometry == "along_stream":
-            if fit_method == "none":
+            if fit_method in [None, "none"]:
                 log.info(
                     f"{grism} disperses along the readout stream, where the stream filter would read the traces as 1/f "
                     "noise: removing only the even-odd and column offsets (fit_method='wiener' or 'row_median' runs the filter)"

@@ -20,8 +20,12 @@ a core and contains a disk of ``min_radius`` pixels, and grows it by
 actual shape of the event; the core grown by ``ring_width`` pixels, the
 ring, is flagged from the jump group to the end of the integration. In a
 ramp the core is the pixels that saturate in the jump group or the next; a
-rate image or rateints cube keeps no saturation per group, so there the
-holes in the region take its place. In a ramp the core persists after the
+rate image or rateints cube does not record when a pixel saturated, so
+there it is the pixels flagged SATURATED. Holes of up to 200 pixels are
+filled, and larger ones only when they are made of saturated pixels and the
+pixels next to them, a large core: a larger hole that also holds other
+pixels is sky, such as the area around a saturated star in a rate image.
+In a ramp the core persists after the
 reset, and is flagged in the later integrations of the exposure for a time
 measured for each detector (see `The charge leak ring and the persistence
 of the core`_). Large jump regions without a core, such as
@@ -128,7 +132,10 @@ with ``n_pix_grow_sat=0``, so SATURATED marks only the pixels that reached
 the threshold, and flags their neighbors with CHARGELOSS and DO_NOT_USE
 instead (``snowblind.saturation.flag_saturation_neighbors`` as a post-hook
 of the saturation step), which keeps them out of the fits as before; its
-``SnowblindStep`` runs with ``ring_width=3`` to reach as far.
+``SnowblindStep`` runs with ``ring_width=3`` to reach as far. Given another
+``n_pix_grow_sat``, the pipeline narrows ``ring_width`` by as much (2 for
+the jwst default of 1), so the ring always reaches 3 pixels from the
+pixels that saturated.
 ``after_jumps``, which flagged the ring in that many groups after the jump
 only, is deprecated; set, it still does.
 
@@ -160,11 +167,13 @@ The same in Python:
     }
     Detector1Pipeline.call("jw001234_010203_00001_nrcalong_uncal.fits", steps=steps, save_results=True)
 
-A hook given as a class runs with the step's default parameters; give a step
-instance, ``SnowblindStep(ring_width=3)``, for others. The
-``snowblind_detector1`` pipeline (see :doc:`flicker_and_reset`) runs it as a
-post-hook of its jump step, with ``ring_width=3`` and the saturation step
-set up as described above.
+A hook given as a class runs with the step's default parameters, which suit
+the jwst saturation step's default (``n_pix_grow_sat=1``). If the
+saturation step ran with ``n_pix_grow_sat=0``, give a step instance with a
+ring one pixel wider, ``SnowblindStep(ring_width=3)``, so that it reaches
+as far from the pixels that saturated. The ``snowblind_detector1`` pipeline
+(see :doc:`flicker_and_reset`) runs it as a post-hook of its jump step and
+sets ``ring_width`` to match its saturation step, as described above.
 
 JumpPlusStep (deprecated)
 -------------------------

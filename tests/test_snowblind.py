@@ -210,24 +210,52 @@ def hole_slice(hole_area):
 
 
 def test_dilate_jump_slice_fills_a_hole_of_200_pixels():
-    """SnowblindStep.dilate_jump_slice with growth_factor=0 on a block with a 200 pixel hole fills the hole."""
-    dilated, cores = SnowblindStep(growth_factor=0).dilate_jump_slice(hole_slice(200))
+    """SnowblindStep.dilate_jump_slice with growth_factor=0 on a block with a 200 pixel hole holding one saturated pixel
+    fills the hole."""
+    jump = hole_slice(200)
+    sat = np.zeros_like(jump)
+    sat[25, 25] = True
 
-    assert dilated[25, 25]
+    dilated, cores = SnowblindStep(growth_factor=0).dilate_jump_slice(jump, sat)
+
+    assert dilated[22, 22]
 
 
 def test_dilate_jump_slice_keeps_a_hole_of_201_pixels():
     """SnowblindStep.dilate_jump_slice with growth_factor=0 on a block with a 201 pixel hole leaves the hole open.
 
-    A 1 pixel hole elsewhere in the block is its core, as in a rate image, so the block itself is kept.
+    A saturated 1 pixel hole elsewhere in the block is its core, so the block itself is kept.
     """
     jump = hole_slice(201)
     jump[50, 50] = False
+    sat = np.zeros_like(jump)
+    sat[50, 50] = True
 
-    dilated, cores = SnowblindStep(growth_factor=0).dilate_jump_slice(jump)
+    dilated, cores = SnowblindStep(growth_factor=0).dilate_jump_slice(jump, sat)
 
     assert dilated[40, 40]
     assert not dilated[25, 25]
+
+
+def test_dilate_jump_slice_keeps_a_hole_of_225_pixels_with_one_saturated_pixel():
+    """SnowblindStep.dilate_jump_slice with growth_factor=0 on a block with a 225 pixel hole holding one saturated pixel
+    leaves the hole open.
+
+    Most of the hole is more than 1 pixel from a saturated pixel, so it is sky rather than a core.  A saturated 1 pixel
+    hole elsewhere in the block is its core, so the block itself is kept.
+    """
+    jump = np.zeros((80, 80), dtype=bool)
+    jump[10:70, 10:70] = True
+    jump[20:35, 20:35] = False
+    jump[50, 50] = False
+    sat = np.zeros_like(jump)
+    sat[27, 27] = True
+    sat[50, 50] = True
+
+    dilated, cores = SnowblindStep(growth_factor=0).dilate_jump_slice(jump, sat)
+
+    assert dilated[40, 40]
+    assert not dilated[22, 22]
 
 
 def test_dilate_jump_slice_fills_a_hole_of_225_pixels_holding_a_saturated_core():
@@ -539,6 +567,50 @@ def test_rate_without_hole():
     result = SnowblindStep.call(im)
 
     assert result.dq[14, 14] == GOOD
+
+
+def test_rate_with_a_hole_that_is_not_saturated():
+    """SnowblindStep.call on a rate image with a large jump region around a 1 pixel hole that is not SATURATED leaves
+    it ungrown."""
+    im = datamodels.ImageModel((40, 40))
+    im.dq = np.zeros((40, 40), dtype=np.uint32)
+    im.dq[15:26, 15:26] = JUMP_DET
+    im.dq[20, 20] = GOOD
+
+    result = SnowblindStep.call(im)
+
+    assert result.dq[14, 14] == GOOD
+
+
+def test_rate_with_a_saturated_core_of_253_pixels():
+    """SnowblindStep.call on a rate image with a JUMP_DET halo of radius 18 around a SATURATED core of 253 pixels
+    grows the halo."""
+    im = datamodels.ImageModel((100, 150))
+    halo, core = round_event((100, 150), (50, 75), 18, 9)
+    im.dq = np.zeros((100, 150), dtype=np.uint32)
+    im.dq[halo] = JUMP_DET
+    im.dq[core] = SATURATED
+
+    result = SnowblindStep.call(im)
+
+    assert int(core.sum()) == 253
+    assert result.dq[50, 75 + 25] & JUMP_DET
+
+
+def test_rate_with_a_jump_track_across_it():
+    """SnowblindStep.call on a rate image with a JUMP_DET track across it and a SATURATED pixel on its narrow side
+    leaves that side unflagged.
+
+    The narrow side is sky cut off by the track, not a hole around a core.
+    """
+    im = datamodels.ImageModel((64, 512))
+    im.dq = np.zeros((64, 512), dtype=np.uint32)
+    im.dq[:, 100:103] = JUMP_DET
+    im.dq[30, 50] = SATURATED
+
+    result = SnowblindStep.call(im)
+
+    assert not result.dq[10, 10] & JUMP_DET
 
 
 def round_event(shape, center, radius, core_radius):

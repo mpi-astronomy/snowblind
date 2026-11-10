@@ -58,6 +58,13 @@ def test_pipeline_with_saturation_growth_adds_no_saturation_hook():
     assert pipeline.saturation.post_hooks == []
 
 
+def test_pipeline_with_saturation_growth_narrows_the_snowblind_ring():
+    """Detector1Pipeline(steps=...) with n_pix_grow_sat at 1 hooks SnowblindStep(ring_width=2.0) after the jump step."""
+    pipeline = Detector1Pipeline(steps={"saturation": {"n_pix_grow_sat": 1}})
+
+    assert pipeline.jump.post_hooks[0] == "snowblind.SnowblindStep(ring_width=2.0)"
+
+
 def test_config_from_reference_puts_the_saturation_default_over_crds(monkeypatch):
     """Detector1Pipeline.get_config_from_reference over CRDS parameters with n_pix_grow_sat 1 returns 0."""
     monkeypatch.setattr(JwstDetector1Pipeline, "get_config_from_reference", classmethod(crds_saturation_growth_of_1))
