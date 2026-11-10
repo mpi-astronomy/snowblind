@@ -103,6 +103,10 @@ the readout stream.
   rateints products, and `PersistenceFlagStep` flags the pixels with
   CHARGELOSS in an earlier exposure as well as those with SATURATED, since
   the pixels next to saturated ones persist too.
+- The documentation has a reference page for each step and pipeline, with
+  its parameters and their defaults taken from the step itself, next to
+  the guides that explain how the steps work and how to choose their
+  settings.
 
 ### Deprecated
 

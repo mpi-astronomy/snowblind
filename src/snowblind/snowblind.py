@@ -90,14 +90,14 @@ class SnowblindStep(Step):
     times) and ``new_jump_flag`` (DQ bit value set on the grown pixels).
     """
     spec = f"""
-        min_radius = integer(default=2) # Minimum radius of connected pixels in CR
-        growth_factor = float(default=2.0) # scale factor to dilate large CR events
-        ring_width = float(default=2.0) # pixels to dilate around saturated cores, counted from the SATURATED flags
+        min_radius = integer(default=2) # radius of the disk an event must hold to count as a snowball
+        growth_factor = float(default=2.0) # the halo is grown by this times its equal-area radius
+        ring_width = float(default=2.0) # pixels the ring extends from the core, counted from the SATURATED flags
         after_jumps = integer(default=None) # deprecated; None flags the ring to the end of the integration
-        core_persistence_time = float(default=None) # s after the hit's integration to flag cores; None: packaged
-        neighbor_persistence_time = float(default=None) # the same for the pixels next to the cores
-        new_jump_flag = integer(default={JUMP_DET}) # DQ flag to set for dilated jumps
-    """
+        core_persistence_time = float(default=None) # seconds after the end of the snowball's integration during which the core is flagged in later integrations; None takes the detector's packaged time
+        neighbor_persistence_time = float(default=None) # the same for the pixels next to the core
+        new_jump_flag = integer(default={JUMP_DET}) # DQ flag set on the grown pixels
+    """  # noqa: E501
 
     class_alias = "snowblind"
     fits_keyword = "S_SNOWBL"

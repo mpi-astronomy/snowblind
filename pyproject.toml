@@ -32,8 +32,8 @@ spizzle = [
 ]
 docs = [
     "sphinx",
-    "sphinx-automodapi",
     "numpydoc",
+    "pydata-sphinx-theme",
 ]
 test = [
     "snowblind[spizzle]",

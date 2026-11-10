@@ -10,9 +10,10 @@
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
-# import os
-# import sys
-# sys.path.insert(0, os.path.abspath('.'))
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath('_ext'))
 
 
 # -- Project information -----------------------------------------------------
@@ -27,8 +28,9 @@ author = 'James Davies'
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
-extensions = ['sphinx_automodapi.automodapi']
+extensions = ['sphinx.ext.autodoc', 'numpydoc', 'stepspec']
 numpydoc_show_class_members = False
+autodoc_member_order = 'bysource'
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -44,9 +46,30 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = 'alabaster'
+html_title = 'snowblind'
+html_theme = 'pydata_sphinx_theme'
+html_theme_options = {
+    'github_url': 'https://github.com/mpi-astronomy/snowblind',
+    'navbar_center': [],
+    'show_toc_level': 2,
+    'secondary_sidebar_items': ['page-toc'],
+    'footer_start': ['copyright'],
+    'footer_end': [],
+}
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = []
+
+
+def _keep_sidebar_on_every_page(app, pagename, templatename, context, doctree):
+    # The theme drops the primary sidebar on pages outside every top-level
+    # section, the landing page among them; the sidebar here shows the whole
+    # table of contents (see _templates/sidebar-nav-bs.html), so it never is.
+    if 'suppress_sidebar_toctree' in context:
+        context['suppress_sidebar_toctree'] = lambda *args, **kwargs: False
+
+
+def setup(app):
+    app.connect('html-page-context', _keep_sidebar_on_every_page, priority=501)
