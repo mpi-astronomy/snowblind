@@ -184,7 +184,7 @@ class SnowblindStep(Step):
             1e6 * n_events / (group_time * total_groups * nrows * ncols)
         )
 
-    def dilate_jump_slice(self, jump_slice, sat_slice, refpix=None, ig=None):
+    def dilate_jump_slice(self, jump_slice, sat_slice, refpix=None, ig=None, next_to_edge=None):
         """
         Dilate the large jump regions around saturated cores by a self.growth_factor
 
@@ -209,6 +209,9 @@ class SnowblindStep(Step):
             Reference pixels.  None if there are none.
         ig : (int, int) or None
             Integer indices of ``(integer, group)`` for logging
+        next_to_edge : ndarray of bool, shape (nrows, ncols), or None
+            Pixels within one pixel of a reference pixel or of the array border, the same
+            for every slice of an exposure; worked out from ``refpix`` when None.
 
         Returns
         -------
@@ -219,6 +222,8 @@ class SnowblindStep(Step):
         """
         if refpix is None:
             refpix = np.zeros_like(jump_slice)
+        if next_to_edge is None:
+            next_to_edge = self._next_to_edge(refpix)
 
         # Fill holes in the flagged areas (i.e. the saturated cores)
         filled = self._fill_jump_holes(jump_slice, sat_slice, refpix)
@@ -227,7 +232,7 @@ class SnowblindStep(Step):
         regions = skimage.measure.label(filled)
         with_core = np.unique(regions[cores])
         # Regions that touch the reference pixels or the array border may continue past them
-        at_edge = set(np.unique(regions[self._next_to_edge(refpix) & filled]))
+        at_edge = set(np.unique(regions[next_to_edge & filled]))
 
         dilated = np.zeros_like(jump_slice)
         event_cores = np.zeros_like(jump_slice)
@@ -467,6 +472,9 @@ class SnowblindStep(Step):
         """
         dilated_jumps = np.zeros_like(bool_jump, dtype=bool)
         cores = np.zeros_like(bool_jump, dtype=bool)
+        if refpix is None:
+            refpix = np.zeros(bool_jump.shape[-2:], dtype=bool)
+        next_to_edge = self._next_to_edge(refpix)
 
         # Loop over integrations and groups so we are dealing with one group slice at a time
         # Note, these are boolean masks in this block
@@ -480,15 +488,17 @@ class SnowblindStep(Step):
                         continue
 
                     dilated_jumps[i, g], cores[i, g] = self.dilate_jump_slice(
-                        group, saturating[g], refpix, ig=(i, g)
+                        group, saturating[g], refpix, ig=(i, g), next_to_edge=next_to_edge
                     )
         elif bool_jump.ndim == 3:
             # e.g., rateints
             for g in range(bool_jump.shape[0]):
-                dilated_jumps[g], cores[g] = self.dilate_jump_slice(bool_jump[g], bool_sat[g], refpix, ig=(0, g))
+                dilated_jumps[g], cores[g] = self.dilate_jump_slice(
+                    bool_jump[g], bool_sat[g], refpix, ig=(0, g), next_to_edge=next_to_edge
+                )
         else:
             # e.g., rate
-            dilated_jumps, cores = self.dilate_jump_slice(bool_jump, bool_sat, refpix)
+            dilated_jumps, cores = self.dilate_jump_slice(bool_jump, bool_sat, refpix, next_to_edge=next_to_edge)
 
         return dilated_jumps, cores
 
