@@ -32,6 +32,7 @@ from jwst.stpipe import Step as JwstStep
 
 __all__ = ["Step", "META_SCHEMA"]
 
+SECONDS_PER_DAY = 86400.0  # for times given in MJD
 PACKAGE_LOGGER = "snowblind"
 PIPELINE_LOGGER = "stpipe"
 

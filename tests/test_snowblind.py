@@ -487,7 +487,7 @@ def package_times_of_other_detectors(directory):
 def test_longest_packaged_snowball_times_of_two_files(monkeypatch, tmp_path):
     """longest_packaged_snowball_times over NRCA2 (500 s, 50 s) and NRCB4 (2000 s, 30 s) returns (2000 s, 50 s)."""
     package_times_of_other_detectors(tmp_path)
-    monkeypatch.setattr("snowblind.snowblind.PACKAGED_DIR", tmp_path)
+    monkeypatch.setattr("snowblind.packaged.PACKAGED_DIR", tmp_path)
 
     assert longest_packaged_snowball_times() == (2000.0, 50.0)
 
@@ -495,7 +495,7 @@ def test_longest_packaged_snowball_times_of_two_files(monkeypatch, tmp_path):
 def test_ramp_without_its_own_packaged_times_logs_a_warning(monkeypatch, tmp_path, caplog):
     """SnowblindStep.call on an NRCA1 ramp with times packaged for other detectors only logs a warning."""
     package_times_of_other_detectors(tmp_path)
-    monkeypatch.setattr("snowblind.snowblind.PACKAGED_DIR", tmp_path)
+    monkeypatch.setattr("snowblind.packaged.PACKAGED_DIR", tmp_path)
 
     with caplog.at_level(logging.WARNING, logger="snowblind.snowblind"):
         SnowblindStep.call(ramp_with_snowball_in_first_integration(2))
@@ -506,7 +506,7 @@ def test_ramp_without_its_own_packaged_times_logs_a_warning(monkeypatch, tmp_pat
 def test_ramp_without_its_own_packaged_times_flags_the_core_for_the_longest_core_time(monkeypatch, tmp_path):
     """SnowblindStep.call on an NRCA1 ramp, longest packaged core time 2000 s, integrations 1000 s apart, flags the core."""
     package_times_of_other_detectors(tmp_path)
-    monkeypatch.setattr("snowblind.snowblind.PACKAGED_DIR", tmp_path)
+    monkeypatch.setattr("snowblind.packaged.PACKAGED_DIR", tmp_path)
     im = ramp_with_snowball_in_first_integration(2)
     im.int_times = int_times_with_gap(1000.0)
 
@@ -521,7 +521,7 @@ def test_ramp_without_its_own_packaged_times_flags_the_neighbor_for_the_longest_
     With integrations 40 s apart, the differences of integration 2 start 40, 50, ..., 90 s after the first ends.
     """
     package_times_of_other_detectors(tmp_path)
-    monkeypatch.setattr("snowblind.snowblind.PACKAGED_DIR", tmp_path)
+    monkeypatch.setattr("snowblind.packaged.PACKAGED_DIR", tmp_path)
     im = ramp_with_snowball_in_first_integration(2)
     im.int_times = int_times_with_gap(40.0)
 
@@ -532,7 +532,7 @@ def test_ramp_without_its_own_packaged_times_flags_the_neighbor_for_the_longest_
 
 def test_ramp_without_any_packaged_times_leaves_later_integrations(monkeypatch, tmp_path):
     """SnowblindStep.call on a ramp with no packaged times at all leaves integration 2 GOOD."""
-    monkeypatch.setattr("snowblind.snowblind.PACKAGED_DIR", tmp_path)
+    monkeypatch.setattr("snowblind.packaged.PACKAGED_DIR", tmp_path)
 
     result = SnowblindStep.call(ramp_with_snowball_in_first_integration(2))
 

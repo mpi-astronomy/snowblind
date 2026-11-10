@@ -8,7 +8,7 @@ from jwst import datamodels
 from astropy.io import fits
 from astropy.time import Time
 
-from snowblind import PersistenceFlagStep, persist
+from snowblind import PersistenceFlagStep, packaged, persist
 
 
 SATURATED = datamodels.dqflags.pixel["SATURATED"]
@@ -27,13 +27,13 @@ def packaged_times(tmp_path, monkeypatch):
     2500 s unless a test writes a time there; returns the folder."""
     folder = tmp_path / "packaged"
     folder.mkdir()
-    monkeypatch.setattr(persist, "PACKAGED_DIR", folder)
+    monkeypatch.setattr(packaged, "PACKAGED_DIR", folder)
     return folder
 
 
 def write_packaged_time(folder, detector, seconds):
     """Write a packaged persistence time of ``seconds`` for ``detector`` into ``folder``."""
-    path = folder / persist.PACKAGED_TIME_PATTERN.format(detector=detector.lower())
+    path = folder / f"persistence_{detector.lower()}.asdf"
     asdf.AsdfFile({"detector": detector, "time": seconds}).write_to(path)
 
 
@@ -380,7 +380,7 @@ def test_packaged_time_without_a_file_is_none():
 @pytest.mark.parametrize("detector", NIRCAM_IMAGING_DETECTORS)
 def test_package_holds_a_time_for_each_nircam_detector(detector, monkeypatch):
     """packaged_time of each NIRCam imaging detector, from the files packaged with snowblind, returns a time above 0."""
-    monkeypatch.setattr(persist, "PACKAGED_DIR", files("snowblind").joinpath("data"))
+    monkeypatch.setattr(packaged, "PACKAGED_DIR", files("snowblind").joinpath("data"))
 
     assert persist.packaged_time(detector) > 0
 

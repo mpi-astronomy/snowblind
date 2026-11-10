@@ -35,6 +35,7 @@ from stdatamodels.jwst import datamodels
 from stdatamodels.jwst.datamodels import dqflags
 
 from . import readout
+from .packaged import packaged_file, packaged_files, read_packaged
 
 __all__ = [
     "run_detector1_to_jump",
@@ -607,7 +608,7 @@ def update_timing(
         handle.update()
 
 
-DEFAULTS_PATTERN = "reset_calib_{detector}.asdf"
+PACKAGED_KIND = "reset_calib"
 
 
 def default_calibration(detector):
@@ -643,23 +644,15 @@ def default_calibration(detector):
     ValueError
         If the package has no file for the detector.
     """
-    from importlib.resources import files
-
     key = str(detector).upper()
-    data_dir = files("snowblind").joinpath("data")
-    path = data_dir.joinpath(DEFAULTS_PATTERN.format(detector=key.lower()))
-    if not path.is_file():
-        available = sorted(
-            entry.name[len("reset_calib_"):-len(".asdf")].upper()
-            for entry in data_dir.iterdir()
-            if entry.name.startswith("reset_calib_") and entry.name.endswith(".asdf")
-        )
+    path = packaged_file(PACKAGED_KIND, key)
+    if path is None:
         raise ValueError(
-            f"No packaged reset calibration for detector {detector!r} (available: {', '.join(available)}); "
+            f"No packaged reset calibration for detector {detector!r} "
+            f"(available: {', '.join(sorted(packaged_files(PACKAGED_KIND)))}); "
             "measure one with snowblind-reset-calib and pass it as reset_calib"
         )
-    with asdf.open(str(path), lazy_load=False, memmap=False) as handle:
-        entry = {k: v for k, v in handle.tree.items() if k not in ("asdf_library", "history")}
+    entry = read_packaged(path)
     return {
         "detector": key,
         "sigma_b": entry["sigma_b"],

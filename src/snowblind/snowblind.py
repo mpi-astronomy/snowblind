@@ -1,14 +1,14 @@
 import logging
 import warnings
-from importlib.resources import files
 
-import asdf
 import skimage
 import numpy as np
 from scipy import ndimage
 from scipy.spatial import ConvexHull, QhullError
 from jwst import datamodels
-from .step import Step
+from .packaged import packaged_file, packaged_files, read_packaged
+from .saturation import SQUARE
+from .step import SECONDS_PER_DAY, Step
 
 log = logging.getLogger(__name__)
 
@@ -16,11 +16,7 @@ log = logging.getLogger(__name__)
 JUMP_DET = datamodels.dqflags.group["JUMP_DET"]
 SATURATED = datamodels.dqflags.group["SATURATED"]
 REFERENCE_PIXEL = datamodels.dqflags.pixel["REFERENCE_PIXEL"]
-SECONDS_PER_DAY = 86400.0
-SQUARE = np.ones((3, 3), dtype=bool)
-PACKAGED_TIME_PATTERN = "snowball_persistence_{detector}.asdf"
-# the folder of the packaged times; tests point it elsewhere
-PACKAGED_DIR = files("snowblind").joinpath("data")
+PACKAGED_KIND = "snowball_persistence"
 AFTER_JUMPS_DEPRECATION = (
     "SnowblindStep's after_jumps is deprecated and will be removed in a future release. Left at None, the "
     "default, the ring around each snowball core is flagged to the end of its integration."
@@ -739,12 +735,8 @@ def packaged_snowball_times(detector):
         ``(core_time, neighbor_time)`` in seconds; None when the package has no file for
         the detector.
     """
-    if detector is None:
-        return None
-    path = PACKAGED_DIR.joinpath(PACKAGED_TIME_PATTERN.format(detector=str(detector).lower()))
-    if not path.is_file():
-        return None
-    return _times_in_file(path)
+    path = None if detector is None else packaged_file(PACKAGED_KIND, detector)
+    return None if path is None else _times_in_file(path)
 
 
 def longest_packaged_snowball_times():
@@ -759,12 +751,7 @@ def longest_packaged_snowball_times():
         packaged files (not necessarily from the same detector); ``(0.0, 0.0)`` when there
         are none.
     """
-    prefix, suffix = PACKAGED_TIME_PATTERN.split("{detector}")
-    times = [
-        _times_in_file(path)
-        for path in PACKAGED_DIR.iterdir()
-        if path.name.startswith(prefix) and path.name.endswith(suffix)
-    ]
+    times = [_times_in_file(path) for path in packaged_files(PACKAGED_KIND).values()]
     if not times:
         return 0.0, 0.0
     return max(core for core, _ in times), max(neighbor for _, neighbor in times)
@@ -772,5 +759,5 @@ def longest_packaged_snowball_times():
 
 def _times_in_file(path):
     """``(core_time, neighbor_time)`` of one packaged snowball persistence file."""
-    with asdf.open(str(path), lazy_load=False, memmap=False) as handle:
-        return float(handle.tree["core_time"]), float(handle.tree["neighbor_time"])
+    tree = read_packaged(path)
+    return float(tree["core_time"]), float(tree["neighbor_time"])

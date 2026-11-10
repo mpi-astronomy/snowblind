@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 SATURATED = datamodels.dqflags.group["SATURATED"]
 CHARGELOSS = datamodels.dqflags.group["CHARGELOSS"]
 DO_NOT_USE = datamodels.dqflags.group["DO_NOT_USE"]
+# a pixel and its eight neighbors: the pixels this hook flags, and those SnowblindStep flags next to a core
 SQUARE = np.ones((3, 3), dtype=bool)
 
 
