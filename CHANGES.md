@@ -152,6 +152,13 @@
   `n_pix_grow_sat` above 0 leaves the hook out and narrows `ring_width` by
   as much, so the ring still reaches 3 pixels from the pixels that
   saturated.
+- `ResetRampFitStep` sets CHARGELOSS in the DQ of the rate and rateints
+  products on each pixel that has it in a group of the integration, which
+  stcal's ramp fit does not carry over. `PersistenceFlagStep` flags the
+  pixels with CHARGELOSS in an earlier exposure as well as those with
+  SATURATED: the pixels next to saturated ones persist too, and its
+  packaged times were measured with the jwst saturation step's default,
+  which marks them SATURATED.
 
 ### Deprecated
 

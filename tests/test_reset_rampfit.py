@@ -23,6 +23,8 @@ from snowblind.step import _history
 
 SAT = datamodels.dqflags.group["SATURATED"]
 JUMP = datamodels.dqflags.group["JUMP_DET"]
+CHARGELOSS = datamodels.dqflags.group["CHARGELOSS"]
+DO_NOT_USE = datamodels.dqflags.group["DO_NOT_USE"]
 NY, NX = 8, 8
 FRAME_TIME = 10.73677
 RATE = 20.0
@@ -111,6 +113,21 @@ def test_call_one_good_group_pixel_gets_rate(tmp_path):
 
     assert rate.data[3, 3] == pytest.approx(model.data[0, 0, 3, 3] / FRAME_TIME, rel=1e-5)
     assert np.isfinite(rate.err[3, 3])
+
+
+def test_call_carries_chargeloss_into_the_rate_products(tmp_path):
+    """ResetRampFitStep.call on a ramp with CHARGELOSS from group 3 at one pixel sets CHARGELOSS there in the rate and
+    rateints DQ."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp()
+    model.groupdq[0, 2:, 3, 3] = CHARGELOSS | DO_NOT_USE
+
+    rate, rateints = ResetRampFitStep.call(
+        model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias
+    )
+
+    assert rate.dq[3, 3] & CHARGELOSS
+    assert rateints.dq[0, 3, 3] & CHARGELOSS
 
 
 def test_call_logs_the_pixels_its_jump_search_flags(tmp_path, caplog):

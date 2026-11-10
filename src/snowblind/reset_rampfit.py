@@ -37,6 +37,10 @@ __all__ = ["ResetRampFitStep", "write_resetfit"]
 
 log = logging.getLogger(__name__)
 
+# the same bit in groupdq and in a rate product's dq; stcal's DQ compression carries only SATURATED, JUMP_DET and
+# DO_NOT_USE from the groups into the rate products
+CHARGELOSS = dqflags.group["CHARGELOSS"]
+
 
 def _span(values, fmt):
     """The range of ``values`` as "low to high" in the format ``fmt``, or the one value when they all agree.
@@ -328,6 +332,7 @@ class ResetRampFitStep(Step):
         int_model.meta.bunit_err = "DN/s"
         int_model.meta.cal_step.ramp_fit = "COMPLETE"
         self.set_cal_step(int_model, "COMPLETE")
+        _carry_chargeloss(result.groupdq, out_model, int_model)
 
         # the pipeline's product names, from the exposure's file name (inside a hook stpipe has no other name
         # to go by); left to stpipe, a two-model result would get indexed names
@@ -457,6 +462,27 @@ class ResetRampFitStep(Step):
             t1_scale = 1.0
         self._scalar_offset = float(reset_level) if np.ndim(reset_level) == 0 else float(self.reset_offset + file_offset)
         return sigma_b, float(t1_scale), reset_level, channel_timing
+
+
+def _carry_chargeloss(groupdq, rate, rateints):
+    """Set CHARGELOSS in the rate and rateints DQ of each pixel that has it in a group of the integration.
+
+    `snowblind.saturation.flag_saturation_neighbors` sets it on the pixels next to
+    saturated ones, which persist after the reset as the saturated pixels do.
+
+    Parameters
+    ----------
+    groupdq : ndarray, shape (nints, ngroups, nrows, ncols)
+        The ramp's group DQ.
+    rate : `~stdatamodels.jwst.datamodels.ImageModel`
+        The rate product, updated in place.
+    rateints : `~stdatamodels.jwst.datamodels.CubeModel`
+        The rateints product, updated in place.
+    """
+    for integration, groups in enumerate(groupdq):
+        flagged = np.any(groups & CHARGELOSS, axis=0)
+        rateints.dq[integration][flagged] |= CHARGELOSS
+        rate.dq[flagged] |= CHARGELOSS
 
 
 def _take_records(ramp, product):

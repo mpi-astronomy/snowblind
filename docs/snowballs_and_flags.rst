@@ -131,8 +131,16 @@ covers its neighbors too. ``snowblind_detector1`` runs the saturation step
 with ``n_pix_grow_sat=0``, so SATURATED marks only the pixels that reached
 the threshold, and flags their neighbors with CHARGELOSS and DO_NOT_USE
 instead (``snowblind.saturation.flag_saturation_neighbors`` as a post-hook
-of the saturation step), which keeps them out of the fits as before; its
-``SnowblindStep`` runs with ``ring_width=3`` to reach as far. Given another
+of the saturation step), which keeps them out of the fits as before.
+CHARGELOSS is the flag the jwst pipeline uses for charge that spreads from
+a very bright pixel into its neighbors (its ``charge_migration`` step). The
+reset fit keeps it in the rate and rateints products, so
+``PersistenceFlagStep`` flags these pixels in later exposures, as it does
+the saturated ones. The jwst ramp fit (``--reset_fit=False``) leaves it out
+of the rate products and, as for charge migration, gives these pixels the
+read-noise variance of a whole ramp, so that resampling does not weight
+them down. The pipeline's ``SnowblindStep`` runs with ``ring_width=3`` to
+reach as far as before. Given another
 ``n_pix_grow_sat``, the pipeline narrows ``ring_width`` by as much (2 for
 the jwst default of 1), so the ring always reaches 3 pixels from the
 pixels that saturated.

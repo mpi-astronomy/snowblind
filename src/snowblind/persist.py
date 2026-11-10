@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 
 DO_NOT_USE = datamodels.dqflags.pixel["DO_NOT_USE"]
 SATURATED = datamodels.dqflags.pixel["SATURATED"]
+CHARGELOSS = datamodels.dqflags.pixel["CHARGELOSS"]
 PERSISTENCE = datamodels.dqflags.pixel["PERSISTENCE"]
 SECONDS_PER_DAY = 86400.0
 DEFAULT_TIME = 2500.0  # seconds, for a detector without a packaged time
@@ -27,9 +28,9 @@ PACKAGED_DIR = files("snowblind").joinpath("data")
 
 class PersistenceFlagStep(Step):
     """
-    Given a series of exposures, for any pixel flagged as SATURATED in one exposure,
-    flag the pixel as DO_NOT_USE | PERSISTENCE in the later exposures of the same
-    detector whose middle is less than ``time`` seconds after the end of that one.
+    Given a series of exposures, for any pixel flagged as SATURATED or CHARGELOSS in one
+    exposure, flag the pixel as DO_NOT_USE | PERSISTENCE in the later exposures of the
+    same detector whose middle is less than ``time`` seconds after the end of that one.
 
     Persistence decays from the end of the saturated exposure, and the rate of a later
     exposure averages it over the exposure, which its value at the middle of the
@@ -63,7 +64,10 @@ class PersistenceFlagStep(Step):
         """Flag persistence from earlier saturated exposures in each image.
 
         The saturated pixels of an exposure are those with SATURATED in its ``dq``:
-        ramp fitting sets it where any group of any integration saturated.
+        ramp fitting sets it where any group of any integration saturated.  Those with
+        CHARGELOSS are flagged too: ``snowblind_detector1`` sets it on the pixels next
+        to saturated ones, which persist as well, where the jwst saturation step's
+        default sets SATURATED, and the packaged times were measured with that default.
 
         Parameters
         ----------
@@ -186,7 +190,7 @@ class PersistenceFlagStep(Step):
 
                 model = load(item)
                 origin = detector_origin(model)
-                saturated = (model.dq & SATURATED) > 0
+                saturated = (model.dq & (SATURATED | CHARGELOSS)) > 0
                 mask = np.zeros(model.dq.shape, dtype=bool)
                 used = 0
                 for earlier_seconds, _, earlier_name, earlier_origin, earlier in recent:

@@ -163,6 +163,11 @@ Decided 2026-11-09 evening (James):
    reads SATURATED from the rate DQ and would then flag only the saturated
    pixels of earlier exposures; the pixels 1 px from a saturated pixel do
    persist (2026-11-09 later entry), so it would need the hook's flag too.
+   Done 2026-11-10 (James): CHARGELOSS kept, as jwst's flag for charge spreading from a bright pixel
+   (`charge_migration`); `ResetRampFitStep` carries it into the rate and rateints DQ (stcal's DQ
+   compression drops it) and `PersistenceFlagStep` reads SATURATED | CHARGELOSS, the same pixels as
+   the jwst default growth its times were measured with. The jwst ramp fit (`--reset_fit=False`) still
+   drops it, and recomputes the read-noise variance of CHARGELOSS groups on purpose (resample weights).
 8. The pixels 1 px from a snowball's saturated pixels persist after the
    reset, for about a quarter of the saturated pixels' time (2026-11-09
    later entry); the ring is flagged only to the end of the integration.

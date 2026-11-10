@@ -12,6 +12,7 @@ from snowblind import PersistenceFlagStep, persist
 
 
 SATURATED = datamodels.dqflags.pixel["SATURATED"]
+CHARGELOSS = datamodels.dqflags.pixel["CHARGELOSS"]
 PERSISTENCE = datamodels.dqflags.pixel["PERSISTENCE"]
 DO_NOT_USE = datamodels.dqflags.pixel["DO_NOT_USE"]
 GOOD = datamodels.dqflags.pixel["GOOD"]
@@ -116,6 +117,17 @@ def test_lone_saturated_pixel_flagged_in_later_exposure():
     """PersistenceFlagStep.call on one lone SATURATED pixel then a later image: the later image is flagged there."""
     first = make_image(1, start_time=60122.0)
     first.dq[5, 5] = SATURATED
+    later = make_image(2, start_time=60122.001)
+
+    results = PersistenceFlagStep.call(datamodels.ModelContainer([first, later]))
+
+    assert results[1].dq[5, 5] == PERSISTENCE | DO_NOT_USE
+
+
+def test_chargeloss_pixel_flagged_in_later_exposure():
+    """PersistenceFlagStep.call on one CHARGELOSS pixel then a later image: the later image is flagged there."""
+    first = make_image(1, start_time=60122.0)
+    first.dq[5, 5] = CHARGELOSS
     later = make_image(2, start_time=60122.001)
 
     results = PersistenceFlagStep.call(datamodels.ModelContainer([first, later]))

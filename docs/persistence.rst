@@ -59,7 +59,11 @@ the time it was flagged with (``time``, also in the header card
 
 The saturated pixels of an exposure are those with ``SATURATED`` in its
 ``dq`` array; ramp fitting sets it where any group of any integration
-saturated. A subarray exposure is placed on the detector by its subarray
+saturated. Pixels with ``CHARGELOSS`` are flagged too: ``snowblind_detector1``
+marks the pixels next to saturated ones with it, where the jwst saturation
+step's default marks them ``SATURATED`` (the packaged times were measured
+with that default), and its reset fit keeps it in the rate products. A
+subarray exposure is placed on the detector by its subarray
 start pixels, so a subarray is flagged where a full-frame exposure
 saturated, and the other way round. Two files with the same start time on
 the same detector are taken for the same exposure given twice and are not
