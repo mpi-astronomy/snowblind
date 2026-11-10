@@ -130,7 +130,10 @@
   that reached the saturation threshold. As with that growth, the
   neighbors are flagged from the group during whose frames a pixel
   saturated, which the saturation step marks DO_NOT_USE when a group
-  averages several frames (`snowblind.saturation.saturated_in_group`).
+  averages several frames (`snowblind.saturation.saturated_in_group`), and
+  the zero frame of the pixels next to a pixel whose zero frame saturated
+  is set to 0, which marks it unusable, as the saturation step does with
+  the saturated one.
   NIRSpec IRS2 groups are grown in their normal layout, as the saturation
   step grows them.
 - `SnowblindStep`'s `min_radius` defaults to 2 (was 4), close to the jump

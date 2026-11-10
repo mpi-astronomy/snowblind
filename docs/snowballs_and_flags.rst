@@ -137,7 +137,9 @@ the threshold, and flags their neighbors with CHARGELOSS and DO_NOT_USE
 instead (``snowblind.saturation.flag_saturation_neighbors`` as a post-hook
 of the saturation step), which keeps them out of the fits as before. As
 with the jwst default, the neighbors are flagged from the group during
-whose frames a pixel saturated.
+whose frames a pixel saturated, and when a pixel's zero frame saturated,
+the zero frame of the pixels next to it is set to 0, which marks it
+unusable: it holds the charge spilling out.
 CHARGELOSS is the flag the jwst pipeline uses for charge that spreads from
 a very bright pixel into its neighbors (its ``charge_migration`` step). The
 reset fit keeps it in the rate and rateints products, so
