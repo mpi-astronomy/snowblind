@@ -31,6 +31,50 @@ def test_flag_saturation_neighbors_flags_every_group_from_the_saturation_on():
     assert result.groupdq[0, :, 5, 6].tolist() == [0, 0, CHARGELOSS | DO_NOT_USE, CHARGELOSS | DO_NOT_USE]
 
 
+def test_flag_saturation_neighbors_flags_the_group_the_pixel_saturated_during():
+    """flag_saturation_neighbors on a ramp with a pixel DO_NOT_USE in group 1 and SATURATED from group 2 flags its
+    neighbor from group 1.
+
+    The saturation step marks so the group during whose frames a pixel saturated.
+    """
+    model = ramp_with_saturated_pixel()
+    model.groupdq[0, 1, 5, 5] = DO_NOT_USE
+
+    result = flag_saturation_neighbors(model)
+
+    assert result.groupdq[0, :, 5, 6].tolist() == [0] + [CHARGELOSS | DO_NOT_USE] * 3
+
+
+def ramp_with_zero_frame_and_pixel_saturated_from_group_0():
+    """A ramp of 4 groups with a zero frame of 100 DN, whose pixel [5, 5] is SATURATED from group 0 on."""
+    model = datamodels.RampModel((1, 4, 11, 11))
+    model.meta.exposure.zero_frame = True
+    model.zeroframe = np.full((1, 11, 11), 100.0, dtype=np.float32)
+    model.groupdq[0, :, 5, 5] = SATURATED
+    return model
+
+
+def test_flag_saturation_neighbors_zeroes_the_zero_frame_next_to_a_saturated_zero_frame():
+    """flag_saturation_neighbors on a ramp whose pixel [5, 5] saturated in its zero frame (set to 0 by the saturation
+    step) sets the zero frame of its neighbor [5, 6] to 0."""
+    model = ramp_with_zero_frame_and_pixel_saturated_from_group_0()
+    model.zeroframe[0, 5, 5] = 0.0
+
+    result = flag_saturation_neighbors(model)
+
+    assert result.zeroframe[0, 5, 6] == 0.0
+
+
+def test_flag_saturation_neighbors_keeps_the_zero_frame_next_to_a_usable_zero_frame():
+    """flag_saturation_neighbors on a ramp whose pixel [5, 5] is SATURATED from group 0 but has a usable zero frame
+    keeps the zero frame of its neighbor [5, 6]."""
+    model = ramp_with_zero_frame_and_pixel_saturated_from_group_0()
+
+    result = flag_saturation_neighbors(model)
+
+    assert result.zeroframe[0, 5, 6] == 100.0
+
+
 def test_flag_saturation_neighbors_leaves_a_pixel_two_pixels_away():
     """flag_saturation_neighbors on a ramp with one saturated pixel leaves a pixel 2 px from it unflagged."""
     result = flag_saturation_neighbors(ramp_with_saturated_pixel())

@@ -809,3 +809,73 @@ row and draws the packaged times, so NRS1's lines include the check. The
 repo's `fit_snowball_persistence.py` and `snowball_persistence_excess.py`
 now have `--min-clean` and `--early-by`; rerun on the 9273 series they
 give `decay.npz` files identical to `out_9273/`.
+
+### 2026-11-10: snowballs missed in program 2234, and snowballs saturated already in group 0
+
+James found snowballs left in the program 2234 NRCBLONG F470N rates (MEDIUM8,
+10 groups, zero frame; `~/data/ceers_long`). Diagnosis on cutouts (jump step
+and SnowblindStep on 201x201 px, reset fit with fixed settings):
+
+- Hit during group 0's frames (00001 at 1915,1023; 00004 at 1729,526): the
+  saturation step marks the core DO_NOT_USE in group 0 (the group during
+  whose frames it saturated, with several frames per group), but the
+  neighbor hook grew SATURATED only and the ring started at the event's
+  group 1, so the ring pixels kept a group 0 holding part of the hit: 1 px
+  ring 81 and 119 DN/s above the background (about 100 times the error),
+  2-3 px 7 DN/s. Fixed (commit "Flag saturation neighbors and snowball rings
+  from the group a pixel saturated during"): within about 1 error.
+- Hit before the zero frame (00001 at 1547,1668): the neighbors' zero frames
+  held the spilled charge, giving 1104 DN/s. Fixed (commit "Set the zero
+  frame of a saturated zero frame's neighbors to 0"): NaN and DO_NOT_USE, as
+  with the jwst default growth. The event itself had no jump at all.
+- Hit during group 1 (00004 at 868,925): flagged correctly; within noise.
+- Faint halo at the edge (00002 at 2044,1026), core past the edge, hit in
+  group 2: at 7 sigma the jump step flags too few pixels to make a region;
+  the JUMP_DET in the rate DQ there comes mostly from the reset fit's own
+  4.5-sigma search. Left as is.
+
+Snowballs saturated already in group 0 (the hit before the first read, or
+during group 0's frames): measured on 91 exposures, 2234 and 1345 (MEDIUM8,
+zero frame) and the dense 6154 field (BRIGHT1, 5 one-frame groups, no zero
+frame). Candidates: areas SATURATED in the first read.
+
+- By the last group no star's saturated area grows by less than 2.71 times
+  (733 stars of 5 px or more); by read time over first-read time: 3: min
+  1.39, 5: 1.93, 7: 2.33, 9: 2.71. Snowballs: 1.0 at every read.
+- Areas that do not grow and repeat at the same detector position in all
+  exposures (20 positions, 160 areas) are bad pixels: all DO_NOT_USE in the
+  mask; leaving the mask out drops every one.
+- Core value from group 0 to the last group: snowballs fall by 0.9% to 6.5%
+  (bias subtracted); stars median +-0%, 21% fall by more than 0.5%. Weak
+  but independent of the growth.
+- Confirmed as snowballs by their first-read halo against the other
+  exposures (falling from tens of thousands of DN at the core to noise by
+  3-15 px, no later signal outside the ring).
+- Event size: the 9022 darks give r_event / r_core (core with 1 px border)
+  1.7-2 for small cores, up to 3-4 for large short-wavelength ones, with a
+  wide spread. Event radius 2 r_core, grown by growth_factor 2, reaches 6
+  r_core: 1.3 to 3 times the radius where each measured halo reaches the
+  noise (tightest: NRCA3 at 1282,886, 19 px against 15).
+
+First design (James): detection as above (at least 5 px, growth <= 1.1,
+fall > 0.5%, last read >= 3 times group 0's, bad-pixel mask left out), each
+found core given a halo (the core dilated by its own equal-area radius plus
+2 px, grown by growth_factor) flagged in the groups holding the hit. On the
+91 exposures the implementation found 8: the 2234 snowball, and 7 that James
+classified as energetic cosmic rays with no halo (2234 00002 977,1330; 6154
+NRCA3 1282,886 between two bright stars; NRCALONG 1526,2015 and 300,330;
+NRCBLONG 698,1629, 1092,1738 and 1433,418), several in crowded fields where
+stars and spikes made a halo measurement look positive. None of 736 stars.
+
+Revised (James, same day): SnowblindStep must work as a hook in the standard
+pipeline and not depend on ResetRampFitStep. A hit before the first read
+leaves its halo charge in every read, which the jwst ramp fit does not see;
+only the ring (charge leaking in) and the core's persistence matter. So the
+detected cores (snowball or cosmic ray alike) get their ring from group 0 to
+the end and their persistence, no halo, no zero-frame change; and they count
+as cores in group 1, so a JUMP_DET halo there (a hit during group 0's
+frames) is grown by the normal path. The halo of a hit before the first read
+is for ResetRampFitStep to handle (its search on the reset difference),
+later. Open: that reset-fit work; areas of 1-4 px saturated in group 0, to
+be checked against what the saturation step and hook already flag. Scripts,
+tables and cutouts: results/2026-11-10_snowballs_saturated_in_group_0/.

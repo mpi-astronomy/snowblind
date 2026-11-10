@@ -12,6 +12,7 @@ from snowblind.snowblind import group_difference_times, longest_packaged_snowbal
 JUMP_DET = datamodels.dqflags.group['JUMP_DET']
 GOOD = datamodels.dqflags.group['GOOD']
 SATURATED = datamodels.dqflags.group['SATURATED']
+DO_NOT_USE = datamodels.dqflags.group['DO_NOT_USE']
 REFERENCE_PIXEL = datamodels.dqflags.pixel['REFERENCE_PIXEL']
 
 
@@ -325,6 +326,36 @@ def test_dilate_saturated_cores_flags_the_ring_to_the_end_of_the_integration():
     ring = SnowblindStep().dilate_saturated_cores(cores)
 
     assert ring[0].any(axis=(1, 2)).tolist() == [False, True, True, True, True, True]
+
+
+def test_dilate_saturated_cores_starts_at_the_group_the_core_saturated_during():
+    """SnowblindStep().dilate_saturated_cores on a core in group 1 of 6 that groupdq has DO_NOT_USE in group 0 and
+    SATURATED from group 1 flags the ring in groups 0 to 5.
+
+    The saturation step marks so the group during whose frames a pixel saturated, whose average holds part of the hit.
+    """
+    cores = np.zeros((1, 6, 9, 9), dtype=bool)
+    cores[0, 1, 4, 4] = True
+    groupdq = np.zeros((1, 6, 9, 9), dtype=np.uint8)
+    groupdq[0, 0, 4, 4] = DO_NOT_USE
+    groupdq[0, 1:, 4, 4] = SATURATED
+
+    ring = SnowblindStep().dilate_saturated_cores(cores, groupdq)
+
+    assert ring[0].any(axis=(1, 2)).tolist() == [True] * 6
+
+
+def test_ramp_ring_flagged_from_the_group_the_core_saturated_during():
+    """SnowblindStep.call on a ramp whose core is DO_NOT_USE in group 1 and SATURATED from group 2, with its jump region
+    in group 2, flags the ring from group 1."""
+    im = datamodels.RampModel((1, 6, 40, 40))
+    im.groupdq[0, 2, 15:26, 15:26] = JUMP_DET
+    im.groupdq[0, 1, 20, 20] = DO_NOT_USE
+    im.groupdq[0, 2:, 20, 20] = SATURATED
+
+    result = SnowblindStep.call(im)
+
+    assert result.groupdq[0, 1, 22, 20] == JUMP_DET
 
 
 def test_dilate_saturated_cores_with_after_jumps_flags_that_many_groups_after_the_jump():
@@ -780,3 +811,122 @@ def test_rate_snowball_centered_on_the_first_light_sensitive_row():
     result = SnowblindStep.call(im, min_radius=3)
 
     assert result.dq[4, 52] & JUMP_DET
+
+
+def ramp_with_core_saturated_in_group_0(ngroups=6, nframes=1):
+    """An 80x80 ramp of ngroups groups of nframes frames whose 5x5 core around [40, 40] is SATURATED from group 0, its
+    value falling from 50000 DN in group 0 to 49000 DN in the last group, with no jump flagged around it."""
+    im = datamodels.RampModel((1, ngroups, 80, 80))
+    im.meta.exposure.nframes = nframes
+    im.meta.exposure.groupgap = 0
+    im.groupdq[0, :, 38:43, 38:43] = SATURATED
+    im.data[0, :, 38:43, 38:43] = np.linspace(50000, 49000, ngroups)[:, None, None]
+    return im
+
+
+def test_ramp_core_saturated_in_group_0_flags_its_ring_from_group_0_to_the_end():
+    """SnowblindStep.call on a ramp with a core SATURATED from group 0 flags a pixel 2 px from it in every group."""
+    result = SnowblindStep.call(ramp_with_core_saturated_in_group_0())
+
+    assert result.groupdq[0, :, 40, 44].tolist() == [JUMP_DET] * 6
+
+
+def test_ramp_core_saturated_in_group_0_grows_no_halo():
+    """SnowblindStep.call on a ramp with a core SATURATED from group 0 and no jump around it leaves a pixel 6 px from
+    it in every group."""
+    result = SnowblindStep.call(ramp_with_core_saturated_in_group_0())
+
+    assert (result.groupdq[0, :, 40, 48] == GOOD).all()
+
+
+def test_ramp_core_saturated_in_group_0_keeps_the_zero_frame():
+    """SnowblindStep.call on a ramp whose core SATURATED from group 0 also saturated in the zero frame leaves the zero
+    frame as it was."""
+    im = ramp_with_core_saturated_in_group_0(nframes=8)
+    im.meta.exposure.zero_frame = True
+    im.zeroframe = np.full((1, 80, 80), 100.0, dtype=np.float32)
+    im.zeroframe[0, 38:43, 38:43] = 0.0
+
+    result = SnowblindStep.call(im)
+
+    assert np.array_equal(result.zeroframe, im.zeroframe)
+
+
+def test_ramp_halo_in_group_1_around_a_core_saturated_in_group_0_is_grown():
+    """SnowblindStep.call on a ramp whose core is SATURATED from group 0, inside a 21x21 JUMP_DET region in group 1,
+    flags a pixel 30 px from the core in group 1.
+
+    A hit during group 0's frames shows its jump in group 1.
+    """
+    im = ramp_with_core_saturated_in_group_0(nframes=4)
+    im.groupdq[0, 1, 30:51, 30:51] |= JUMP_DET
+
+    result = SnowblindStep.call(im)
+
+    assert result.groupdq[0, 1, 40, 70] == JUMP_DET
+
+
+def test_ramp_halo_in_group_1_around_a_growing_saturated_area_is_not_grown():
+    """SnowblindStep.call on a ramp whose area SATURATED from group 0 grows to 9x9 by group 3, as a star's does, inside a
+    21x21 JUMP_DET region in group 1, leaves a pixel 30 px from it in group 1."""
+    im = ramp_with_core_saturated_in_group_0(nframes=4)
+    im.groupdq[0, 1, 30:51, 30:51] |= JUMP_DET
+    im.groupdq[0, 3:, 36:45, 36:45] = SATURATED
+
+    result = SnowblindStep.call(im)
+
+    assert result.groupdq[0, 1, 40, 70] == GOOD
+
+
+def test_ramp_saturated_area_that_grows_gets_no_ring():
+    """SnowblindStep.call on a ramp whose 5x5 area SATURATED in group 0 grows to 9x9 by group 3, as a star's does,
+    leaves a pixel 2 px from it in group 0."""
+    im = ramp_with_core_saturated_in_group_0()
+    im.groupdq[0, 3:, 36:45, 36:45] = SATURATED
+
+    result = SnowblindStep.call(im)
+
+    assert result.groupdq[0, 0, 40, 44] == GOOD
+
+
+def test_ramp_saturated_core_whose_value_does_not_fall_gets_no_ring():
+    """SnowblindStep.call on a ramp whose 5x5 core SATURATED from group 0 keeps 50000 DN to the last group leaves a
+    pixel 2 px from it in group 0."""
+    im = ramp_with_core_saturated_in_group_0()
+    im.data[0, :, 38:43, 38:43] = 50000.0
+
+    result = SnowblindStep.call(im)
+
+    assert result.groupdq[0, 0, 40, 44] == GOOD
+
+
+def test_ramp_core_of_4_pixels_saturated_in_group_0_gets_no_ring():
+    """SnowblindStep.call on a ramp whose only core SATURATED from group 0 is 2x2 leaves a pixel 2 px from it in
+    group 0."""
+    im = ramp_with_core_saturated_in_group_0()
+    im.groupdq[0, :, 38:43, 38:43] = GOOD
+    im.groupdq[0, :, 40:42, 40:42] = SATURATED
+    im.data[0, :, 40:42, 40:42] = np.linspace(50000, 49000, 6)[:, None, None]
+
+    result = SnowblindStep.call(im)
+
+    assert result.groupdq[0, 0, 40, 43] == GOOD
+
+
+def test_ramp_core_saturated_in_group_0_on_bad_pixels_gets_no_ring():
+    """SnowblindStep.call on a ramp whose core SATURATED from group 0 is DO_NOT_USE in pixeldq leaves a pixel 2 px from
+    it in group 0."""
+    im = ramp_with_core_saturated_in_group_0()
+    im.pixeldq[38:43, 38:43] = datamodels.dqflags.pixel["DO_NOT_USE"]
+
+    result = SnowblindStep.call(im)
+
+    assert result.groupdq[0, 0, 40, 44] == GOOD
+
+
+def test_ramp_of_2_groups_is_not_searched_for_cores_saturated_in_group_0():
+    """SnowblindStep.call on a ramp of 2 one-frame groups with a core SATURATED from group 0 leaves a pixel 2 px from
+    it in group 0: its last group is read only 2 times later than group 0."""
+    result = SnowblindStep.call(ramp_with_core_saturated_in_group_0(ngroups=2))
+
+    assert result.groupdq[0, 0, 40, 44] == GOOD

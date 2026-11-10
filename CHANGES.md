@@ -101,6 +101,18 @@
   corner too. An event centered on the outermost light-sensitive row or
   column needs no core in view if it holds a disk of `min_radius` that does
   not extend past the edge.
+- `SnowblindStep` flags, in a ramp, the hits whose core is SATURATED
+  already in group 0, a snowball's or an energetic cosmic ray's that hit
+  before group 0 is read or during its frames, whose core never newly
+  saturates (`cores_saturated_in_group_0`): an area of at least 5 pixels
+  SATURATED in group 0, outside the bad-pixel mask, whose saturated area
+  grows by no more than 10% by the last group and whose value falls by more
+  than 0.5%, unlike a saturated star's. Ramps whose last group is read less
+  than 3 times later than group 0 are not searched. The core gets its ring
+  from group 0 to the end of the integration and its persistence in later
+  integrations, and counts as a core in group 1, where the jump of a hit
+  during group 0's frames shows, so a halo flagged there is grown; it is
+  given no halo of its own.
 - `SnowblindStep` flags each snowball's core, and the pixels next to it, in
   the later integrations of a ramp, where they persist after the reset: a
   group is flagged on the core while the difference it ends starts less
@@ -127,8 +139,15 @@
   around each saturated pixel, group by group, with CHARGELOSS and
   DO_NOT_USE, which keeps them out of the fits and the jump search as the
   jwst step's default growth does, while SATURATED marks only the pixels
-  that reached the saturation threshold. NIRSpec IRS2 groups are grown in
-  their normal layout, as the saturation step grows them.
+  that reached the saturation threshold. As with that growth, the
+  neighbors are flagged from the group during whose frames a pixel
+  saturated, which the saturation step marks DO_NOT_USE when a group
+  averages several frames (`snowblind.saturation.saturated_in_group`), and
+  the zero frame of the pixels next to a pixel whose zero frame saturated
+  is set to 0, which marks it unusable, as the saturation step does with
+  the saturated one.
+  NIRSpec IRS2 groups are grown in their normal layout, as the saturation
+  step grows them.
 - `SnowblindStep`'s `min_radius` defaults to 2 (was 4), close to the jump
   step's `min_jump_area` of 15 pixels; with a core required, small
   cosmic-ray hits no longer pass at that size. `snowblind_detector1` uses
@@ -144,7 +163,9 @@
   (`after_jumps` now defaults to None). The ring is drawn around the cores
   only, and `ring_width` is counted from the SATURATED flags, so its reach
   from the pixels that saturated depends on the saturation step's
-  `n_pix_grow_sat`.
+  `n_pix_grow_sat`. When the core saturated during the frames of the group
+  before the jump group, which holds part of the hit, the ring is flagged
+  from that group (`dilate_saturated_cores` takes the group DQ).
 - `snowblind_detector1` runs the saturation step with `n_pix_grow_sat=0`
   and `flag_saturation_neighbors` as its post-hook, so SATURATED marks only
   the pixels that saturated, and `SnowblindStep` with `ring_width=3` (was
