@@ -10,11 +10,15 @@ each step works and how to choose its settings.
 ## What it provides
 
 ### Steps
-- **`SnowblindStep`** masks the halos of cosmic-ray showers and snowballs by
-  growing the shape of each jump-flagged region and the ring around its
-  saturated core. It replaces the jump step's `expand_large_events`, which
-  draws circles or ellipses around them, and works on rate products as well
-  as ramps, so it can be applied after the fact.
+- **`SnowblindStep`** masks the halos of snowballs, the jump-flagged regions
+  around a saturated core, by growing the shape of each region and the ring
+  around its core, including snowballs cut by the edge of the detector. In
+  a ramp the ring is flagged to the end of the integration, and the core
+  and its neighbors in later integrations, for times measured for each
+  detector and packaged with snowblind. It replaces the jump step's
+  `expand_large_events`, which draws circles or ellipses around them, and
+  works on rate products as well as ramps, so it can be applied after the
+  fact.
 - **`PersistenceFlagStep`** flags the pixels that saturated in an earlier
   exposure of the same detector, for a time measured for each detector and
   packaged with snowblind. The jwst `persistence` step (as of jwst 3.0)
@@ -50,8 +54,10 @@ each step works and how to choose its settings.
 
 ### Pipelines
 - **`snowblind_detector1`** is `calwebb_detector1` with StreamCleanStep,
-  SnowblindStep and ResetRampFitStep in place, and the SIRS reference-pixel
-  correction turned on. It works as a drop-in replacement.
+  SnowblindStep and ResetRampFitStep in place, the SIRS reference-pixel
+  correction turned on, and the pixels next to saturated ones flagged
+  CHARGELOSS rather than SATURATED, so that SATURATED marks only the
+  pixels that saturated. It works as a drop-in replacement.
 - **`snowblind_image3`** is `calwebb_image3` with `TiledOutlierStep` and
   `SparseResampleStep` in place (`--outlier_step=sparse_outlier` uses
   `SparseOutlierDetectionStep` for the outliers).  Also a drop-in

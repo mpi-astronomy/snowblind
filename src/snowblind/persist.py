@@ -1,35 +1,32 @@
 import logging
 import os
 from collections import defaultdict, deque
-from importlib.resources import files
 
-import asdf
 from astropy.io import fits
 import numpy as np
 from jwst import datamodels
 from jwst.associations import load_asn
 from stdatamodels.jwst.datamodels import read_metadata
 
-from .step import Step
+from .packaged import packaged_file, read_packaged
+from .step import SECONDS_PER_DAY, Step
 
 log = logging.getLogger(__name__)
 
 
 DO_NOT_USE = datamodels.dqflags.pixel["DO_NOT_USE"]
 SATURATED = datamodels.dqflags.pixel["SATURATED"]
+CHARGELOSS = datamodels.dqflags.pixel["CHARGELOSS"]
 PERSISTENCE = datamodels.dqflags.pixel["PERSISTENCE"]
-SECONDS_PER_DAY = 86400.0
 DEFAULT_TIME = 2500.0  # seconds, for a detector without a packaged time
-PACKAGED_TIME_PATTERN = "persistence_{detector}.asdf"
-# the folder of the packaged times; tests point it elsewhere
-PACKAGED_DIR = files("snowblind").joinpath("data")
+PACKAGED_KIND = "persistence"
 
 
 class PersistenceFlagStep(Step):
     """
-    Given a series of exposures, for any pixel flagged as SATURATED in one exposure,
-    flag the pixel as DO_NOT_USE | PERSISTENCE in the later exposures of the same
-    detector whose middle is less than ``time`` seconds after the end of that one.
+    Given a series of exposures, for any pixel flagged as SATURATED or CHARGELOSS in one
+    exposure, flag the pixel as DO_NOT_USE | PERSISTENCE in the later exposures of the
+    same detector whose middle is less than ``time`` seconds after the end of that one.
 
     Persistence decays from the end of the saturated exposure, and the rate of a later
     exposure averages it over the exposure, which its value at the middle of the
@@ -63,7 +60,10 @@ class PersistenceFlagStep(Step):
         """Flag persistence from earlier saturated exposures in each image.
 
         The saturated pixels of an exposure are those with SATURATED in its ``dq``:
-        ramp fitting sets it where any group of any integration saturated.
+        ramp fitting sets it where any group of any integration saturated.  Those with
+        CHARGELOSS are flagged too: ``snowblind_detector1`` sets it on the pixels next
+        to saturated ones, which persist as well, where the jwst saturation step's
+        default sets SATURATED, and the packaged times were measured with that default.
 
         Parameters
         ----------
@@ -186,7 +186,7 @@ class PersistenceFlagStep(Step):
 
                 model = load(item)
                 origin = detector_origin(model)
-                saturated = (model.dq & SATURATED) > 0
+                saturated = (model.dq & (SATURATED | CHARGELOSS)) > 0
                 mask = np.zeros(model.dq.shape, dtype=bool)
                 used = 0
                 for earlier_seconds, _, earlier_name, earlier_origin, earlier in recent:
@@ -238,11 +238,8 @@ def packaged_time(detector):
     float or None
         The time in seconds; None when the package has no file for the detector.
     """
-    path = PACKAGED_DIR.joinpath(PACKAGED_TIME_PATTERN.format(detector=str(detector).lower()))
-    if not path.is_file():
-        return None
-    with asdf.open(str(path), lazy_load=False, memmap=False) as handle:
-        return float(handle.tree["time"])
+    path = packaged_file(PACKAGED_KIND, detector)
+    return None if path is None else float(read_packaged(path)["time"])
 
 
 def detector_origin(model):

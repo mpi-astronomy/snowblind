@@ -336,7 +336,7 @@ class StreamCleanStep(Step):
         if self.even_odd_columns is not None:
             even_odd_columns = bool(self.even_odd_columns)
         if geometry == "along_stream":
-            if fit_method == "none":
+            if fit_method in [None, "none"]:
                 log.info(
                     f"{grism} disperses along the readout stream, where the stream filter would read the traces as 1/f "
                     "noise: removing only the even-odd and column offsets (fit_method='wiener' or 'row_median' runs the filter)"
@@ -622,7 +622,7 @@ class StreamCleanStep(Step):
                     )
             stars = getattr(self, "_spike_stars", 0)
             log.info(
-                f"Background mask: {100 * (~background_mask).mean():.1f} percent of pixels are sources"
+                f"Background mask: {100 * (~background_mask).mean():.1f} percent of pixels are masked as sources"
                 + (f", the diffraction spikes of {stars} bright star{'s' if stars != 1 else ''} among them" if stars else "")
             )
             mask_model = make_intermediate_model(image_model, background_mask) if self.save_mask else None

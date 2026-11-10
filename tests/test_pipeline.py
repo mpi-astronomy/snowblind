@@ -9,7 +9,7 @@ from stpipe.exceptions import ValidationError
 from snowblind import Detector1Pipeline, ResetRampFitStep, StreamCleanStep
 from snowblind.superbias import SuperBiasStep
 
-SNOWBLIND_HOOK = "snowblind.SnowblindStep(min_radius=3, after_jumps=5)"
+SNOWBLIND_HOOK = "snowblind.SnowblindStep(ring_width=3.0)"
 
 
 def crds_jump_threshold_of_4(cls, dataset, disable=None, crds_observatory=None):
@@ -27,9 +27,51 @@ def crds_refpix_median(cls, dataset, disable=None, crds_observatory=None):
     return ConfigObj({"steps": {"refpix": {"refpix_algorithm": "median"}}})
 
 
+def crds_saturation_growth_of_1(cls, dataset, disable=None, crds_observatory=None):
+    """Stand-in for the jwst pipeline's CRDS parameters: a saturation section with n_pix_grow_sat 1."""
+    return ConfigObj({"steps": {"saturation": {"n_pix_grow_sat": 1}}})
+
+
 def no_crds_parameters(cls, dataset):
     """Stand-in for the CRDS lookup of an input file: no parameters, for jwst."""
     return {}, "jwst"
+
+
+def test_pipeline_runs_the_saturation_step_without_growing_the_saturated_pixels():
+    """Detector1Pipeline() has the saturation step's n_pix_grow_sat at 0."""
+    pipeline = Detector1Pipeline()
+
+    assert pipeline.saturation.n_pix_grow_sat == 0
+
+
+def test_pipeline_hooks_the_saturation_neighbor_flagging_after_the_saturation_step():
+    """Detector1Pipeline() has snowblind.saturation.flag_saturation_neighbors as the saturation step's post hook."""
+    pipeline = Detector1Pipeline()
+
+    assert pipeline.saturation.post_hooks == ["snowblind.saturation.flag_saturation_neighbors"]
+
+
+def test_pipeline_with_saturation_growth_adds_no_saturation_hook():
+    """Detector1Pipeline(steps=...) with n_pix_grow_sat at 1 gives the saturation step no post hook."""
+    pipeline = Detector1Pipeline(steps={"saturation": {"n_pix_grow_sat": 1}})
+
+    assert pipeline.saturation.post_hooks == []
+
+
+def test_pipeline_with_saturation_growth_narrows_the_snowblind_ring():
+    """Detector1Pipeline(steps=...) with n_pix_grow_sat at 1 hooks SnowblindStep(ring_width=2.0) after the jump step."""
+    pipeline = Detector1Pipeline(steps={"saturation": {"n_pix_grow_sat": 1}})
+
+    assert pipeline.jump.post_hooks[0] == "snowblind.SnowblindStep(ring_width=2.0)"
+
+
+def test_config_from_reference_puts_the_saturation_default_over_crds(monkeypatch):
+    """Detector1Pipeline.get_config_from_reference over CRDS parameters with n_pix_grow_sat 1 returns 0."""
+    monkeypatch.setattr(JwstDetector1Pipeline, "get_config_from_reference", classmethod(crds_saturation_growth_of_1))
+
+    config = Detector1Pipeline.get_config_from_reference({}, crds_observatory="jwst")
+
+    assert config["steps"]["saturation"]["n_pix_grow_sat"] == 0
 
 
 def test_pipeline_fits_ramps_with_the_reset_step():
@@ -130,7 +172,7 @@ def test_pipeline_switches_off_the_jump_steps_large_event_expansion():
 
 
 def test_pipeline_hooks_snowblind_ahead_of_the_stream_clean():
-    """Detector1Pipeline() has SnowblindStep(min_radius=3, after_jumps=5) and StreamCleanStep as its jump post hooks."""
+    """Detector1Pipeline() has SnowblindStep(ring_width=3.0) and StreamCleanStep as its jump post hooks."""
     pipeline = Detector1Pipeline()
 
     assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, StreamCleanStep]
