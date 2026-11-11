@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+## [1.4.1] - 2026-11-11
+
+- `snowblind_detector1` runs again. In 1.4.0 it failed after the jump step
+  with `OSError: 'snowblind.SnowblindStep(ring_width=3.0)' returned error
+  code 2`. stpipe cannot read a hook argument with a decimal point, so it
+  ran the hook as a shell command. To run 1.4.0 anyway, give the jump step
+  your own post hook `"snowblind.SnowblindStep(ring_width=3)"`.
+
 ## [1.4.0] - 2026-11-10
 
 Three changes make up this release. Images get new resampling and outlier
@@ -467,7 +477,8 @@ First release.
 - Steps register as stpipe plugins and run with `strun` or as pipeline
   hooks.
 
-[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.4.0...HEAD
+[Unreleased]: https://github.com/mpi-astronomy/snowblind/compare/1.4.1...HEAD
+[1.4.1]: https://github.com/mpi-astronomy/snowblind/compare/1.4.0...1.4.1
 [1.4.0]: https://github.com/mpi-astronomy/snowblind/compare/1.3.1...1.4.0
 [1.3.1]: https://github.com/mpi-astronomy/snowblind/compare/1.3.0...1.3.1
 [1.3.0]: https://github.com/mpi-astronomy/snowblind/compare/1.2.0...1.3.0
