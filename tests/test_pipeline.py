@@ -2,14 +2,16 @@ import logging
 
 import pytest
 from configobj import ConfigObj
+from jwst.group_scale import GroupScaleStep
 from jwst.pipeline import Detector1Pipeline as JwstDetector1Pipeline
 from jwst.ramp_fitting import RampFitStep
+from stdatamodels.jwst import datamodels
 from stpipe.exceptions import ValidationError
 
 from snowblind import Detector1Pipeline, ResetRampFitStep, StreamCleanStep
 from snowblind.superbias import SuperBiasStep
 
-SNOWBLIND_HOOK = "snowblind.SnowblindStep(ring_width=3.0)"
+SNOWBLIND_HOOK = "snowblind.SnowblindStep(ring_width=3)"
 
 
 def crds_jump_threshold_of_4(cls, dataset, disable=None, crds_observatory=None):
@@ -59,10 +61,22 @@ def test_pipeline_with_saturation_growth_adds_no_saturation_hook():
 
 
 def test_pipeline_with_saturation_growth_narrows_the_snowblind_ring():
-    """Detector1Pipeline(steps=...) with n_pix_grow_sat at 1 hooks SnowblindStep(ring_width=2.0) after the jump step."""
+    """Detector1Pipeline(steps=...) with n_pix_grow_sat at 1 hooks SnowblindStep(ring_width=2) after the jump step."""
     pipeline = Detector1Pipeline(steps={"saturation": {"n_pix_grow_sat": 1}})
 
-    assert pipeline.jump.post_hooks[0] == "snowblind.SnowblindStep(ring_width=2.0)"
+    assert pipeline.jump.post_hooks[0] == "snowblind.SnowblindStep(ring_width=2)"
+
+
+def test_snowblind_hook_runs_as_a_snowblind_step():
+    """GroupScaleStep.call on a RampModel with Detector1Pipeline's first jump post hook as its post hook marks snowblind COMPLETE.
+
+    A decimal point in the hook (ring_width=3.0) made stpipe run it as a shell command.
+    """
+    hook = Detector1Pipeline().jump.post_hooks[0]
+
+    result = GroupScaleStep.call(datamodels.RampModel((1, 6, 40, 40)), post_hooks=[hook])
+
+    assert result.meta.cal_step.snowblind == "COMPLETE"
 
 
 def test_config_from_reference_puts_the_saturation_default_over_crds(monkeypatch):
@@ -172,7 +186,7 @@ def test_pipeline_switches_off_the_jump_steps_large_event_expansion():
 
 
 def test_pipeline_hooks_snowblind_ahead_of_the_stream_clean():
-    """Detector1Pipeline() has SnowblindStep(ring_width=3.0) and StreamCleanStep as its jump post hooks."""
+    """Detector1Pipeline() has SnowblindStep(ring_width=3) and StreamCleanStep as its jump post hooks."""
     pipeline = Detector1Pipeline()
 
     assert pipeline.jump.post_hooks == [SNOWBLIND_HOOK, StreamCleanStep]

@@ -260,9 +260,9 @@ def _snowblind_hook(n_pix_grow_sat):
     Returns
     -------
     str
-        The hook, e.g. ``"snowblind.SnowblindStep(ring_width=3.0)"``.
+        The hook, e.g. ``"snowblind.SnowblindStep(ring_width=3)"``.
     """
-    return f"snowblind.SnowblindStep(ring_width={max(RING_REACH - n_pix_grow_sat, 0):.1f})"
+    return f"snowblind.SnowblindStep(ring_width={max(RING_REACH - n_pix_grow_sat, 0)})"
 
 
 def _post_hooks_of(section):
