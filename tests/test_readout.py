@@ -203,3 +203,82 @@ def test_channel_blocks_cover_the_frame_once():
         cover[rows, cols] += 1
 
     np.testing.assert_array_equal(cover, 1)
+
+
+def test_irs2_layout_full_frame_row():
+    """RowLayout.irs2(512) spans 712 clocks and reads its last pixel at clock 703, as the jwst refpix step lays IRS2 out."""
+    layout = readout.RowLayout.irs2(512)
+
+    assert layout.row_clocks == 712
+    assert layout.offsets[-1] == 703
+
+
+def test_irs2_layout_offsets_skip_reference_reads():
+    """RowLayout.irs2(32) reads 8 pixels, skips 6 clocks, reads 16, skips 6 and reads the last 8."""
+    layout = readout.RowLayout.irs2(32)
+
+    expected = np.concatenate([np.arange(0, 8), np.arange(14, 30), np.arange(36, 44)])
+    np.testing.assert_array_equal(layout.offsets, expected)
+
+
+def test_irs2_layout_stream_roundtrip_reversed():
+    """from_stream(to_stream(image, -1), -1) on the IRS2 layout gives the image back."""
+    layout = readout.RowLayout.irs2(32)
+    image = detector_pattern(3, 32)
+
+    back = layout.from_stream(layout.to_stream(image, -1), 3, -1)
+
+    np.testing.assert_array_equal(back, image)
+
+
+def test_irs2_layout_to_stream_fills_reference_clocks():
+    """to_stream on the IRS2 layout puts the fill value at the reference-read and pad clocks."""
+    layout = readout.RowLayout.irs2(32)
+    image = np.ones((2, 32), dtype=np.float32)
+
+    stream = layout.to_stream(image, 1, fill=-1.0)
+
+    assert stream.size == 2 * 52
+    assert np.sum(stream == 1.0) == 2 * 32
+    assert np.all(stream.reshape(2, 52)[:, 8:14] == -1.0)
+
+
+def test_traditional_layout_matches_module_functions():
+    """RowLayout.traditional(8).clock_index(3, -1) equals readout.clock_index(3, 8, -1)."""
+    layout = readout.RowLayout.traditional(8)
+
+    np.testing.assert_array_equal(layout.clock_index(3, -1), readout.clock_index(3, 8, -1))
+
+
+class _Exposure:
+    def __init__(self, readpatt, nrs_normal=None, nrs_reference=None):
+        self.readpatt = readpatt
+        self.nrs_normal = nrs_normal
+        self.nrs_reference = nrs_reference
+
+
+class _Model:
+    def __init__(self, readpatt, nrs_normal=None, nrs_reference=None):
+        self.meta = type("Meta", (), {})()
+        self.meta.exposure = _Exposure(readpatt, nrs_normal, nrs_reference)
+
+
+def test_row_layout_irs2_from_read_pattern():
+    """row_layout picks the IRS2 layout for NRSIRS2RAPID with the NRS_NORM and NRS_REF keywords."""
+    layout = readout.row_layout(_Model("NRSIRS2RAPID", 16, 4), 512)
+
+    assert layout == readout.RowLayout.irs2(512)
+
+
+def test_row_layout_traditional_for_nrsrapid():
+    """row_layout gives the traditional layout for NRSRAPID."""
+    layout = readout.row_layout(_Model("NRSRAPID"), 512)
+
+    assert layout == readout.RowLayout.traditional(512)
+
+
+def test_row_layout_traditional_without_read_pattern():
+    """row_layout gives the traditional layout when readpatt is None."""
+    layout = readout.row_layout(_Model(None), 16)
+
+    assert layout == readout.RowLayout.traditional(16)

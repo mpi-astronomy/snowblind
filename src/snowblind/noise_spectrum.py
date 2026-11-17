@@ -91,7 +91,7 @@ def spectrum_from_autocorrelation(acf):
     return freq, spectrum
 
 
-def channel_spectra(image_det, mask_det, first_direction=1, max_lag=65536):
+def channel_spectra(image_det, mask_det, first_direction=1, max_lag=65536, layout=None):
     """Spectrum of every output channel of one detector-frame image.
 
     Non-finite pixels are treated as masked.  The autocorrelation length is
@@ -107,6 +107,8 @@ def channel_spectra(image_det, mask_det, first_direction=1, max_lag=65536):
         Readout direction of channel 0, +1 or -1; adjacent channels alternate.
     max_lag : int
         Requested autocorrelation length in clocks, before the cap.
+    layout : `~snowblind.readout.RowLayout` or None
+        Clock layout of a channel row; the traditional one when None.
 
     Returns
     -------
@@ -117,8 +119,8 @@ def channel_spectra(image_det, mask_det, first_direction=1, max_lag=65536):
         One spectrum per channel, or None for a channel without usable pixels.
     """
     nrows, ncols = image_det.shape
-    width = readout.channel_width(ncols)
-    lag = min(max_lag, readout.stream_length(nrows, width) // 4)
+    layout = layout or readout.RowLayout.traditional(readout.channel_width(ncols))
+    lag = min(max_lag, layout.stream_length(nrows) // 4)
     freq = np.fft.rfftfreq(2 * lag, d=1.0)
     spectra = []
     for channel, columns in enumerate(readout.channel_slices(ncols)):
@@ -128,8 +130,8 @@ def channel_spectra(image_det, mask_det, first_direction=1, max_lag=65536):
         if not good.any():
             spectra.append(None)
             continue
-        stream = readout.to_stream(np.where(good, block, 0.0), direction)
-        valid = readout.to_stream(good, direction, fill=False)
+        stream = layout.to_stream(np.where(good, block, 0.0), direction)
+        valid = layout.to_stream(good, direction, fill=False)
         acf, _pairs = masked_autocorrelation(stream, valid, lag)
         freq, spectrum = spectrum_from_autocorrelation(acf)
         spectra.append(spectrum)

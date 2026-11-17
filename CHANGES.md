@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Added
+
+- `StreamCleanStep` cleans full-frame NIRSpec exposures. The IRS2 read
+  patterns are laid out on their own clock grid, read from the header, and
+  on MOS, IFU, fixed-slit and bright-object exposures the slits or slices,
+  the failed-open shutters and the fixed-slit area are masked from the WCS
+  in addition to the scene mask, as the jwst `clean_flicker_noise` step
+  does. A MOS exposure needs its MSA metafile next to the input. Data that
+  still hold the interleaved IRS2 reference pixels (3200 pixels wide) are
+  refused; run the reference-pixel step first. On the spectroscopic
+  exposures the column offsets are off by default, as a column's offset
+  there would be a constant along each spectrum measured from the few
+  pixels outside the slits; `column_offsets=True` turns them on.
+  `snowblind_detector1` has no reset calibration for NIRSpec, so run it
+  with `--reset_fit=False`.
+- `StreamCleanStep` option `outlier_sigma` (default 10): a background pixel
+  further than that many robust sigma from the background of a group
+  difference, with its four neighbors, is left out of that difference's
+  fit. This stops unflagged cosmic rays and pixels recovering from
+  saturation from spreading along their readout row; `None` switches it
+  off.
+
+### Changed
+
+- The scene mask of `StreamCleanStep` also leaves out single pixels far
+  above or below the sky, hot pixels and pixels with strongly negative
+  slopes, which the mask's erosion dropped before. On the NIRSpec darks
+  such pixels made dark streaks along their readout rows in the cleaned
+  rate.
+
 ### Fixed
 
 ## [1.4.1] - 2026-11-11

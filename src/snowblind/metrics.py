@@ -43,7 +43,7 @@ def robust_sigma(values):
     return float(mad_std(values))
 
 
-def channel_psd(diff_cube, mask, fastaxis, slowaxis, max_lag=2**14, first_direction=1):
+def channel_psd(diff_cube, mask, fastaxis, slowaxis, max_lag=2**14, first_direction=1, layout=None):
     """Readout-ordered noise spectrum per output channel, median over group differences.
 
     Parameters
@@ -62,6 +62,8 @@ def channel_psd(diff_cube, mask, fastaxis, slowaxis, max_lag=2**14, first_direct
         Autocorrelation length in clocks.
     first_direction : int
         Readout direction of channel 0.
+    layout : `~snowblind.readout.RowLayout` or None
+        Clock layout of a channel row; the traditional one when None.
 
     Returns
     -------
@@ -77,7 +79,7 @@ def channel_psd(diff_cube, mask, fastaxis, slowaxis, max_lag=2**14, first_direct
     per_channel = [[] for _ in range(readout.NOUTPUTS)]
     freq = None
     for diff, m in zip(diffs, masks):
-        freq, spectra = channel_spectra(diff, m, first_direction, max_lag)
+        freq, spectra = channel_spectra(diff, m, first_direction, max_lag, layout=layout)
         for k, spectrum in enumerate(spectra):
             if spectrum is not None:
                 per_channel[k].append(spectrum)

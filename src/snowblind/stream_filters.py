@@ -46,7 +46,7 @@ def row_median_noise(channel_image, channel_mask, direction=1):
     return np.repeat(stripes[:, np.newaxis], channel_image.shape[1], axis=1).astype(np.float32)
 
 
-def normalized_stream_filter(channel_image, channel_mask, direction, response, min_density):
+def normalized_stream_filter(channel_image, channel_mask, direction, response, min_density, layout=None):
     """Filter the masked readout stream of a channel with a given frequency response.
 
     The estimate on the full clock grid is the normalized masked convolution
@@ -71,6 +71,8 @@ def normalized_stream_filter(channel_image, channel_mask, direction, response, m
     min_density : float
         Density below which the blend toward the row median starts.  Zero
         or negative returns the ratio without any blending.
+    layout : `~snowblind.readout.RowLayout` or None
+        Clock layout of a channel row; the traditional one when None.
 
     Returns
     -------
@@ -78,25 +80,26 @@ def normalized_stream_filter(channel_image, channel_mask, direction, response, m
         Noise estimate for every pixel of the channel.
     """
     nrows, width = channel_image.shape
+    layout = layout or readout.RowLayout.traditional(width)
     mask = channel_mask & np.isfinite(channel_image)
     data = np.where(mask, channel_image, 0.0).astype(np.float64)
-    stream = readout.to_stream(data, direction)
-    weights = readout.to_stream(mask.astype(np.float64), direction)
+    stream = layout.to_stream(data, direction)
+    weights = layout.to_stream(mask.astype(np.float64), direction)
     nfft = 1 << int(np.ceil(np.log2(2 * stream.size)))
     gain = response(nfft)
     numerator = np.fft.irfft(gain * np.fft.rfft(stream, nfft), nfft)[: stream.size]
     density = np.fft.irfft(gain * np.fft.rfft(weights, nfft), nfft)[: stream.size]
     with np.errstate(invalid="ignore", divide="ignore"):
         ratio = np.where(density > 0, numerator / density, 0.0)
-    estimate = readout.from_stream(ratio, nrows, width, direction)
+    estimate = layout.from_stream(ratio, nrows, direction)
     if min_density <= 0:
         return estimate.astype(np.float32)
-    blend = readout.from_stream(np.clip(density / min_density, 0.0, 1.0), nrows, width, direction)
+    blend = layout.from_stream(np.clip(density / min_density, 0.0, 1.0), nrows, direction)
     fallback = row_median_noise(channel_image, channel_mask)
     return (blend * estimate + (1.0 - blend) * fallback).astype(np.float32)
 
 
-def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain=None):
+def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain=None, layout=None):
     """Estimate the noise with a Wiener gain derived from the channel's own spectrum.
 
     Parameters
@@ -114,6 +117,8 @@ def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain
         `snowblind.stream_clean.channel_gain`.  The gain is a low-pass
         response with unit value at zero frequency, so the normalized
         convolution is well defined.
+    layout : `~snowblind.readout.RowLayout` or None
+        Clock layout of a channel row; the traditional one when None.
 
     Returns
     -------
@@ -144,7 +149,7 @@ def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain
         """
         return interpolate_gain(freq, values, nfft)
 
-    estimate = normalized_stream_filter(channel_image, channel_mask, direction, response, min_density)
+    estimate = normalized_stream_filter(channel_image, channel_mask, direction, response, min_density, layout=layout)
     return estimate.astype(np.float32)
 
 

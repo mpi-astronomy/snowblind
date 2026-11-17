@@ -233,6 +233,46 @@ def tiled_sky(rate, mask, box):
     return np.asarray(sky.background, dtype=np.float64)
 
 
+def outlier_pixel_mask(rate, background_mask, nsigma=10.0, box=32):
+    """Isolated pixels far from the tiled sky, which `chisel_mask` drops as too small to be a source.
+
+    The chisel's erosion and opening keep only detections a few pixels
+    across, so a single hot pixel with no bright neighbour stays in the
+    background, where its charge enters the stream filter and lowers a
+    few hundred clocks of its readout row; a pixel whose slope is strongly
+    negative (a bad reset, a recovery from saturation) does the same with
+    the opposite sign, and the chisel never looks for those.  On the
+    NIRSpec darks about a fifth of the pixels above 10 DN/s are such
+    singles, none of them DO_NOT_USE, and the IFU exposure has a pixel at
+    -72 DN/s in the background.  This pass marks every pixel more than
+    ``nsigma`` pixel sigma from the tiled sky in either direction, and its
+    four neighbours for the charge that spills into them.
+
+    Parameters
+    ----------
+    rate : ndarray, shape (nrows, ncols)
+        Draft rate image in DN/s, NaN where unusable.
+    background_mask : ndarray of bool, shape (nrows, ncols)
+        The scene mask so far, True for background pixels; the sky and the
+        pixel sigma are measured on these.
+    nsigma : float
+        Threshold above the sky in units of the robust pixel scatter.
+    box : int
+        Tile size of the `tiled_sky` model.
+
+    Returns
+    -------
+    ndarray of bool, shape (nrows, ncols)
+        True at the outlying pixels and their four neighbours.
+    """
+    finite = np.isfinite(rate)
+    usable = np.asarray(background_mask, dtype=bool) & finite
+    excess = rate - tiled_sky(rate, usable, box)
+    sigma = mad_std(excess[usable])
+    outlying = finite & (np.abs(excess) > nsigma * sigma)
+    return ndimage.binary_dilation(outlying, structure=ndimage.generate_binary_structure(2, 1))
+
+
 def remove_stripes(image, finite, axes=(1, 0), clip=3.0):
     """Subtract the per-row and then per-column clipped medians of the finite pixels.
 

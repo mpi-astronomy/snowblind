@@ -2,7 +2,7 @@ import numpy as np
 
 from astropy.stats import mad_std
 
-from snowblind.scene_mask import chisel_mask, remove_stripes, saturated_stars, spike_mask
+from snowblind.scene_mask import chisel_mask, outlier_pixel_mask, remove_stripes, saturated_stars, spike_mask
 
 
 def sigma_clip_mask(rate, n_sigma):
@@ -272,3 +272,38 @@ def test_chisel_mask_with_stream_stripes_only_masks_a_trace_along_most_of_a_colu
     background = chisel_mask(rate, stripe_axes=(1,))
 
     assert (~background[:360, 120:124]).mean() > 0.95
+
+
+def test_outlier_pixel_mask_marks_an_isolated_hot_pixel_and_its_four_neighbours():
+    """outlier_pixel_mask on unit noise with one pixel at 50 marks that pixel and its four neighbours, nothing else."""
+    rng = np.random.default_rng(3)
+    rate = rng.normal(0.0, 1.0, (128, 128))
+    rate[60, 70] = 50.0
+
+    hot = outlier_pixel_mask(rate, np.ones(rate.shape, dtype=bool))
+
+    expected = np.zeros(rate.shape, dtype=bool)
+    expected[60, 70] = expected[59, 70] = expected[61, 70] = expected[60, 69] = expected[60, 71] = True
+    np.testing.assert_array_equal(hot, expected)
+
+
+def test_outlier_pixel_mask_leaves_pure_noise_alone():
+    """outlier_pixel_mask on unit noise marks no pixel."""
+    rng = np.random.default_rng(4)
+    rate = rng.normal(0.0, 1.0, (128, 128))
+
+    hot = outlier_pixel_mask(rate, np.ones(rate.shape, dtype=bool))
+
+    assert not hot.any()
+
+
+def test_outlier_pixel_mask_marks_a_strongly_negative_pixel():
+    """outlier_pixel_mask on unit noise with one pixel at -50 marks that pixel."""
+    rng = np.random.default_rng(5)
+    rate = rng.normal(0.0, 1.0, (128, 128))
+    rate[30, 40] = -50.0
+
+    hot = outlier_pixel_mask(rate, np.ones(rate.shape, dtype=bool))
+
+    assert hot[30, 40]
+    assert hot.sum() == 5
