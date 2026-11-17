@@ -5373,3 +5373,543 @@ and sources cancel. "White": the shuffled row-average scatter.
   since 2026-10-26.
 - Scripts: results/2026-11-09_median_clip_random_walk/ (each variant of a
   10-group full-frame ramp takes about 40 s and 4 GB).
+
+### 2026-11-14: NIRSpec, first steps
+
+James asked what it takes to run the stream clean on NIRSpec and compare it
+with no cleaning and with NSClean (`clean_flicker_noise`, fit method
+`fft`) without making artifacts in the spectra; darks first, then MSA and
+IFU data, masking the optical path as `clean_flicker_noise` does.
+
+Readout order (`scripts/check_readout_order.py`, program 1484 NRSRAPID
+darks, results/2026-11-14_nirspec_readout_order/): the boundary test gives
+an alternating sign over the channels with channel 0 read forward in the
+detector frame, as on NIRCam and NIRISS (`first_direction=1`). NRS2 is
+clear on all four channels (+0.0004, -0.0004, +0.0006, -0.0002, errors
+0.0001 to 0.0003); on NRS1 channels 1 to 3 alternate (-0.0004, +0.0002,
+-0.0004, errors 0.0001) and channel 0 is undecided (-0.0001 +- 0.0003 with
+70 groups), so its direction rests on the alternation. The signal is three
+to five times weaker than on NIRCam. The hot-pixel test shows nothing on
+NIRSpec (asymmetries 0.000 +- 0.005).
+
+Code (uncommitted, on main's working tree):
+- `readout.RowLayout`: the clock grid of a channel row, traditional (512
+  pixels + 12 idle clocks = 524) or IRS2. IRS2 interleaves 4 reference
+  reads, with 2 clocks of settling, after every 16 pixels starting half a
+  block in, and ends the row with 8 idle clocks: 712 clocks per row, the
+  last pixel at clock 703, taken from `hnorm1` and `row` in
+  `jwst.refpix.irs2_subtract_reference` (the frame times agree: 10.73677 s
+  / 2048 rows = 524.3 clocks of 10 us, 14.58889 s / 2048 = 712.3).
+  `readout.row_layout(model, width)` picks the layout from READPATT and
+  the NRS_NORM / NRS_REF keywords; the module functions keep the
+  traditional grid. The layout is threaded through the stream filters, the
+  channel spectra, `clean_ramp` and the step (which also uses it for the
+  WFSS row-period notch).
+- `StreamCleanStep` accepts NIRSpec (FULL only; IRS2 data wider than 2048
+  is refused with a message to run refpix first). On NRS_MSASPEC, NRS_IFU,
+  NRS_FIXEDSLIT and NRS_BRIGHTOBJ the draft rate gets a WCS and the
+  failed-open shutters flagged, and jwst's `create_mask` (slit bounding
+  boxes, IFU slices, MSA_FAILED_OPEN, the fixed-slit rows 922 to 1116) is
+  ANDed into the scene mask; a missing MSA metafile logs a warning and
+  leaves the chisel mask alone. `trace_geometry` is unchanged for NIRSpec
+  (column and even-odd offsets on) until measured.
+- Scripts: `make_nirspec_dark_panels.py` (none, jwst median per channel,
+  jwst fft = NSClean on a copy labelled NRS_FIXEDSLIT since the step
+  refuses fft on a dark, stream_clean; OLS_C; row- and column-mean scatter
+  with white floors; on NIRSpec the fast axis runs along science columns,
+  so the banding is in the column means) and `make_nirspec_field_panels.py`
+  (the same chains with science regions masked, plus the change the
+  cleaning made inside the slit or slice footprints and its slope against
+  the uncleaned rate, the fraction of the spectra's signal removed).
+
+Data: program 1484 NRSRAPID 1x88 darks (NRS1, NRS2) and the IRS2 1335 IFU
+(G140H/F100LP, 1x16) and 1345 CEERS MOS (G395M/F290LP, 1x14) exposures in
+~/data/jwst_workshop_1f; the MOS metafile jw01345061001_01_msa.fits is not
+on disk. IRS2 darks (program 1121) are on the astronode only.
+
+NRS1 dark, NRSRAPID, 20 groups, OLS_C (`make_nirspec_dark_panels.py`,
+results/2026-11-14_nirspec_dark/NRS1/). Scatter in DN/s of the pixels and
+of the science-frame row and column means over the usable pixels (dq 0,
+within 5 sigma of the median of the uncleaned rate, border excluded); the
+floor is the pixel scatter over the square root of the pixels per mean.
+On NIRSpec the fast axis runs along science columns, so the 1/f banding is
+in the column means.
+
+| chain | pixel | row means | floor | column means | floor |
+|---|---:|---:|---:|---:|---:|
+| none (jwst default, median refpix) | 0.0389 | 0.0042 | 0.0009 | 0.0158 | 0.0009 |
+| jwst clean_flicker_noise median per channel, no background | 0.0357 | 0.0035 | 0.0008 | 0.0061 | 0.0008 |
+| jwst clean_flicker_noise fft (NSClean), no background | 0.0355 | 0.0027 | 0.0008 | 0.0093 | 0.0008 |
+| snowblind stream_clean, defaults | 0.0332 | 0.0009 | 0.0008 | 0.0012 | 0.0008 |
+
+Central 512 by 512 pixels: column-mean scatter 0.0156 (none), 0.0094
+(jwst median), 0.0106 (NSClean), 0.0020 (stream clean), floors 0.0015 to
+0.0017. The stream clean's row means sit at the white floor over the full
+frame and its column means within a factor 1.6 of it; NSClean leaves
+60 percent of the banding on this traditional-readout dark and the jwst
+median 40 percent. The step's measured spectra have alpha 0.98 to 1.05,
+corner periods 27 to 34 clocks, white levels 89 to 106 DN^2, and a peak at
+524 to 531 clocks in every channel, the row period of the traditional
+layout, so the clock grid is right for NRSRAPID.
+
+Levels: the uncleaned NRS1 rate has a median of -0.0245 DN/s (the dark
+reference oversubtracts a little); the stream clean leaves it at -0.0245
+(recorded change by the cleaning 5e-9 DN/s), the two jwst chains with no
+background model move it to +0.0046. Figures:
+results/2026-11-14_nirspec_dark/NRS1/rate_images_center.png and
+rate_images_full.jpg (`scripts/make_nirspec_figures.py`). In the uncleaned
+and jwst panels the four amplifiers show as horizontal bands at different
+levels over the full frame; the stream clean's per-channel column offsets
+take them out.
+
+NRS2 dark, the same run (results/2026-11-14_nirspec_dark/NRS2/), full
+frame:
+
+| chain | pixel | row means | floor | column means | floor |
+|---|---:|---:|---:|---:|---:|
+| none | 0.0406 | 0.0118 | 0.0009 | 0.0146 | 0.0009 |
+| jwst median per channel, no background | 0.0366 | 0.0045 | 0.0008 | 0.0056 | 0.0008 |
+| jwst fft (NSClean), no background | 0.0361 | 0.0031 | 0.0008 | 0.0073 | 0.0008 |
+| stream_clean, defaults | 0.0344 | 0.0011 | 0.0008 | 0.0013 | 0.0008 |
+
+Central 512: column means 0.0138 / 0.0089 / 0.0102 / 0.0020, floor 0.0016
+to 0.0018. The uncleaned row-mean scatter is three times NRS1's (0.0118
+against 0.0042): the amplifier levels differ more on NRS2. Both detectors
+remove about 8.3 to 8.8 DN rms of 1/f per group difference; the level is
+kept (change 2e-9 DN/s).
+
+Noise versus groups, NRS1 dark, full frame, column-mean scatter in DN/s
+with the white floor (results/2026-11-14_nirspec_dark_ngroups10 and
+_ngroups40, and the 20-group run above):
+
+| groups | floor | none | jwst median | NSClean | stream_clean |
+|---:|---:|---:|---:|---:|---:|
+| 10 | 0.0023 | 0.0379 (17x) | 0.0104 (5.0x) | 0.0249 (12x) | 0.0029 (1.5x) |
+| 20 | 0.0009 | 0.0158 (18x) | 0.0061 (7.4x) | 0.0093 (12x) | 0.0012 (1.6x) |
+| 40 | 0.0004 | 0.0056 (15x) | 0.0037 (10x) | 0.0031 (9x) | 0.0006 (2.0x) |
+
+The jwst median's ratio to the floor doubles from 10 to 40 groups, the
+random walk of its per-difference mask clip seen on NIRCam; NSClean leaves
+a near-constant fraction of the banding, which a single Fourier series
+across the four amplifiers of a row cannot follow; the stream clean's
+residual falls about as 1/ngroups and stays within a factor 2 of the
+floor.
+
+Artifact found on NRS2 (and present on NRS1): short dark streaks along
+science columns in the cleaned rate, each centred on a hot pixel of 16 to
+28 DN/s and about 0.13 DN/s deep over a few hundred rows, the stream
+filter's footprint. The chisel mask misses 121 of the 560 pixels above
+10 DN/s on NRS2 (22 percent): isolated single pixels that its erosion and
+opening drop (brighter or clustered ones are caught); none of the 560 is
+DO_NOT_USE or HOT in the DQ. The local change of the cleaned rate around
+the unmasked ones is -0.06 DN/s (median; -0.13 to -0.16 at the worst),
+around the masked ones -0.002. Proposed fix: a one-time pass on the
+draft rate that masks pixels more than 10 pixel-sigma above the tiled sky,
+with their four neighbours, alongside the chisel; being fixed over the
+ramp it adds no random walk.
+
+Hot-pixel pass verified (results/2026-11-14_nirspec_dark_hotfix/NRS2/,
+same 20-group NRS2 jump ramp, saved there with the mask and the removed
+noise): `scene_mask.hot_pixel_mask` masks all 560 pixels above 10 DN/s
+(the chisel alone 439), the mask grows from 8.0 to 8.2 percent. Column-mean
+scatter 0.00129 to 0.00110 DN/s, row means 0.00111 to 0.00097, pixel
+scatter 0.0344 to 0.0341, level unchanged. Pixels in 64-row windows where
+the cleaning changed the rate by more than -0.1 DN/s: 2134 before, 87
+after; at the five worst sites the change goes from -0.13 to -0.16 DN/s to
++0.003 to -0.047 (the two that keep -0.047 sit within 110 rows of the
+frame edge, next to a pair of hot pixels; not chased).
+
+IFU, program 1335 obs 4 NRS1, G140H/F100LP, NRSIRS2 1x16
+(`make_nirspec_field_panels.py`, results/2026-11-14_nirspec_field/NRS1/).
+The slice footprints, failed-open shutters and the fixed-slit area cover
+57.3 percent of the detector; with the chisel and the usable-pixel cuts
+30.5 percent is background. The step's spectra confirm the IRS2 grid:
+peaks at 712, 716 and 724 clocks in channels 3, 2 and 1 (4.1, 2.0 and 1.5
+times the band median; channel 0 peaks at 771) and nothing at 524. After
+the IRS2 correction the 1/f is small: amplitudes 0.14 to 0.49 against
+3.2 to 3.6 on the traditional darks, white 20 to 62 DN^2, corner periods
+106 to 609 clocks; the Wiener gain is 0.6 to 0.8 at 1000 clocks and above
+0.95 at 5000 (channel 1 0.87).
+
+Background pixels, DN/s, with white floors 0.00018 to 0.00019:
+
+| chain | pixel | column means | row means |
+|---|---:|---:|---:|
+| none | 0.00459 | 0.00064 | 0.00058 |
+| jwst median per channel, science regions masked, median background | 0.00464 | 0.00054 | 0.00047 |
+| jwst fft (NSClean), science regions masked | 0.00457 | 0.00038 | 0.00044 |
+| stream_clean, defaults | 0.00451 | 0.00016 | 0.00026 |
+
+Change inside the slice footprints (cleaned minus uncleaned, 1.7 million
+pixels), median per bin of the uncleaned signal, DN/s (percent of the
+bin's median signal):
+
+| signal bin (DN/s) | pixels | jwst median | NSClean | stream_clean |
+|---|---:|---:|---:|---:|
+| below 0.0040 (half the pixels) | 857899 | -0.00003 | -0.00017 | +0.00007 |
+| 0.0040 to 0.0091 | 514740 | -0.00014 (-2.3%) | -0.00029 (-4.6%) | -0.00003 (-0.5%) |
+| 0.0091 to 0.0124 | 171580 | -0.00021 (-2.0%) | -0.00034 (-3.2%) | -0.00009 (-0.9%) |
+| 0.0124 to 0.0160 | 85790 | -0.00025 (-1.8%) | -0.00036 (-2.6%) | -0.00015 (-1.1%) |
+| 0.0160 to 0.0240 | 51474 | -0.00024 (-1.3%) | -0.00032 (-1.7%) | -0.00019 (-1.0%) |
+| 0.0240 to 0.0573 | 17158 | -0.00018 (-0.6%) | -0.00020 (-0.7%) | -0.00017 (-0.6%) |
+| 0.0573 to 0.1102 | 15442 | -0.00011 (-0.2%) | +0.00001 | -0.00028 (-0.4%) |
+| above 0.1102 (brightest 0.1%) | 1715 | -0.00025 (-0.2%) | -0.00032 (-0.2%) | +0.00015 (+0.1%) |
+
+Overall means inside the footprints: -0.00011 (jwst median), -0.00023
+(NSClean), +0.00005 (stream clean); slopes of the change against the
+signal -0.0043, -0.0024, -0.0055. All three take a few 1e-4 DN/s out of
+the slice pixels, 2 to 6 percent of the pixel noise, more where the pixel
+is brighter; the stream clean's absolute change is the smallest at low
+signal and the largest (-0.00028) in the 0.06 to 0.11 DN/s bin. Whether
+that is slice wings in the gaps biasing the estimate, the row-periodic
+structure the WFSS notch is for, or the offsets is what
+`exp_nirspec_variants.py` measures next.
+
+Variants on the IFU exposure (`exp_nirspec_variants.py`,
+results/2026-11-14_nirspec_variants/NRS1_ifu/, code before the outlier
+guard below): the row-period notch changes the in-footprint slope from
+-0.0055 to -0.0050 and the column means from 0.00016 to 0.00019; growing
+the mask by 4 or 8 pixels leaves the slope at -0.0056 and -0.0077 while
+the background shrinks to 18.7 and 8.8 percent and the floor rises;
+column and even-odd offsets off lowers every bin by 2 to 4e-4 DN/s
+(mean -0.00022 against +0.00005). So slice wings in the gaps and the
+row-periodic structure are not what the slope measures, and the offsets
+stay on. Apertures of 32 columns across the slices (12000 pixels each,
+no selection on single pixels) give the same picture for every chain,
+jwst's included (slopes of the summed change against the summed signal
+-0.21 jwst median, -0.29 NSClean, -0.21 stream clean, -0.12 dilate4,
+-0.35 no offsets): apertures with a higher mean level lose more. That is
+selection on the noise: whatever carries part of the 1/f noise, a pixel
+or an aperture, is brighter when that noise is positive, and the cleaning
+removes it. The slope against the uncleaned signal is not a flux-bias
+measurement. `exp_nirspec_half_split.py` does it without the selection:
+pixels binned by the first half of the ramp, the change measured in the
+second half, whose 1/f noise is independent.
+
+Second artifact on the IFU: a few vertical streaks of +0.04 to +0.24
+DN/s over a channel row, e.g. science column 1172 rows 523 to 916. The
+jump ramp shows why: pixel (883, 1172), rate -72 DN/s, has three
+unflagged differences of about -5000 DN after a saturating event (the
+jump step flags its first jumps and not these), and pixels like (834,
+386) and (825, 1840) go -100 to -600 DN in every difference, flagged only
+UNRELIABLE_SLOPE and OTHER_BAD_PIXEL; all sat in the background mask (the
+hot-pixel pass was one-sided). The background mask holds 942 pixels below
+-10 sigma of the rate and 195 above, and 25 percent of its pixels carry a
+JUMP_DET flag somewhere in the ramp, so flagged pixels cannot simply be
+excluded. Done: `outlier_pixel_mask` is two-sided, and
+`prepare_difference` gets an `outlier_sigma` guard (step option, default
+10): background pixels further than that many robust sigma from the
+background of a difference, with their four neighbours, leave that
+difference's fit. At 10 sigma noise never trips it, so the mask changes
+between differences only at such pixels and the random walk of a 2 to 3
+sigma clip does not return. The step logs the pixels dropped per
+difference. Verification on the IFU: results/.../NRS1_ifu_v2/.
+
+Verified (results/2026-11-14_nirspec_variants/NRS1_ifu_v2/, same jump
+ramp): with the two-sided pass and the guard the streaks are gone (pixels
+in 64-row windows where the cleaning changed the background by more than
+0.01 DN/s: 736 before, 0 after; column 1172 rows 523 to 916 from +0.129
+to +0.002 DN/s), the background column means stay at 0.00016 (floor
+0.00018), the row means at 0.00026, the background fraction 30.4 percent.
+The variants keep their order (notch 0.00020, dilate4 0.00023 with 18.4
+percent background, no offsets row means 0.00042 and mean change in the
+footprints -0.00021 against +0.00007).
+
+Split-ramp flux test (`exp_nirspec_half_split.py`,
+results/2026-11-14_nirspec_variants/NRS1_ifu_cleaned/half_split.txt):
+the IFU ramp's two halves of 8 groups are fitted with OLS_C separately,
+the footprint pixels are binned by the first half's uncleaned rate, and
+the change the cleaning made is measured in the second half, whose 1/f
+noise is independent. Median change in the second half, 1e-4 DN/s, with
+the bin's second-half median rate:
+
+| first-half bin (DN/s) | pixels | 2nd half | stream_clean | jwst median | NSClean |
+|---|---:|---:|---:|---:|---:|
+| below 0.0070 | 857899 | 0.0020 | +1.15 +- 0.03 | -1.19 | -1.70 |
+| 0.0070 to 0.0160 | 514740 | 0.0022 | +1.63 +- 0.04 | -0.89 | -1.48 |
+| 0.0160 to 0.0213 | 171580 | 0.0027 | +1.75 +- 0.07 | -0.91 | -1.25 |
+| 0.0213 to 0.0266 | 85790 | 0.0032 | +2.06 +- 0.10 | -0.93 | -1.16 |
+| 0.0266 to 0.0363 | 51474 | 0.0049 | +1.38 +- 0.13 | -1.24 | -1.01 |
+| 0.0363 to 0.0597 | 17158 | 0.0155 | +1.56 +- 0.22 | -2.03 | -0.47 |
+| 0.0597 to 0.1161 | 15442 | 0.0694 | +2.03 +- 0.21 | -2.46 | +1.38 |
+| above 0.1161 | 1715 | 0.1375 | +6.53 +- 0.64 | -1.40 | -1.85 |
+
+Slopes of the change against the first-half rate (1st to 99.9th
+percentile): stream clean +0.0018 +- 0.0002, jwst median -0.0003 +-
+0.0001, NSClean +0.0020 +- 0.0001; selecting on the second half itself,
+the biased way, the same data give -0.017, -0.013 and -0.007. So none of
+the cleaners takes flux out of the slices. Two things remain: each moves
+the level inside the footprints by about 1e-4 DN/s (0.01 to 0.02 DN per
+group difference, 3 to 5 percent of the faint in-slice level on this
+exposure, which a nod or master background subtraction made from the
+same cleaned data cancels): the stream clean up by 1.4e-4, the jwst
+median and NSClean down by 1.0e-4 and 1.7e-4. And the stream clean and
+NSClean add about 0.2 percent of the signal to the brightest pixels (the
+stream clean +6.5e-4 on 0.14 DN/s, +0.5 percent, in the top 0.1 percent
+of pixels), the jwst median not: both are frequency-domain filters whose
+response rings, and wing light in the gaps next to a bright trace gives a
+negative sidelobe inside it. Being measured with the dilated-mask and
+notch variants.
+
+The same test on the variants (half_split_variants.txt): slope +0.0018
+(defaults), +0.0012 (mask grown by 4 pixels), +0.0002 +- 0.0002 (by 8),
++0.0014 (row-period notch); the brightest bin's change +6.5, +4.8, +2.0
+and +6.5e-4 DN/s. So the gain of the brightest pixels is wing light in
+the gaps next to a bright trace, which the filter's sidelobes turn into a
+negative estimate inside it; growing the mask removes it, at the price
+of the background (18 and 8 percent of the detector left), a higher
+white floor (0.00023 and 0.00034 against 0.00016) and a larger level
+offset inside the footprints (+2.4 and +5.3e-4 against +1.4e-4). The
+defaults stay; ``mask_dilation`` is the knob for anyone who needs the
+brightest spectra to better than half a percent. The level offset inside
+the footprints grows with the mask and is not understood beyond that;
+it is below 0.02 DN per group difference.
+
+Where this leaves NIRSpec (2026-11-14): the stream clean is at the white
+floor on both traditional darks and on an IRS2 IFU exposure, below
+NSClean and the jwst median; it takes no flux out of the slices; it
+leaves the level inside them 1e-4 DN/s high and the brightest pixels
+0.2 to 0.5 percent bright. Not yet done: a MOS exposure (metafile needed),
+an IRS2 dark (on the astronode), the second IFU detector, extracted
+spectra through spec2, a reset calibration for NRS1 and NRS2.
+
+#### 2026-11-14, later: the column offsets along the dispersion direction
+
+James sees a per-row subtraction along the dispersion direction in the
+cleaned IFU rate (jw01335004001_03101_00002_nrs1). On NIRSpec a detector
+column is a science row, so the per-column offsets become a constant
+along each spectrum, measured from that row's background pixels only.
+Measured on the saved NRS1_ifu_v2 rates (uncleaned, defaults, offsets
+off; figures removed_by_stream_clean.png, removed_per_row_in_slices.png):
+
+- The pattern the offsets go after is real on NIRSpec: in the uncleaned
+  background the left and right halves of a science row agree at
+  correlation 0.77 in their row-to-row (high-pass) means, a shared
+  pattern of 5e-4 DN/s rms per row against a white floor of 1.7e-4; the
+  smooth part correlates at 0.43 (2.5e-4). The even-odd part is -0.8,
+  -3.0, +1.6 and -1.1e-4 DN/s on the four amplifiers.
+- Inside the slices the offsets are not determined: of the 1199 rows
+  that are mostly footprint, 203 have fewer than 16 background pixels
+  (offset zero), 138 have 16 to 64, 439 have 64 to 256. The per-row
+  amount removed inside the footprints scatters by 11.5, 7.7, 4.8 and
+  4.2e-4 DN/s for rows with 16-64, 64-256, 256-1024 and over 1024
+  background pixels (the white noise of such a mean: 6.4, 3.8, 1.9 and
+  1.2e-4), against 1.4 to 2.9e-4 from the stream filter alone. That is
+  a 10 to 25 percent modulation of the 0.004 DN/s sky, row by row,
+  along the whole spectrum.
+- The offsets are also biased toward the slice centers: the amount they
+  remove is -1.1, -2.1, -3.3 and -5.1e-4 DN/s at 3-5, 5-8, 8-12 and
+  12-20 pixels inside the footprint edge (the stream filter alone: a
+  flat +1.9e-4 everywhere). The gap background next to a slice carries
+  wing light (+4e-4 at 1-2 pixels from the edge, -2e-4 beyond 8), the
+  scalar background is the mean over all of it, and the few far
+  background pixels of a slice-center row sit below that mean.
+- The difference image shows nothing else tied to the slices: the
+  stream filter's column means inside the footprints have the same rms
+  as outside (6.3 against 6.2e-4) and its per-row means are flat across
+  a slice.
+
+Proposal: on NIRSpec spectroscopic exposures default ``column_offsets``
+to off and keep ``even_odd_columns`` on (one number per channel from all
+its background rows, as well determined as anywhere). The real per-row
+pattern then stays in the slices, as it does after NSClean and the jwst
+median. A later version could keep the offsets where they are
+determined: an offset measured against a local background
+(``background_method='exposure_model'``) and shrunk by N/(N + N0) with
+N0 about (pixel sigma / pattern rms)^2 = 80 to 130 pixels; to be
+measured on this exposure and the NRS2 half when the machine is free.
+
+Done (2026-11-14): ``trace_geometry`` returns ``along_columns_masked``
+for the four NIRSpec spectroscopic exposure types and
+``_resolve_options`` gives them wiener, column offsets off, even-odd on.
+Difference images (uncleaned minus cleaned) of both IFU detectors of
+jw01335004001_03101_00002 are in results/2026-11-14_nirspec_workshop/.
+
+#### 2026-11-16: both IFU detectors, difference images
+
+results/2026-11-14_nirspec_workshop/{NRS1,NRS2}: uncleaned minus cleaned
+as FITS (DIFF, UNCLEANED, CLEANED, REGIONS, BACKGROUND) and figures, from
+scripts/make_nirspec_difference_images.py; NRS2 also has the notch, the
+old default with column offsets on, and the two jwst chains.
+
+- With the column offsets off the per-row mean removed inside the slices
+  is smooth to a few 1e-4 DN/s on both detectors; the difference is
+  vertical stripes (1/f along the stream) and shows no trace shapes.
+  Banding: NRS1 column-mean scatter 0.00016 (floor 0.00018), NRS2
+  0.00020 (0.00018); NSClean 0.00040, jwst median 0.00055 on NRS2.
+- NRS2 has per-amplifier pedestals: the uncleaned gaps sit at +8, -3,
+  +10 and +2e-4 DN/s in the four amplifiers, and every method removes
+  them (inside the slices, x1e-4 DN/s: stream clean +1.7/-7.6/+5.1/-4.6,
+  jwst median +3.2/-5.4/+6.6/-1.7, NSClean +2.5/-6.7/+8.4/-2.5). That is
+  a 20 percent level change per amplifier on a 0.002 to 0.0035 DN/s sky,
+  a property of the data, not of one method.
+- The even-odd row offset is a real detector pattern on both detectors,
+  the same inside the slices as in the gaps (NRS2 amplifier 2: +5.4e-4
+  in the gaps, +5.5e-4 in the uncleaned slices, +0.2e-4 after cleaning;
+  NRS1 amplifier 1: -2.7, -3.3, -0.6). The stream clean removes it from
+  the spectra; NSClean and the jwst median leave it.
+- The notch changes nothing on NRS2 (same levels, column-mean scatter
+  0.00023). Memory: 5.1 GB peak for detector1 to jump plus the clean.
+
+#### 2026-11-16: the MOS exposure, both detectors
+
+jw01345061001_07101_00003 (CEERS, G395M, NRSIRS2, 14 groups), metafile
+jw01345061001_01_msa.fits fetched from MAST next to the uncal files;
+results/2026-11-16_nirspec_mos/{NRS1,NRS2} with the same files as the
+IFU folders plus the jwst chains. The WCS footprints (slitlets and the
+fixed-slit area) cover 40.5 and 42.6 percent of the detector and the
+background mask 43.6 and 42.9 percent. Column-mean scatter of the
+background in DN/s (banding; white floor 0.00019 / 0.00020):
+
+| chain        | NRS1    | NRS2    |
+|--------------|---------|---------|
+| none         | 0.00069 | 0.00160 |
+| stream clean | 0.00016 | 0.00020 |
+| NSClean      | 0.00034 | 0.00051 |
+| jwst median  | 0.00044 | 0.00054 |
+
+The difference images show the 1/f stripes along the stream and no
+trace shapes. Three things to know about these data:
+
+- The uncleaned background is negative, -0.0017 (NRS1) and -0.0044
+  (NRS2) DN/s, so the dark reference oversubtracts here; the slits sit
+  at +0.0016 and -0.0021. The level inside the slits relative to the
+  background moves by +0.7e-4 (NRS1) and -4.3e-4 (NRS2) under the stream
+  clean, and by +0.1/+1.3e-4 and -3.9/-2.6e-4 under the jwst median and
+  NSClean: the per-amplifier pedestals again, shared by every method.
+- The even-odd row offset reaches +-8e-4 DN/s on amplifiers 0 and 3 of
+  NRS2 (+3.0, -4.6, -4.6, -0.3e-4 on NRS1); the stream clean removes it
+  from the slits, the jwst chains leave it.
+- The first 30 or so science rows (the first clocks of every readout
+  row) sit 1.4e-3 DN/s below the rest of the background on NRS1 and
+  1.0e-3 above it on NRS2 (0.6e-3 below on the IFU NRS1), a start-of-row
+  transient. Slitlets there are shifted by both cleaners: the stream
+  clean moves the slit at rows 12-30 of NRS1 from -33.5 to -9.7e-4 DN/s,
+  NSClean to +8.4e-4; it is the -25e-4 at the left end of the per-row
+  plot. Whether the transient is also in the slits cannot be told from
+  one slit with no flux. Not pursued further.
+
+Memory: 4.0 and 4.7 GB peak for detector1 to jump plus the clean.
+
+#### 2026-11-16: the IRS2 dark, both detectors
+
+jw01121136001_02101_00001 (program 1121, NRSIRS2RAPID, 20 groups, one
+integration, 2022-03-23), copied from the nexus mount
+(jwst_darks/1121/) to ~/data/jwst_workshop_1f/darks_1121/; the 245-group
+exposures of the same visits stay on the cluster (40 GB per process).
+Same chain and settings as the traditional darks of 2026-11-14
+(`make_nirspec_dark_panels.py`, refpix median, stream clean with
+background mean and column offsets on). CRDS picks the NRSIRS2RAPID
+darks jwst_nirspec_dark_0351 (NRS1) and 0350 (NRS2), 8.3 GB each, not
+the 6.8 GB NRSIRS2 darks 0412/0413 the IFU and MOS runs used; the
+server honors byte ranges, so a broken download is resumed with
+`curl -C -` and checked against the CRDS sha1sum.
+results/2026-11-16_nirspec_irs2_dark/{NRS1,NRS2}/.
+
+Full frame, DN/s (column means are the 1/f axis, row means the
+per-detector-column offsets; traditional darks of 2026-11-14 in the
+last two columns for comparison):
+
+| chain        | NRS1 col | NRS1 row | NRS2 col | NRS2 row | trad NRS1 col | trad NRS2 col |
+|--------------|---------:|---------:|---------:|---------:|--------------:|--------------:|
+| none         | 0.0040 | 0.0026 | 0.0067 | 0.0026 | 0.0158 | 0.0146 |
+| jwst median  | 0.0030 | 0.0020 | 0.0034 | 0.0024 | 0.0061 | 0.0056 |
+| NSClean      | 0.0020 | 0.0020 | 0.0030 | 0.0024 | 0.0093 | 0.0073 |
+| stream clean | 0.0005 | 0.0005 | 0.0007 | 0.0007 | 0.0012 | 0.0013 |
+| white floor  | 0.0005 | 0.0005 | 0.0006 | 0.0006 | 0.0008 | 0.0008 |
+
+Pixel sigma 0.0220 (NRS1) and 0.0249 (NRS2) against 0.039/0.041 on the
+traditional darks. Stream clean reaches the floor on both axes of both
+detectors; NSClean is 4 to 5 times above it, jwst median 6 times. The
+uncleaned NRS2 frame has broad vertical bands a few hundred columns
+wide; the jwst chains leave a fine column pattern and a residual of the
+bands, the stream-cleaned frame is flat at the +-0.06 DN/s stretch.
+Run time 2 and 4 min, peak 4.2 and 5.4 GB.
+
+The dark-subtracted level is -0.0041 DN/s on NRS1 (amplifiers -0.0056,
+-0.0044, -0.0031, -0.0032) against a reference rate of 0.0083, and
+-0.0083 on NRS2 (-0.0098, -0.0072, -0.0077, -0.0085) against 0.0049:
+the 20-group slope of these exposures is half the reference's on NRS1
+and below zero on NRS2. The same direction as the MOS frames
+(-0.0017/-0.0044) and milder than the traditional 1484 darks
+(-0.024/-0.032). The NIRSpec dark references
+are exact per-pixel linear ramps (rate times group time, intercept
+0.1 DN, zero residual over 200 groups), unlike NIRCam LW and NIRISS
+(averaged ramps with curved early groups) and NIRCam SW (98.5 percent
+of pixels zeroed); their median rates are 0.0083/0.0049 DN/s (IRS2) and
+0.0091/0.0061 (traditional), lower in e/s than NIRCam LW and NIRISS.
+Whether the oversubtraction is a first-group effect of a short ramp
+against a reference fitted over 200 groups, or an epoch effect, is not
+tested.
+
+#### 2026-11-17: why the dark-subtracted levels are negative
+
+`scripts/measure_nirspec_group_levels.py`: the median over the usable
+science pixels of group k minus group 0, after each Detector1 step up
+to the dark subtraction, next to the groups the dark step removed; the
+raw stage also gives the medians of the reference output and of the
+interleaved reference pixels (border reference pixels on the
+traditional readout). Run on the 20-group IRS2 darks (1121, both
+detectors, with and without `irs2_mean_subtraction`), on the 1484
+traditional darks over 44 groups, and read off the saved IFU and MOS
+jump ramps for their gap pixels. results/2026-11-17_nirspec_dark_level/.
+
+- The NIRSpec dark references are exact per-pixel linear ramps with a
+  0.06 to 0.12 DN first group, so after subtraction the ramp median
+  should stay at zero to the dark's own noise. The dark signal is 0.06
+  (NRS2) to 0.12 (NRS1) DN per 14.6 s IRS2 group, 0.35 to 0.6 DN per
+  73 s NRSIRS2 group.
+- Frame-wide per-group offsets survive the reference correction: the
+  science-pixel median after refpix wanders by 1 to 6 DN from group to
+  group, the same in all four amplifiers (correlation of the steps
+  0.96 to 0.99; rms step 2.8 DN on the IRS2 NRS2 dark, 1.0 on NRS1,
+  1.0 to 1.7 on the IFU and MOS frames). In the raw groups the
+  interleaved reference pixels follow the 30 to 60 DN frame jumps of
+  the science pixels to about 90 percent (NRS2 group 5: science +61,
+  interleaved +54, residual after refpix +6.3); the reference output
+  does not follow them at all. `irs2_mean_subtraction=True` changes
+  nothing (same numbers to 0.1 DN).
+- On the traditional readout the science pixels also settle by -3
+  (NRS1) and -5 DN (NRS2) relative to the border reference pixels over
+  the first 15 to 20 groups after reset, then stay flat with the same
+  wander. A 20-group slope through that settling is -0.015 to -0.025
+  DN/s, which is the -0.024 / -0.032 DN/s level of the 2026-11-14 dark
+  run; over 44 groups the endpoint slope is -0.016 on both detectors.
+  The IRS2 NRS1 dark shows a -1.6 DN step at group 1 and nothing after;
+  IRS2 NRS2 only the wander.
+- So the level after dark subtraction is set by the group-to-group
+  wander (random sign, about +-0.004 DN/s on a 20-group 14.6 s ramp,
+  +-0.001 on a 14-group 73 s ramp, in line with the IFU +0.00005 /
+  +0.00044 and MOS -0.0017 / -0.0042) plus, on the traditional
+  readout, the settling transient. Neither is in the reference, and the
+  dark current itself is below both on these ramps. The level says
+  nothing about the accuracy of the dark reference, and the offsets are
+  uniform over the frame, so they do not enter the banding numbers.
+- The 245-group IRS2 dark of the same visit (jw01121136001_02102_00001,
+  59 min, both detectors), run on astronode-13 with the same script
+  (results/2026-11-17_nirspec_dark_level/astronode/, figure
+  irs2_245groups_group_levels.png): the science-pixel median after
+  refpix stays flat to slightly negative for the first 5 minutes (NRS1
+  0 to -4 DN through group 20, NRS2 wandering about 0), then rises
+  faster than the reference. OLS slopes of the median after refpix, in
+  DN/s, against the reference rate:
+
+  | groups       | NRS1     | NRS2     | reference NRS1 / NRS2 |
+  |--------------|---------:|---------:|----------------------:|
+  | 0-19         | +0.0049  | +0.0056  | 0.0082 / 0.0042 |
+  | 20-60        | +0.0096  | +0.0066  | |
+  | 60-120       | +0.0100  | +0.0074  | |
+  | 120-180      | +0.0138  | +0.0120  | |
+  | 180-244      | +0.0133  | +0.0055  | |
+  | 44-244       | +0.0134  | +0.0091  | |
+
+  So on this 2022-03-23 commissioning dark the typical pixel accumulates
+  signal at 1.6 (NRS1) to 2.1 (NRS2) times the reference rate once the
+  first minutes are over, and the dark-subtracted median ends +10 and
+  +12 DN high after an hour, while a 20-group slope catches only the
+  settling and comes out below the reference (negative after
+  subtraction). The group-to-group wander keeps its rms of 1.0 to 1.2
+  DN (NRS1) and 1.8 to 2.5 DN (NRS2) through the whole hour, so it is
+  not a start-of-ramp effect. Whether the higher rate is the detectors'
+  state in March 2022 or holds for Cycle 1 data too is not tested; the
+  IFU (2022-06) and MOS (2023-01) ramps are too short to say.
