@@ -51,6 +51,12 @@
 
 ### Fixed
 
+- `ResetRampFitStep` measured the reset offset in the first integration
+  and used it for all of them, but the reset level moves between the
+  integrations of an exposure, so the rates of the later integrations
+  were biased. The step now measures the offset in each integration from
+  that integration's own sky pixels.
+
 ## [1.4.1] - 2026-11-11
 
 - `snowblind_detector1` runs again. In 1.4.0 it failed after the jump step

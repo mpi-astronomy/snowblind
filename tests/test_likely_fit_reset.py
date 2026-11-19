@@ -442,6 +442,23 @@ def test_blocks_driver_with_equal_timing_matches_single_fit():
     assert split_integ["used_reset"].shape == (1, 1, 4)
 
 
+def test_blocks_driver_adds_each_integrations_offset():
+    """likely_ramp_fit_reset_blocks with integration offsets 0 and 6 DN, on a ramp whose second integration starts 6 DN
+    higher, gives one-group pixels 30 DN/s in both integrations."""
+    ramp_data, readnoise, gain = blank_ramp_data(5, ncols=2, nints=2)
+    t = group_times(ramp_data)
+    ramp_data.data[0, :, 0, :] = (30.0 * t)[:, None]
+    ramp_data.data[1, :, 0, :] = (6.0 + 30.0 * t)[:, None]
+    ramp_data.groupdq[:, 1:, 0, :] = SAT
+    blocks = [(slice(0, 1), slice(0, 1)), (slice(0, 1), slice(1, 2))]
+
+    _image_info, integ_info, _ = likely_ramp_fit_reset_blocks(
+        ramp_data, readnoise, gain, SIGMA_B, blocks, [1.0, 1.0], [0.0, 0.0], integration_offsets=[[0.0, 0.0], [6.0, 6.0]]
+    )
+
+    np.testing.assert_allclose(integ_info["slope"][:, 0, :], 30.0, rtol=1e-6)
+
+
 def test_blocks_driver_applies_each_blocks_timing():
     """likely_ramp_fit_reset_blocks with t1_scale 0.8 and 1.0 gives one-group pixels R1 / (0.8 t1) and R1 / t1."""
     ramp_data, readnoise, gain = blank_ramp_data(5, ncols=2)

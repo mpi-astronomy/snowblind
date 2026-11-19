@@ -137,7 +137,8 @@ class ResetIntegInfo(IntegInfo):
 
 
 def likely_ramp_fit_reset(
-    ramp_data, readnoise_2d, gain_2d, sigma_b, t1_scale=1.0, use_zeroframe=True, reset_level=0.0
+    ramp_data, readnoise_2d, gain_2d, sigma_b, t1_scale=1.0, use_zeroframe=True, reset_level=0.0,
+    integration_offsets=None,
 ):
     """Likelihood ramp fit with a Gaussian prior on the reset level.
 
@@ -163,6 +164,9 @@ def likely_ramp_fit_reset(
         Mean of the reset-level prior in DN: the value of the prepended
         resultant.  Zero after superbias subtraction, or a per-pixel map of
         the superbias error, optionally with a constant offset.
+    integration_offsets : sequence of float or None
+        DN added to ``reset_level`` in each integration, one per
+        integration; None adds nothing.
 
     Returns
     -------
@@ -225,11 +229,14 @@ def likely_ramp_fit_reset(
     if reset_level.ndim == 2 and reset_level.shape != (nrows, ncols):
         raise ValueError(f"reset_level shape {reset_level.shape} does not match the data {(nrows, ncols)}")
     reset_plane = np.broadcast_to(reset_level, (nrows, ncols)).astype(np.float32)
+    if integration_offsets is not None and len(integration_offsets) != nints:
+        raise ValueError(f"{len(integration_offsets)} integration offsets for {nints} integrations")
 
     integ_class = ResetIntegInfo(nints, nrows, ncols)
 
     for integ in range(nints):
         data = ramp_data.data[integ]
+        integ_plane = reset_plane if integration_offsets is None else reset_plane + np.float32(integration_offsets[integ])
         gdq = ramp_data.groupdq[integ].copy()
         pdq = ramp_data.pixeldq.copy()
 
@@ -245,7 +252,7 @@ def likely_ramp_fit_reset(
         reset_dq = np.where(
             (pdq & ramp_data.flags_do_not_use) > 0, ramp_data.flags_do_not_use, 0
         ).astype(gdq.dtype)
-        data = np.vstack([reset_plane[None, :, :], data])
+        data = np.vstack([integ_plane[None, :, :], data])
         gdq = np.vstack([reset_dq[None, :, :], gdq])
 
         diff = (data[1:] - data[:-1]) / covar.delta_t[:, np.newaxis, np.newaxis]
@@ -309,7 +316,7 @@ def likely_ramp_fit_reset(
         if zeroframe_ok:
             # Change 7
             _refit_without_zeroframe(
-                integ_class, ramp_data, integ, readnoise_cds, np.asarray(gain_2d), sigma_b, t1_scale, reset_plane
+                integ_class, ramp_data, integ, readnoise_cds, np.asarray(gain_2d), sigma_b, t1_scale, integ_plane
             )
 
     integ_info = integ_class.prepare_info()
@@ -331,8 +338,10 @@ def _refit_without_zeroframe(integ_class, ramp_data, integ, readnoise_2d, gain_2
         Integration index.
     readnoise_2d, gain_2d : ndarray, shape (nrows, ncols)
         As for `likely_ramp_fit_reset`.
-    sigma_b, reset_level : ndarray, shape (nrows, ncols)
+    sigma_b : ndarray, shape (nrows, ncols)
         As for `likely_ramp_fit_reset`, one value per pixel.
+    reset_level : ndarray, shape (nrows, ncols)
+        The prior mean of the reset level in this integration, one value per pixel.
     t1_scale : float
         As for `likely_ramp_fit_reset`.
     """
@@ -389,7 +398,8 @@ def _subset_ramp_data(ramp_data, index, integs=slice(None)):
 
 
 def likely_ramp_fit_reset_blocks(
-    ramp_data, readnoise_2d, gain_2d, sigma_b, blocks, t1_scales, reset_levels, use_zeroframe=True
+    ramp_data, readnoise_2d, gain_2d, sigma_b, blocks, t1_scales, reset_levels, use_zeroframe=True,
+    integration_offsets=None,
 ):
     """Run `likely_ramp_fit_reset` on image blocks with their own timing parameters and stitch the results.
 
@@ -418,6 +428,9 @@ def likely_ramp_fit_reset_blocks(
         One per block; an array is the full-frame prior mean, sliced here.
     use_zeroframe : bool
         Passed to `likely_ramp_fit_reset`.
+    integration_offsets : array_like of float, shape (nints, nblocks), or None
+        DN added to each block's reset level in each integration; column
+        ``k`` goes to block ``k``.  None adds nothing.
 
     Returns
     -------
@@ -427,7 +440,14 @@ def likely_ramp_fit_reset_blocks(
     nints, _ngroups, nrows, ncols = ramp_data.data.shape
     sigma_b = np.broadcast_to(np.asarray(sigma_b, dtype=float), (nrows, ncols))
     image_info, integ_info = None, None
-    for (rows, cols), t1_scale, reset_level in zip(blocks, t1_scales, reset_levels):
+    if integration_offsets is not None:
+        integration_offsets = np.asarray(integration_offsets, dtype=np.float32)
+        if integration_offsets.shape != (nints, len(blocks)):
+            raise ValueError(
+                f"integration_offsets has shape {integration_offsets.shape}, not ({nints}, {len(blocks)}) "
+                "for the integrations and blocks"
+            )
+    for k, ((rows, cols), t1_scale, reset_level) in enumerate(zip(blocks, t1_scales, reset_levels)):
         sub = _subset_ramp_data(ramp_data, (rows, cols))
         level = np.asarray(reset_level, dtype=np.float32)
         if level.ndim == 2:
@@ -440,6 +460,7 @@ def likely_ramp_fit_reset_blocks(
             t1_scale=t1_scale,
             use_zeroframe=use_zeroframe,
             reset_level=level,
+            integration_offsets=None if integration_offsets is None else integration_offsets[:, k],
         )
         if image_info is None:
             image_info = {k: np.zeros((nrows, ncols), dtype=v.dtype) for k, v in block_image.items()}

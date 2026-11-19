@@ -601,15 +601,21 @@ The reset offset
 ~~~~~~~~~~~~~~~~
 
 The mean reset level drifts relative to the superbias, by 10 DN and more
-over months, so the prior mean cannot be a calibration constant. The
-step measures it per output channel from the exposure's own sky
-(``anchor_offset_to_sky``, on by default): the pixels whose
-first-resultant signal is below ``anchor_max_signal`` (50 DN), when a
-channel has at least ``anchor_min_pixels`` (1000) of them; otherwise the
-calibration's offset is kept. This centers the first-difference residual,
-and the reset-anchored fit then agrees with the likelihood fit without the reset
-point to about 0.1 percent at every brightness. ``reset_offset`` adds a
-fixed number of DN on top.
+over months, and it moves as much from one integration of an exposure to
+the next, all output channels together, so the prior mean cannot be a
+calibration constant. The step measures it per output channel in each
+integration from that integration's own sky (``anchor_offset_to_sky``,
+on by default): the pixels whose first-resultant signal is below
+``anchor_max_signal`` (50 DN). A channel with fewer than
+``anchor_min_pixels`` (1000) of them takes the median of the
+integration's other channels, and an integration in which no channel
+has enough keeps the calibration's offsets. This centers the
+first-difference residual, and the reset-anchored fit then agrees with
+the likelihood fit without the reset point to about 0.1 percent at every
+brightness. ``reset_offset`` adds a fixed number of DN on top. On WFSS
+exposures the stream clean's background, the scaled CRDS background
+reference, already takes each channel's level out of the first group,
+the reset offset with it, and the step measures what is left.
 
 The pedestal map and the superbias
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

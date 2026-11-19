@@ -120,9 +120,10 @@ class ResetRampFitStep(Step):
     by ``snowblind-reset-calib`` (``reset_calib``), or from a scalar
     ``sigma_b``.  Main options: ``use_pedestal_mean`` takes the mean reset
     level map from the file; ``t1_scale`` and ``per_channel_timing`` set the
-    first-read timing; ``anchor_offset_to_sky`` and
-    ``anchor_timing_to_stars`` measure the reset offset and first-read scale
-    per output channel from the exposure itself; ``save_opt`` writes the
+    first-read timing; ``anchor_offset_to_sky`` measures the reset offset
+    per output channel in each integration and ``anchor_timing_to_stars``
+    the first-read scale per output channel, from the exposure itself;
+    ``save_opt`` writes the
     ``used_reset`` and ``d0_resid`` diagnostics.  Fewer than ``MIN_NGROUPS``
     groups gives no rate products, as in the jwst step.
     """
@@ -139,9 +140,9 @@ class ResetRampFitStep(Step):
         use_pedestal_mean = boolean(default=False)  # prior mean of the reset level from the calibration file's pedestal_mean map
         prior_highpass = boolean(default=True)  # remove the pedestal map's row, even-odd and column structure, as stream_clean removes it from the first read
         reset_offset = float(default=0.0)  # DN added to the prior mean of the reset level, on top of the file's or the anchored value
-        anchor_offset_to_sky = boolean(default=True)  # measure the reset offset per channel from this exposure's own faint pixels instead of the file's
+        anchor_offset_to_sky = boolean(default=True)  # measure the reset offset per channel in each integration from its own faint pixels instead of using the file's
         anchor_max_signal = float(default=50.0)  # DN; pixels whose first-resultant signal is below this count as sky for the anchor
-        anchor_min_pixels = integer(default=1000)  # fewer sky pixels than this in a channel keeps the file's offset there
+        anchor_min_pixels = integer(default=1000)  # a channel with fewer sky pixels than this in an integration takes the median of that integration's other channels, or the file's offset when none has enough
         anchor_timing_to_stars = boolean(default=False)  # also fit the first-read scale per channel from this exposure's bright unsaturated pixels (needs many bright pixels)
         anchor_min_bright = integer(default=500)  # fewer bright pixels than this in a channel keeps the file's first-read scale there
         use_zeroframe = boolean(default=True)  # use the zeroframe when present
@@ -231,19 +232,18 @@ class ResetRampFitStep(Step):
             + (f", per channel t1_scale {channel_timing[0]} offsets {channel_timing[1]}" if channel_timing else "")
         )
         blocks = readout.channel_blocks(result.data.shape[-2:], result.meta.subarray.fastaxis, result.meta.subarray.slowaxis)
+        nints = result.data.shape[0]
         anchored = self.anchor_offset_to_sky and result.data.shape[1] >= 3
+        # the prior without any scalar offset: the map (or zero); the offsets below are whole on top of it
+        base = np.asarray(reset_level, dtype=np.float32) - np.float32(self._scalar_offset)
         if anchored:
             t1_scales = channel_timing[0] if channel_timing else [t1_scale] * len(blocks)
-            # the prior without any scalar offset: the map (or zero); the step's own offset goes on top of the anchored value
-            base = np.asarray(reset_level, dtype=np.float32) - np.float32(self._scalar_offset)
             # the file's absolute offsets per channel (channel_timing holds them relative to the file's scalar offset)
             file_scalar = self._scalar_offset - self.reset_offset
             file_offsets = [o + file_scalar for o in channel_timing[1]] if channel_timing else [file_scalar] * len(blocks)
-            resultant = _first_resultant(result, self.use_zeroframe)
             if self.anchor_timing_to_stars:
                 fitted = star_anchored_scales(
-                    result, base, blocks, self.use_zeroframe, self.anchor_min_bright,
-                    fallback=list(t1_scales), resultant=resultant,
+                    result, base, blocks, self.use_zeroframe, self.anchor_min_bright, fallback=list(t1_scales),
                 )
                 log.info(
                     f"First-read timing anchored to this exposure's bright pixels: {_span(fitted, '.3f')} of the nominal "
@@ -254,34 +254,30 @@ class ResetRampFitStep(Step):
                     + " (calibration file, carried to this pattern: " + ", ".join(f"{k:.4f}" for k in t1_scales) + ")"
                 )
                 t1_scales = [float(k) for k in fitted]
-            anchored = sky_anchored_offsets(
+            table = _sky_offsets_per_integration(
                 result, base, t1_scales, blocks, self.use_zeroframe, self.anchor_max_signal, self.anchor_min_pixels,
-                fallback=file_offsets, resultant=resultant,
+                file_offsets,
             )
             log.info(
-                f"Reset level anchored to this exposure's sky pixels: offsets of {_span(anchored, '+.2f')} DN across the "
-                f"channels, against {_span(file_offsets, '+.2f')} in the calibration"
+                f"Reset level anchored to each integration's sky pixels: offsets of {_span(table.ravel().tolist(), '+.2f')} "
+                f"DN across {nints} integration{'s' if nints != 1 else ''} and the channels, against "
+                f"{_span(file_offsets, '+.2f')} in the calibration"
             )
-            log.debug(
-                "Reset offsets per channel: " + ", ".join(f"{b:+.2f}" for b in anchored)
-                + " DN (calibration file: " + ", ".join(f"{b:+.2f}" for b in file_offsets) + ")"
-            )
-            channel_timing = (t1_scales, [float(b) + self.reset_offset for b in anchored])
-            reset_level = base
-        # the offset of the reset level over the prior (the pedestal map, or zero) in each channel, for the record:
-        # anchored, reset_level is the bare prior and the channel offsets are whole; otherwise reset_level carries the
-        # scalar offset and the channel offsets (from the calibration) are relative to it
-        if anchored:
-            offsets_over_prior = list(channel_timing[1])
+            for integration, row in enumerate(table):
+                values = ", ".join(f"{b:+.2f}" for b in row)
+                log.debug(f"Integration {integration + 1} reset offsets per channel: {values} DN")
+            # the offset of the reset level over the prior (the pedestal map, or zero), per integration and channel
+            offsets = table + self.reset_offset
         elif channel_timing:
-            offsets_over_prior = [self._scalar_offset + offset for offset in channel_timing[1]]
+            t1_scales = channel_timing[0]
+            offsets = np.tile([self._scalar_offset + offset for offset in channel_timing[1]], (nints, 1))
         else:
-            offsets_over_prior = [self._scalar_offset]
-        if channel_timing:
-            t1_scales, offsets = channel_timing
-            levels = [np.asarray(reset_level, dtype=np.float32) + np.float32(offset) for offset in offsets]
+            t1_scales = None
+            offsets = np.full((nints, 1), self._scalar_offset)
+        if t1_scales is not None:
             image_info, integ_info, _ = likely_ramp_fit_reset_blocks(
-                ramp_data, readnoise_2d, gain_2d, sigma_b, blocks, t1_scales, levels, use_zeroframe=self.use_zeroframe
+                ramp_data, readnoise_2d, gain_2d, sigma_b, blocks, t1_scales, [base] * len(blocks),
+                use_zeroframe=self.use_zeroframe, integration_offsets=offsets,
             )
         else:
             image_info, integ_info, _ = likely_ramp_fit_reset(
@@ -299,18 +295,17 @@ class ResetRampFitStep(Step):
         if self.save_opt:
             path = self.make_output_path(basepath=result.meta.filename, suffix="resetfit", ext="asdf")
             write_resetfit(
-                path, integ_info, sigma_b, t1_scale, result.meta.instrument.detector, reset_level,
-                t1_scales=channel_timing[0] if channel_timing else None,
-                reset_offsets=channel_timing[1] if channel_timing else None,
+                path, integ_info, sigma_b, t1_scale, result.meta.instrument.detector, base,
+                t1_scales=t1_scales, reset_offsets=offsets,
             )
             log.info(f"Saved reset diagnostics to {path}")
 
         fit_record = {
             "unit": "DN",
             "reset_level_scatter": float(np.nanmedian(sigma_b)),
-            "reset_offset": [float(offset) for offset in offsets_over_prior],
+            "reset_offset": [[float(offset) for offset in row] for row in offsets],
             "reset_offset_origin": "sky" if anchored else "prior",
-            "first_read_time_scale": [float(k) for k in (channel_timing[0] if channel_timing else [t1_scale])],
+            "first_read_time_scale": [float(k) for k in (t1_scales if t1_scales is not None else [t1_scale])],
             "first_read_time_origin": "stars" if anchored and self.anchor_timing_to_stars else "prior",
         }
 
@@ -623,10 +618,8 @@ def reset_prior_map(
     return level
 
 
-def _first_resultant(model, use_zeroframe):
-    """The first resultant the fit uses, its time since reset, a usable mask, the later-group slope (DN/s) and t1.
-
-    Only the first integration is used.
+def _first_resultant(model, use_zeroframe, integration=0):
+    """The first resultant of one integration, its time since reset, a usable mask, the later-group slope (DN/s) and t1.
 
     Parameters
     ----------
@@ -635,7 +628,9 @@ def _first_resultant(model, use_zeroframe):
         exposure timing keywords are read.
     use_zeroframe : bool
         Take the zeroframe as the first resultant when the model has one
-        with any non-zero pixel; otherwise group 0 is used.
+        with any non-zero pixel in this integration; otherwise group 0 is used.
+    integration : int
+        Index of the integration read.
 
     Returns
     -------
@@ -656,11 +651,11 @@ def _first_resultant(model, use_zeroframe):
 
     exposure = model.meta.exposure
     t1 = first_group_time(model)
-    data = np.asarray(model.data[0], dtype=np.float64)
-    groupdq = np.asarray(model.groupdq[0])
+    data = np.asarray(model.data[integration], dtype=np.float64)
+    groupdq = np.asarray(model.groupdq[integration])
     zeroframe = getattr(model, "zeroframe", None)
-    if use_zeroframe and zeroframe is not None and np.any(zeroframe[0] != 0):
-        first = np.asarray(zeroframe[0], dtype=np.float64)
+    if use_zeroframe and zeroframe is not None and np.any(zeroframe[integration] != 0):
+        first = np.asarray(zeroframe[integration], dtype=np.float64)
         t_first = float(exposure.frame_time)
         usable = first != 0
     else:
@@ -755,19 +750,19 @@ def star_anchored_scales(model, base_level, blocks, use_zeroframe, min_bright=50
 
 
 def sky_anchored_offsets(
-    model, base_level, t1_scales, blocks, use_zeroframe, max_signal=50.0, min_pixels=1000, fallback=None, resultant=None
+    model, base_level, t1_scales, blocks, use_zeroframe, max_signal=50.0, min_pixels=1000, resultant=None
 ):
-    """The reset offset per channel from the exposure's own sky pixels, in DN.
+    """The reset offset per channel of one integration from its own sky pixels, in DN.
 
     For each channel, the median over faint, unflagged pixels of the first
     resultant (the zeroframe when it is used, else group 0) minus the prior
     map minus the signal expected there from the slope of the later groups:
     ``a * (t_first - (1 - k) * t1)``, with ``k`` the channel's first-read
     scale.  The reset level drifts by 10 DN and more between epochs with the
-    same superbias, so a calibration constant cannot serve; a few DN is a
-    few percent of the first read on a faint sky.  Channels with fewer than
-    ``min_pixels`` sky pixels keep their ``fallback`` offset (the
-    calibration file's) with a warning.
+    same superbias, and by as much between the integrations of one
+    exposure, so a calibration constant cannot serve; a few DN is a few
+    percent of the first read on a faint sky.  Channels with fewer than
+    ``min_pixels`` sky pixels get NaN.
 
     Parameters
     ----------
@@ -784,34 +779,96 @@ def sky_anchored_offsets(
     max_signal : float
         Pixels whose expected first-resultant signal is below this (and
         above ``-0.4 * max_signal``), in DN, count as sky.
-    resultant : tuple or None
-        The output of `_first_resultant` for ``model``, when the caller has it
-        already; None computes it here.
     min_pixels : int
-        Fewer sky pixels than this in a channel keeps its fallback offset.
-    fallback : sequence of float or None
-        Offset per channel in DN to keep when there are too few sky pixels;
-        None means 0.0 everywhere.
+        A channel with fewer sky pixels than this gets NaN.
+    resultant : tuple or None
+        The output of `_first_resultant` for the integration, when the
+        caller has it already; None computes it here for the first
+        integration.
 
     Returns
     -------
     list of float
-        Reset offset per channel in DN.
+        Reset offset per channel in DN, NaN where there are too few sky pixels.
     """
     first, t_first, clean, rest, t1 = resultant if resultant is not None else _first_resultant(model, use_zeroframe)
     base = np.broadcast_to(np.asarray(base_level, dtype=np.float64), first.shape)
     offsets = []
-    fallback = [0.0] * len(blocks) if fallback is None else list(fallback)
-    for (rows, cols), k, kept in zip(blocks, t1_scales, fallback):
+    for (rows, cols), k in zip(blocks, t1_scales):
         signal = rest[rows, cols] * (t_first - (1.0 - float(k)) * t1)
         faint = clean[rows, cols] & (signal < max_signal) & (signal > -0.4 * max_signal)
         if faint.sum() < min_pixels:
-            log.warning(f"Only {int(faint.sum())} sky pixels in a channel; its reset offset stays at the file's {kept:+.2f} DN")
-            offsets.append(float(kept))
+            offsets.append(float("nan"))
             continue
         residual = first[rows, cols] - base[rows, cols] - signal
         offsets.append(float(np.median(residual[faint])))
     return offsets
+
+
+def _sky_offsets_per_integration(
+    model, base_level, t1_scales, blocks, use_zeroframe, max_signal, min_pixels, file_offsets
+):
+    """The reset offset of each integration and channel from the exposure's own sky pixels, in DN.
+
+    `sky_anchored_offsets` on each integration in turn.  A channel with too
+    few sky pixels in an integration takes the median of that integration's
+    other channels, which move with it; when no channel has enough, the
+    integration keeps ``file_offsets``.  One warning sums up each of the two.
+
+    Parameters
+    ----------
+    model : `~stdatamodels.jwst.datamodels.RampModel`
+        The ramp, read one integration at a time through `_first_resultant`.
+    base_level : float or ndarray, shape (nrows, ncols)
+        Prior mean of the reset level in DN without any scalar offset.
+    t1_scales : sequence of float
+        First-read scale per channel.
+    blocks : sequence of (slice, slice)
+        Science-frame ``(rows, cols)`` of each output channel.
+    use_zeroframe : bool
+        Passed to `_first_resultant`.
+    max_signal : float
+        Passed to `sky_anchored_offsets`.
+    min_pixels : int
+        Passed to `sky_anchored_offsets`.
+    file_offsets : sequence of float
+        Offset per channel in DN for an integration in which no channel has
+        enough sky pixels.
+
+    Returns
+    -------
+    ndarray of float64, shape (nints, nchannels)
+        Reset offset per integration and channel in DN.
+    """
+    nints = model.data.shape[0]
+    table = np.empty((nints, len(blocks)), dtype=np.float64)
+    from_other_channels, from_file = [], []
+    for integration in range(nints):
+        resultant = _first_resultant(model, use_zeroframe, integration)
+        row = np.array(sky_anchored_offsets(
+            model, base_level, t1_scales, blocks, use_zeroframe, max_signal, min_pixels, resultant=resultant
+        ))
+        missing = ~np.isfinite(row)
+        if missing.all():
+            row = np.array(file_offsets, dtype=np.float64)
+            from_file.append(integration + 1)
+        elif missing.any():
+            row[missing] = np.median(row[~missing])
+            from_other_channels.append(integration + 1)
+        table[integration] = row
+    if from_other_channels:
+        log.warning(
+            f"Fewer than {min_pixels} sky pixels in some channels of {len(from_other_channels)} of {nints} integrations; "
+            "those channels take the median offset of the integration's other channels"
+        )
+        log.debug(f"Integrations with channels short of sky pixels: {from_other_channels}")
+    if from_file:
+        log.warning(
+            f"No channel has {min_pixels} sky pixels in {len(from_file)} of {nints} integrations; "
+            "those integrations keep the calibration's reset offsets"
+        )
+        log.debug(f"Integrations keeping the calibration's offsets: {from_file}")
+    return table
 
 
 def first_group_time(model):
@@ -914,13 +971,13 @@ def write_resetfit(path, integ_info, sigma_b, t1_scale, detector, reset_level=0.
         Detector name.
     reset_level : float or ndarray, shape (nrows, ncols)
         Prior mean of the reset level used by the fit, DN, before any
-        per-channel offset; its median plus the mean channel offset is
-        stored as ``reset_level_median``.
+        offset; its median plus the mean offset is stored as
+        ``reset_level_median``.
     t1_scales : sequence of float or None
         First-read scale per output channel when the fit used them.
-    reset_offsets : sequence of float or None
-        Reset offset per output channel in DN when the fit used them,
-        added to ``reset_level``.
+    reset_offsets : array_like of float, shape (nints, nchannels), or None
+        Reset offset per integration and output channel in DN, added to
+        ``reset_level``; stored as ``reset_offset_channels``.
     """
     used = np.asarray(integ_info["used_reset"])
     resid = np.asarray(integ_info["d0_resid"], dtype=np.float32)
@@ -930,9 +987,12 @@ def write_resetfit(path, integ_info, sigma_b, t1_scale, detector, reset_level=0.
         "sigma_b": np.asarray(sigma_b, dtype=np.float32),
         "t1_scale": float(t1_scale),
         "reset_level": np.asarray(reset_level, dtype=np.float32),
-        "reset_level_median": float(np.nanmedian(reset_level)) + (float(np.mean(reset_offsets)) if reset_offsets else 0.0),
+        "reset_level_median": float(np.nanmedian(reset_level))
+        + (float(np.mean(reset_offsets)) if reset_offsets is not None else 0.0),
         "t1_scale_channels": None if t1_scales is None else [float(v) for v in t1_scales],
-        "reset_offset_channels": None if reset_offsets is None else [float(v) for v in reset_offsets],
+        "reset_offset_channels": (
+            None if reset_offsets is None else [[float(v) for v in row] for row in np.atleast_2d(reset_offsets)]
+        ),
         "used_reset": used,
         "d0_resid": resid,
         "used_reset_fraction": float(used.mean()),
