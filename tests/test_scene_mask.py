@@ -2,7 +2,7 @@ import numpy as np
 
 from astropy.stats import mad_std
 
-from snowblind.scene_mask import chisel_mask, remove_stripes, saturated_stars, spike_mask
+from snowblind.scene_mask import chisel_mask, outlier_pixel_mask, remove_stripes, saturated_stars, spike_mask
 
 
 def sigma_clip_mask(rate, n_sigma):
@@ -272,3 +272,65 @@ def test_chisel_mask_with_stream_stripes_only_masks_a_trace_along_most_of_a_colu
     background = chisel_mask(rate, stripe_axes=(1,))
 
     assert (~background[:360, 120:124]).mean() > 0.95
+
+
+def test_outlier_pixel_mask_marks_an_isolated_hot_pixel_and_its_four_neighbours():
+    """outlier_pixel_mask on unit noise with one pixel at 50 marks that pixel and its four neighbours, nothing else."""
+    rng = np.random.default_rng(3)
+    rate = rng.normal(0.0, 1.0, (128, 128))
+    rate[60, 70] = 50.0
+
+    hot = outlier_pixel_mask(rate, np.ones(rate.shape, dtype=bool))
+
+    expected = np.zeros(rate.shape, dtype=bool)
+    expected[60, 70] = expected[59, 70] = expected[61, 70] = expected[60, 69] = expected[60, 71] = True
+    np.testing.assert_array_equal(hot, expected)
+
+
+def test_outlier_pixel_mask_leaves_pure_noise_alone():
+    """outlier_pixel_mask on unit noise marks no pixel."""
+    rng = np.random.default_rng(4)
+    rate = rng.normal(0.0, 1.0, (128, 128))
+
+    hot = outlier_pixel_mask(rate, np.ones(rate.shape, dtype=bool))
+
+    assert not hot.any()
+
+
+def test_outlier_pixel_mask_marks_a_strongly_negative_pixel():
+    """outlier_pixel_mask on unit noise with one pixel at -50 marks that pixel."""
+    rng = np.random.default_rng(5)
+    rate = rng.normal(0.0, 1.0, (128, 128))
+    rate[30, 40] = -50.0
+
+    hot = outlier_pixel_mask(rate, np.ones(rate.shape, dtype=bool))
+
+    assert hot[30, 40]
+    assert hot.sum() == 5
+
+
+def test_remove_stripes_with_a_gain_image_takes_half_stripes_out_of_the_edge_rows():
+    """remove_stripes with gain=(0, image) of 0.5 over the first 8 rows, on column stripes those rows carry at half,
+    returns zeros everywhere."""
+    rng = np.random.default_rng(13)
+    stripes = rng.uniform(-1, 1, size=(1, 64))
+    image = np.repeat(stripes, 64, axis=0)
+    image[:8] *= 0.5
+    gain = np.ones(image.shape)
+    gain[:8] = 0.5
+
+    out = remove_stripes(image, np.isfinite(image), axes=(0,), clip=None, gain=(0, gain))
+
+    assert np.abs(out).max() < 1e-9
+
+
+def test_remove_stripes_gain_on_another_axis_is_ignored():
+    """remove_stripes with gain=(1, image) and axes=(0,) returns the same as without a gain."""
+    rng = np.random.default_rng(14)
+    image = rng.normal(size=(64, 64))
+    gain = np.full(image.shape, 0.5)
+
+    plain = remove_stripes(image, np.isfinite(image), axes=(0,))
+    with_gain = remove_stripes(image, np.isfinite(image), axes=(0,), gain=(1, gain))
+
+    assert np.array_equal(plain, with_gain)

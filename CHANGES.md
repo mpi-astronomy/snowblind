@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+### Added
+
+- `StreamCleanStep` cleans full-frame NIRSpec exposures. The IRS2 read
+  patterns are laid out on their own clock grid, read from the header, and
+  on MOS, IFU, fixed-slit and bright-object exposures the slits or slices,
+  the failed-open shutters and the fixed-slit area are masked from the WCS
+  in addition to the scene mask, as the jwst `clean_flicker_noise` step
+  does. A MOS exposure needs its MSA metafile next to the input. Data that
+  still hold the interleaved IRS2 reference pixels (3200 pixels wide) are
+  refused; run the reference-pixel step first. On the spectroscopic
+  exposures the column offsets are off by default, as a column's offset
+  there would be a constant along each spectrum measured from the few
+  pixels outside the slits; `column_offsets=True` turns them on.
+  `snowblind_detector1` has no reset calibration for NIRSpec, so run it
+  with `--reset_fit=False`.
+- `StreamCleanStep` option `edge_coupling` (default on): the columns next
+  to the two physical edges of NRS2 carry their channel's 1/f noise at
+  about half the interior's amplitude and a noise of their own, which left
+  a column-wise residual in the outer 200 rows of the cleaned rate. The
+  step now measures both per exposure, weights the filter by the measured
+  coupling and removes the edge noise with its measured profile; the
+  scene mask's destriping uses the same coupling. On NRS1 the edges
+  couple at 0.85 and carry no edge noise worth filtering, so little
+  changes there; a detector without the effect measures none and is
+  cleaned as before. Set `edge_coupling=False` for the old behavior.
+- `StreamCleanStep` option `outlier_sigma` (default 10): a background pixel
+  further than that many robust sigma from the background of a group
+  difference, with its four neighbors, is left out of that difference's
+  fit. This stops unflagged cosmic rays and pixels recovering from
+  saturation from spreading along their readout row; `None` switches it
+  off.
+
+### Changed
+
+- `StreamCleanStep` option `min_period` now defaults to `None`, which
+  picks the instrument's value: 300 pixel times on NIRCam and NIRISS as
+  before, 600 on NIRSpec IRS2 exposures, where the pixels between the
+  slices or shutters cannot measure shorter drifts under the traces, and
+  442 on the other NIRSpec read patterns, the same length of stream on
+  their shorter rows. Pass `min_period=0` for no cut (`None` used to mean
+  that).
+- The scene mask of `StreamCleanStep` also leaves out single pixels far
+  above or below the sky, hot pixels and pixels with strongly negative
+  slopes, which the mask's erosion dropped before. On the NIRSpec darks
+  such pixels made dark streaks along their readout rows in the cleaned
+  rate.
+
 ### Fixed
 
 ## [1.4.1] - 2026-11-11

@@ -12,15 +12,17 @@ import logging
 import warnings
 
 import numpy as np
-from astropy.stats import sigma_clipped_stats
+from astropy.stats import mad_std, sigma_clipped_stats
 from crds.core.exceptions import CrdsError
 from scipy import ndimage
 from jwst import datamodels
+from jwst.assign_wcs.util import MSAFileError, NoDataOnDetectorError
+from jwst.clean_flicker_noise.clean_flicker_noise import create_mask
 from jwst.lib.reffile_utils import get_subarray_model
 from .step import Step
 from stdatamodels.jwst.datamodels import dqflags
 
-from . import readout
+from . import detector_edges, readout
 from ._jwst_imports import (
     make_intermediate_model,
     make_processed_rate_image,
@@ -38,7 +40,7 @@ from .noise_spectrum import (
     taper_high_frequencies,
     wiener_gain,
 )
-from .scene_mask import chisel_mask, spike_mask, tiled_sky
+from .scene_mask import chisel_mask, outlier_pixel_mask, spike_mask, tiled_sky
 from .stream_filters import FILTERS, row_median_noise, wiener_noise
 
 __all__ = [
@@ -68,7 +70,9 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 SATURATED = dqflags.group["SATURATED"]
-SUPPORTED_INSTRUMENTS = ("NIRCAM", "NIRISS")
+SUPPORTED_INSTRUMENTS = ("NIRCAM", "NIRISS", "NIRSPEC")
+# NIRSpec exposures with a WCS that places the slits or slices on the detector
+NRS_SPECTROSCOPIC_EXPOSURE_TYPES = ("NRS_MSASPEC", "NRS_IFU", "NRS_FIXEDSLIT", "NRS_BRIGHTOBJ")
 
 
 class StreamCleanStep(Step):
@@ -119,12 +123,14 @@ class StreamCleanStep(Step):
         reset_calib = string(default=None)  # snowblind-reset-calib ASDF; with it the first read is cleaned against its reset-level prior, as reset_rampfit will use it
         scene_model = string(default=None)  # FITS image of the scene in DN/s, detector frame, before flat-fielding (e.g. the blotted mosaic); replaces the background model
         min_density = float(default=0.2)  # local background fraction below which the estimate tapers off
+        outlier_sigma = float(default=10.0)  # a background pixel further than this many robust sigma from the background of a group difference, and its four neighbours, are left out of that difference's fit (an unflagged cosmic ray, a pixel recovering from saturation); None keeps them
         first_direction = integer(default=1)  # readout direction of channel 0 in the detector frame, 1 or -1
         even_odd_columns = boolean(default=None)  # remove the per-channel even-odd column offset of each difference; the default, None, is on, except on WFSS exposures whose traces run along the columns (NIRISS GR150C, NIRCam GRISMC); True or False overrides
-        column_offsets = boolean(default=None)  # remove each column's masked mean from each difference (a per-column offset that drifts during the integration); the default, None, is on, except on WFSS exposures whose traces run along the columns (NIRISS GR150C, NIRCam GRISMC), where they would bias the means; True or False overrides
+        column_offsets = boolean(default=None)  # remove each column's masked mean from each difference (a per-column offset that drifts during the integration); the default, None, is on, except on WFSS exposures whose traces run along the columns (NIRISS GR150C, NIRCam GRISMC), where they would bias the means, and on NIRSpec spectroscopy, where a column runs the length of a spectrum and its offset would come from the few pixels outside the slits; True or False overrides
         anchor_mean = boolean(default=True)  # set each channel's mean removed noise to the masked mean of the residual, so a robust estimator cannot bias the sky
         max_lag = integer(default=65536)  # autocorrelation length in pixel times for the noise spectrum; wiener only
-        min_period = integer(default=300)  # pixel times (3 ms); the wiener gain is zero for shorter periods (None keeps all)
+        min_period = integer(default=None)  # pixel times (10 microseconds each); the wiener gain is zero for shorter periods. None is the instrument default, 300 on NIRCam and NIRISS, 600 on NIRSpec IRS2 and 442 on the other NIRSpec read patterns (the same length of stream); 0 keeps all periods
+        edge_coupling = boolean(default=True)  # measure how much of its channel's 1/f noise each column near the physical edges of the detector carries, and the noise those edges carry on their own, and correct for both (NRS2 has both, at about half the interior's amplitude); measures 1 and nothing on the other detectors, where it then changes nothing; wiener only
         save_mask = boolean(default=False)  # save the background mask
         save_noise = boolean(default=False)  # save the removed noise
         save_spectra = boolean(default=False)  # save per-channel spectra and gains; wiener only
@@ -163,6 +169,8 @@ class StreamCleanStep(Step):
 
         if self.first_direction not in (1, -1):
             raise ValueError(f"first_direction must be 1 or -1, got {self.first_direction}")
+        if self.min_period is not None and self.min_period < 0:
+            raise ValueError(f"min_period must be None, 0 or a positive number of pixel times, got {self.min_period}")
 
         reason = _unsupported_reason(result)
         if reason is not None:
@@ -172,22 +180,30 @@ class StreamCleanStep(Step):
         grism = dispersion_along_stream(result)
         geometry = trace_geometry(result)
         self._fit_method, self._column_offsets, self._even_odd_columns = self._resolve_options(geometry, grism)
+        self._min_period = self._resolve_min_period(
+            str(result.meta.instrument.name).upper(), str(result.meta.exposure.readpatt or "").upper()
+        )
         if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES and self.background_method in SCALAR_BACKGROUND_METHODS:
             # the dispersed background is a smooth function of position that no scalar background can model
             self.background_method = "crds_background"
             log.debug("WFSS exposure: background_method set to 'crds_background'")
+        det_shape = readout.to_detector_frame(
+            np.zeros(result.data.shape[-2:], dtype=np.uint8), result.meta.subarray.fastaxis, result.meta.subarray.slowaxis
+        ).shape
+        self._layout = readout.row_layout(result, readout.channel_width(det_shape[1]))
+        log.debug(f"Row layout {self._layout} for read pattern {result.meta.exposure.readpatt}")
+        # the science-frame axis a readout row runs along: the stripes of the draft rate are medians along it
+        self._stream_axis = 1 if abs(int(result.meta.subarray.fastaxis or 1)) == 1 else 0
         self._stripe_axes = (1, 0)
+        self._stripe_gain = None
         self._notch_period = None
         if str(result.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES:
             # the scene mask destripes the draft rate with row and column medians before detecting; a trace along
             # more than half of a column (or row) would set that median and vanish, so only the stream's axis is used
-            self._stripe_axes = (1,) if abs(int(result.meta.subarray.fastaxis or 1)) == 1 else (0,)
+            self._stripe_axes = (self._stream_axis,)
             # the unmasked wings and faint traces along the columns sit at the same clock in every readout row, a
             # pattern at the row frequency that the Wiener gain would pass as noise; a narrow notch there removes it
-            det_shape = readout.to_detector_frame(
-                np.zeros(result.data.shape[-2:], dtype=np.uint8), result.meta.subarray.fastaxis, result.meta.subarray.slowaxis
-            ).shape
-            self._notch_period = float(readout.channel_width(det_shape[1]) + readout.LINE_OVERHEAD)
+            self._notch_period = float(self._layout.row_clocks)
             log.debug(f"WFSS exposure: the Wiener gain is notched at the readout row period of {self._notch_period:.0f} clocks")
             log.info(
                 "A dispersed exposure: the background is the scaled CRDS background reference, the readout row period "
@@ -292,13 +308,47 @@ class StreamCleanStep(Step):
         self.set_cal_step(result, "COMPLETE")
         return result
 
+    def _resolve_min_period(self, instrument, readpatt=""):
+        """Return the shortest period the Wiener gain passes, in pixel times, or None for no cut.
+
+        The user's ``min_period`` when given (0 meaning no cut), else 600 on NIRSpec IRS2 exposures, 442 on the
+        other NIRSpec read patterns and 300 elsewhere.  The 300 was set on NIRCam imaging, where the cut keeps
+        the filter off unmasked compact sources (12 percent flux loss without it).  On NIRSpec the spectra are
+        masked from the WCS and the estimate under a slice or shutter spectrum is carried across from the pixels
+        between the traces, which cannot measure drifts shorter than a few hundred pixels: on the IFU and MOS
+        exposures tested (IRS2) a cut of 100 put noise under the traces about as large as what it removed there,
+        600 (431 pixels on the IRS2 clock grid of 712 clocks per 512-pixel row, most of a channel row) did not,
+        and a cut longer than a row left the settling at the start of each row in place.  The limit is the
+        pixels between the traces, so the other read patterns get the same 431 pixels of stream on their
+        524-clock row, 442 clocks, derived rather than measured.
+
+        Parameters
+        ----------
+        instrument : str
+            ``meta.instrument.name``, upper case.
+        readpatt : str
+            ``meta.exposure.readpatt``, upper case; the ``NRSIRS2`` patterns pick the IRS2 value.
+
+        Returns
+        -------
+        int or None
+        """
+        if self.min_period is None:
+            if instrument != "NIRSPEC":
+                return 300
+            return NIRSPEC_MIN_PERIOD_IRS2 if readpatt.startswith("NRSIRS2") else NIRSPEC_MIN_PERIOD
+        return None if self.min_period == 0 else int(self.min_period)
+
     def _resolve_options(self, geometry, grism):
         """Return ``(fit_method, column_offsets, even_odd_columns)`` for an exposure, the user's values over the defaults.
 
-        The defaults follow from which way the traces of a grism run.  Along the readout stream (NIRISS GR150R,
-        NIRCam GRISMR) a trace is read as 1/f noise by the stream filter, so ``auto`` is ``none``, but it crosses a
-        few pixels of each column and the offsets are safe.  Along the columns (GR150C, GRISMC) the filter is safe
-        but the column and even-odd means carry the traces, so the offsets are off.  Anywhere else all three are on.
+        The defaults follow from which way the traces run.  Along the readout stream (NIRISS GR150R, NIRCam GRISMR)
+        a trace is read as 1/f noise by the stream filter, so ``auto`` is ``none``, but it crosses a few pixels of
+        each column and the offsets are safe.  Along the columns (GR150C, GRISMC) the filter is safe but the column
+        and even-odd means carry the traces, so the offsets are off.  Along the columns under a WCS mask (NIRSpec
+        spectroscopy) the even-odd offset is one well-determined number per channel and stays on, but a column
+        offset is constant along a spectrum and comes from the few pixels of its column outside the slits, so it is
+        off.  Anywhere else all three are on.
 
         Parameters
         ----------
@@ -317,6 +367,8 @@ class StreamCleanStep(Step):
                 defaults = ("none", True, True)
             case "along_columns":
                 defaults = ("wiener", False, False)
+            case "along_columns_masked":
+                defaults = ("wiener", False, True)
             case _:
                 defaults = ("wiener", True, True)
         fit_method, column_offsets, even_odd_columns = defaults
@@ -425,10 +477,13 @@ class StreamCleanStep(Step):
             clean_first_group=self.clean_first_group,
             flat=flat,
             first_direction=self.first_direction,
+            layout=self._layout,
             min_density=self.min_density,
+            outlier_sigma=self.outlier_sigma,
             max_lag=self.max_lag,
-            min_period=self.min_period,
+            min_period=self._min_period,
             notch_period=self._notch_period,
+            edge_coupling=self.edge_coupling,
             return_spectra=True,
             first_group_scale=first_group_time_ratio(result),
             even_odd_columns=self._even_odd_columns,
@@ -436,6 +491,54 @@ class StreamCleanStep(Step):
             anchor_mean=self.anchor_mean,
             stats=self._sky_stats,
         )
+
+    def _draft_stripe_gain(self, rate, fastaxis, slowaxis):
+        """Gain image for destriping the draft rate: how much of its readout-row stripes each pixel carries.
+
+        The coupling of every column bin of a channel to the channel's
+        1/f noise is measured on the draft rate as it is later measured on
+        the group differences (`snowblind.detector_edges.coupling_sums`),
+        with the tiled sky removed and the pixels beyond 3 robust sigma
+        clipped.  The scene mask destripes the draft rate with the medians
+        along the readout rows before detecting sources; the columns near
+        the physical edges of NRS2 carry half of their stripe, and the
+        whole median would leave the other half there and flag the
+        strongest stripes as sources.
+
+        Parameters
+        ----------
+        rate : ndarray, shape (nrows, ncols)
+            Draft rate image in the science frame, NaN where unusable.
+        fastaxis, slowaxis : int
+            The readout axis keywords of the exposure.
+
+        Returns
+        -------
+        tuple of (int, ndarray of float32) or None
+            The stream axis and the gain image, for `chisel_mask`, or
+            None when every channel couples within 5 percent of 1
+            everywhere.
+        """
+        finite = np.isfinite(rate)
+        if not finite.any():
+            return None
+        work = np.where(finite, rate - tiled_sky(rate, finite, 32), np.nan)
+        sigma = mad_std(work[finite])
+        use = finite & (np.abs(work) < 3 * sigma) if np.isfinite(sigma) and sigma > 0 else finite
+        image_det = readout.to_detector_frame(np.where(use, work, 0.0), fastaxis, slowaxis)
+        mask_det = readout.to_detector_frame(use, fastaxis, slowaxis)
+        xy, xx = detector_edges.coupling_sums(image_det, mask_det)
+        slices = readout.channel_slices(image_det.shape[1])
+        profiles = detector_edges.coupling_profiles(xy, xx, readout.channel_width(image_det.shape[1]))
+        if all(profile is None for profile in profiles):
+            log.debug("The draft rate's stripes are carried alike by every column of every channel")
+            return None
+        gain_det = np.ones(image_det.shape, dtype=np.float32)
+        for k, (columns, profile) in enumerate(zip(slices, profiles)):
+            if profile is not None:
+                gain_det[:, columns] = profile[np.newaxis, :]
+                log.info(f"The draft rate's stripes near the physical edge of channel {k}: {_coupling_summary(k, profile)}")
+        return self._stream_axis, np.ascontiguousarray(readout.to_science_frame(gain_det, fastaxis, slowaxis))
 
     def _record_sky_stats(self, result):
         """Log and record what the cleaning did to the sky level of the exposure.
@@ -556,10 +659,17 @@ class StreamCleanStep(Step):
         rate = np.array(rate, dtype=np.float64)
         if scene is not None:
             rate = rate - scene
-        background_mask = chisel_mask(rate, stripe_axes=getattr(self, "_stripe_axes", (1, 0)))
+        background_mask = chisel_mask(
+            rate, stripe_axes=getattr(self, "_stripe_axes", (1, 0)), stripe_gain=getattr(self, "_stripe_gain", None)
+        )
         if scene is not None:
             background_mask &= np.isfinite(scene)
         log.debug(f"Scene mask (chisel): {100 * (~background_mask).mean():.2f} percent of pixels masked")
+        outlying = outlier_pixel_mask(rate, background_mask) & background_mask
+        background_mask &= ~outlying
+        log.debug(
+            f"Outlying pixels: {int(outlying.sum())} more pixels masked, {100 * (~background_mask).mean():.2f} percent in all"
+        )
         if self.mask_spikes:
             background_mask, nstars = spike_mask(rate, background_mask)
             log.debug(f"Spike mask: {nstars} bright stars, {100 * (~background_mask).mean():.2f} percent of pixels masked")
@@ -589,16 +699,22 @@ class StreamCleanStep(Step):
             Intermediate model holding the mask when ``save_mask`` is set,
             else None.
         """
+        # on a NIRSpec spectroscopic exposure the draft rate gets a WCS (and the failed-open shutters flagged), so
+        # that the slits or slices can be masked whole, faint ends of the spectra included
+        science_regions = str(model.meta.exposure.type).upper() in NRS_SPECTROSCOPIC_EXPOSURE_TYPES
         if self.user_mask is None:
-            image_model = make_processed_rate_image(
-                model,
-                True,
-                self.input_dir,
-                model.meta.exposure.type,
-                False,
-                flat,
-                self.background_method,
-            )
+            try:
+                image_model = make_processed_rate_image(
+                    model, True, self.input_dir, model.meta.exposure.type, science_regions, flat, self.background_method
+                )
+            except (MSAFileError, NoDataOnDetectorError) as err:
+                log.warning(
+                    f"No WCS for the slit mask ({err}); only what the scene mask finds of the spectra is masked"
+                )
+                science_regions = False
+                image_model = make_processed_rate_image(
+                    model, True, self.input_dir, model.meta.exposure.type, False, flat, self.background_method
+                )
         else:
             image_model = model
 
@@ -606,10 +722,20 @@ class StreamCleanStep(Step):
             rate = np.array(image_model.data, dtype=np.float64)
             if hasattr(image_model, "dq") and image_model.dq is not None:
                 rate[(image_model.dq & dqflags.pixel["DO_NOT_USE"]) > 0] = np.nan
+            if self.edge_coupling:
+                self._stripe_gain = self._draft_stripe_gain(rate, model.meta.subarray.fastaxis, model.meta.subarray.slowaxis)
             background_mask = self._chisel_scene_mask(rate, self._scene_flat)
             if self._reference is not None:
                 self._fit_reference(model, background_mask, flat)
                 background_mask = self._chisel_scene_mask(rate, self._scene_flat)
+            if science_regions:
+                regions = np.asarray(create_mask(image_model, mask_science_regions=True, n_sigma=0, single_mask=True))
+                found = 100 * (~regions & ~background_mask).sum() / max((~regions).sum(), 1)
+                log.info(
+                    f"The slits or slices and the fixed-slit area cover {100 * (~regions).mean():.1f} percent of pixels, "
+                    f"of which the scene mask found {found:.0f} percent"
+                )
+                background_mask = background_mask & regions
             if self.background_method in SCALAR_BACKGROUND_METHODS and self._scene is None:
                 low, high = background_structure(rate, background_mask)
                 if high - low > 0.5:
@@ -971,6 +1097,11 @@ def first_group_time_ratio(model):
     return float(frame_time * (nframes + 1) / 2.0 / group_time)
 
 
+# the shortest period the Wiener gain passes on NIRSpec, in clocks: 600 on the IRS2 grid (712 clocks per 512-pixel
+# row) and the same 431 pixels of stream on the traditional grid (524 clocks per row); see _resolve_min_period
+NIRSPEC_MIN_PERIOD_IRS2 = 600
+NIRSPEC_MIN_PERIOD = 442
+
 WFSS_EXPOSURE_TYPES = ("NIS_WFSS", "NRC_WFSS")
 
 
@@ -1007,7 +1138,7 @@ def dispersion_along_stream(model):
 
 
 def trace_geometry(model):
-    """Which way the traces of a WFSS exposure run relative to the readout stream.
+    """Which way the traces of a dispersed exposure run relative to the readout stream.
 
     Parameters
     ----------
@@ -1018,20 +1149,26 @@ def trace_geometry(model):
     -------
     str
         ``"along_stream"`` for a grism that disperses along it (NIRISS GR150R, NIRCam GRISMR), ``"along_columns"``
-        for a WFSS exposure whose grism disperses across it (GR150C, GRISMC), else ``"other"``.
+        for a WFSS exposure whose grism disperses across it (GR150C, GRISMC), ``"along_columns_masked"`` for
+        NIRSpec spectroscopy, whose spectra also run across the stream but are masked from the WCS, else ``"other"``.
     """
     if dispersion_along_stream(model) is not None:
         return "along_stream"
-    if str(model.meta.exposure.type).upper() in WFSS_EXPOSURE_TYPES:
+    exposure_type = str(model.meta.exposure.type).upper()
+    if exposure_type in WFSS_EXPOSURE_TYPES:
         return "along_columns"
+    if exposure_type in NRS_SPECTROSCOPIC_EXPOSURE_TYPES:
+        return "along_columns_masked"
     return "other"
 
 
 def _unsupported_reason(model):
     """Return why the model cannot be cleaned, or None if it can.
 
-    Supported input is NIRCam or NIRISS, group-level (4-D) data of the FULL
-    subarray whose column count splits into ``readout.NOUTPUTS`` channels.
+    Supported input is NIRCam, NIRISS or NIRSpec, group-level (4-D) data of
+    the FULL subarray whose column count splits into ``readout.NOUTPUTS``
+    channels; NIRSpec IRS2 data must have had its interleaved reference
+    pixels removed by the refpix step.
 
     Parameters
     ----------
@@ -1054,6 +1191,8 @@ def _unsupported_reason(model):
         return f"Subarray {model.meta.subarray.name} is not supported; only FULL frame"
     if model.data.shape[-1] % readout.NOUTPUTS != 0:
         return f"{model.data.shape[-1]} columns cannot be split into {readout.NOUTPUTS} channels"
+    if str(model.meta.exposure.readpatt or "").upper().startswith("NRSIRS2") and max(model.data.shape[-2:]) > 2048:
+        return "IRS2 data still holds its interleaved reference pixels; the refpix step removes them"
     return None
 
 
@@ -1126,6 +1265,7 @@ def clean_ramp(
     clean_first_group=False,
     flat=None,
     first_direction=1,
+    layout=None,
     max_lag=65536,
     return_spectra=False,
     first_group_scale=1.0,
@@ -1140,6 +1280,8 @@ def clean_ramp(
     zeroframe=None,
     zeroframe_scale=None,
     min_density=0.2,
+    outlier_sigma=None,
+    edge_coupling=False,
 ):
     """Clean every group difference of every integration and rebuild the groups.
 
@@ -1175,6 +1317,8 @@ def clean_ramp(
         If True, group 1 is cleaned as a difference against a plane of zeros.
     first_direction : int
         Readout direction of channel 0 in the detector frame.
+    layout : `~snowblind.readout.RowLayout` or None
+        Clock layout of a channel row (IRS2 or traditional); the traditional one when None.
     max_lag : int
         Autocorrelation length in clocks for the ``wiener`` spectrum.
     return_spectra : bool
@@ -1221,6 +1365,16 @@ def clean_ramp(
     min_density : float
         Local background fraction below which the ``wiener`` estimate blends
         toward the row median.
+    outlier_sigma : float or None
+        Per-difference guard against gross outliers in the background (see
+        `prepare_difference`); None switches it off.
+    edge_coupling : bool
+        ``wiener`` only.  Measure per integration how much of its
+        channel's noise each column near the physical edges of the
+        detector carries, and filter with that coupling
+        (`snowblind.detector_edges.coupling_profiles`); then measure the
+        noise the physical edges carry on their own in the cleaned
+        differences and remove it (`remove_edge_noise`).
     stats : dict or None
         When a dict is given it receives two lists with one entry per
         integration, both in DN per group difference averaged over the
@@ -1269,32 +1423,42 @@ def clean_ramp(
             clean_first_group=clean_first_group,
             flat=flat,
             first_direction=first_direction,
+            layout=layout,
             max_lag=max_lag,
             fixed_backgrounds=fixed,
+            outlier_sigma=outlier_sigma,
             first_group_reference=first_group_reference,
             first_group_scale=first_group_scale,
             min_period=min_period,
             notch_period=notch_period,
+            edge_coupling=edge_coupling,
         )
         gains = [[(ch["freq"], ch["gain"]) for ch in integration] for integration in spectra]
+        couplings = [[ch.get("coupling") for ch in integration] for integration in spectra]
         for i in range(nints):
             summary = ", ".join(
                 f"ch{k}: alpha={ch['alpha']:.2f} W={ch['white']:.3g} corner={ch['corner_period']:.0f} clocks"
                 for k, ch in enumerate(spectra[i])
             )
             log.debug(f"Integration {i + 1} noise spectra: {summary}")
+    edge_stream = edge_coupling and fit_method == "wiener"
 
     removed_power = [0.0] * nints
     removed_count = [0] * nints
     sky_shift_sum = [0.0] * nints
     sky_change_sum = [0.0] * nints
     sky_count = [0] * nints
+    outliers_dropped = [0] * nints
+    differences = [0] * nints
+    edge_bins = [{} for _ in range(nints)]
+    edge_sums = [None] * nints
     for i, j, image, mask in iterate_differences(data, groupdq, background_mask, clean_first_group, first_group_reference):
         if j == 0:
             previous = np.zeros_like(image) if first_group_reference is None else first_group_reference
         else:
             previous = cleaned[i, j - 1]
-        cleaned_image, _background = clean_difference(
+        mask_before = mask.copy()
+        cleaned_image, background = clean_difference(
             image,
             mask,
             fastaxis,
@@ -1303,13 +1467,19 @@ def clean_ramp(
             background_method=background_method,
             flat=flat,
             first_direction=first_direction,
+            layout=layout,
             channel_gains=None if gains is None else gains[i],
+            channel_couplings=None if gains is None else couplings[i],
             fixed_background=_fixed_for(fixed, i, j, first_group_scale),
             even_odd_columns=even_odd_columns,
             column_offsets=column_offsets,
             anchor_mean=anchor_mean,
             min_density=min_density,
+            outlier_sigma=outlier_sigma,
         )
+        # the guard is the only in-place change to the mask at finite pixels
+        outliers_dropped[i] += int(np.sum(mask_before & ~mask & np.isfinite(image)))
+        differences[i] += 1
         if cleaned_image is None:
             log.warning(f"No usable data in integration {i + 1}, group {j + 1}; difference left as is")
             cleaned_image = image
@@ -1324,12 +1494,30 @@ def clean_ramp(
                     sky_shift_sum[i] += shift
                     sky_change_sum[i] += change
                     sky_count[i] += 1
+            if edge_stream:
+                _series, xy, xx, means, counts = detector_edges.edge_stream_sums(
+                    readout.to_detector_frame(cleaned_image - background, fastaxis, slowaxis),
+                    readout.to_detector_frame(mask, fastaxis, slowaxis),
+                )
+                edge_bins[i][j] = (means, counts)
+                edge_sums[i] = (xy, xx) if edge_sums[i] is None else (edge_sums[i][0] + xy, edge_sums[i][1] + xx)
         cleaned[i, j] = previous + cleaned_image
+    edge_filters = [None] * nints
+    if edge_stream:
+        for i in range(nints):
+            if edge_sums[i] is not None:
+                edge_filters[i] = remove_edge_noise(cleaned[i], edge_bins[i], *edge_sums[i], fastaxis, slowaxis)
+                _log_edge_noise(i, edge_filters[i])
     for i in range(nints):
         if removed_count[i]:
             log.info(
                 f"Integration {i + 1}: removed 1/f noise with an rms of "
                 f"{np.sqrt(removed_power[i] / removed_count[i]):.2f} DN per group difference over the background pixels"
+            )
+        if outlier_sigma is not None and differences[i]:
+            log.info(
+                f"Integration {i + 1}: {outliers_dropped[i] / differences[i]:.0f} background pixels per group difference "
+                f"left out of its fit as outliers beyond {outlier_sigma:g} sigma, with their neighbours"
             )
     if stats is not None:
         stats["sky_shift"] = [total / n if n else np.nan for total, n in zip(sky_shift_sum, sky_count)]
@@ -1345,7 +1533,7 @@ def clean_ramp(
             mask &= ~unusable
             image = frame - reference
             scale = first_group_scale if zeroframe_scale is None else zeroframe_scale
-            cleaned_image, _background = clean_difference(
+            cleaned_image, background = clean_difference(
                 image,
                 mask,
                 fastaxis,
@@ -1354,16 +1542,27 @@ def clean_ramp(
                 background_method=background_method,
                 flat=flat,
                 first_direction=first_direction,
+                layout=layout,
                 channel_gains=None if gains is None else gains[i],
+                channel_couplings=None if gains is None else couplings[i],
                 fixed_background=None if fixed is None else fixed[i] * scale,
                 even_odd_columns=even_odd_columns,
                 column_offsets=column_offsets,
                 anchor_mean=anchor_mean,
                 min_density=min_density,
+                outlier_sigma=outlier_sigma,
             )
             if cleaned_image is None:
                 log.warning(f"No usable data in the zeroframe of integration {i + 1}; left as is")
                 continue
+            if edge_filters[i] is not None:
+                edge_gains, profiles, _rms, bin_gains = edge_filters[i]
+                residual_det = readout.to_detector_frame(cleaned_image - background, fastaxis, slowaxis)
+                sums = detector_edges.edge_stream_sums(residual_det, readout.to_detector_frame(mask, fastaxis, slowaxis))
+                series = detector_edges.weighted_edge_series(sums[3], sums[4], bin_gains)
+                cleaned_image = cleaned_image - edge_correction_image(
+                    _filtered_edge_series(series[np.newaxis], edge_gains), profiles, residual_det.shape, fastaxis, slowaxis
+                )[0]
             new = reference + cleaned_image
             new[unusable] = 0.0
             zeroframe[i] = np.where(np.isfinite(new), new, 0.0)
@@ -1371,6 +1570,130 @@ def clean_ramp(
     if return_spectra:
         return cleaned, spectra
     return cleaned
+
+
+def _filtered_edge_series(series, edge_gains):
+    """Filter the edge series of several differences with each edge's gain; zeros for an edge without one.
+
+    Parameters
+    ----------
+    series : ndarray, shape (ndiff, 2, nrows)
+        Edge series from `snowblind.detector_edges.edge_stream_sums`.
+    edge_gains : list of ndarray or None
+        Gain per edge from `snowblind.detector_edges.edge_stream_gain`,
+        for a transform of twice the next power of two above ``nrows``.
+
+    Returns
+    -------
+    ndarray of float32, shape (ndiff, 2, nrows)
+    """
+    filtered = np.zeros(series.shape, dtype=np.float32)
+    nfft = 1 << int(np.ceil(np.log2(2 * series.shape[-1])))
+    for e, gain in enumerate(edge_gains):
+        if gain is not None:
+            filtered[:, e] = detector_edges.filter_edge_series(series[:, e], gain, nfft)
+    return filtered
+
+
+def edge_correction_image(filtered, profiles, det_shape, fastaxis, slowaxis):
+    """The edge noise of each difference as a science-frame image: the filtered series times the column profile.
+
+    Parameters
+    ----------
+    filtered : ndarray, shape (ndiff, 2, nrows_det)
+        Filtered edge series of the low and high edge, per difference.
+    profiles : ndarray, shape (2, reach)
+        Column profiles from `snowblind.detector_edges.edge_profiles`,
+        counted from each edge inward.
+    det_shape : tuple of int
+        Shape of the detector frame.
+    fastaxis, slowaxis : int
+        The readout axis keywords of the exposure.
+
+    Returns
+    -------
+    ndarray of float32, shape (ndiff, nrows, ncols)
+        Science-frame images, zero away from the edges.
+    """
+    ndiff = filtered.shape[0]
+    reach = profiles.shape[1]
+    columns = detector_edges.edge_columns(det_shape[1], reach)
+    corrections = np.zeros((ndiff,) + tuple(det_shape), dtype=np.float32)
+    corrections[:, :, columns[0]] = filtered[:, 0, :, np.newaxis] * profiles[0][np.newaxis, np.newaxis, :]
+    corrections[:, :, columns[1]] = filtered[:, 1, :, np.newaxis] * profiles[1][::-1][np.newaxis, np.newaxis, :]
+    return np.ascontiguousarray(readout.to_science_frame(corrections, fastaxis, slowaxis))
+
+
+def remove_edge_noise(groups, bins_by_group, xy, xx, fastaxis, slowaxis):
+    """Measure the noise the physical edges carry on their own in one integration's cleaned differences, and remove it.
+
+    The column profile of each edge (`snowblind.detector_edges.edge_profiles`) comes from the sums of all the
+    differences; the bin means of each difference, combined with the
+    profile's gains as weights (`weighted_edge_series`), give the edge
+    series, which gets a Wiener gain along the readout rows
+    (`edge_stream_gain`); the filtered series times the profile is
+    subtracted from each difference, that is from every later group of
+    the integration.
+
+    Parameters
+    ----------
+    groups : ndarray of float32, shape (ngroups, nrows, ncols)
+        The cleaned groups of the integration, in the science frame;
+        updated in place.
+    bins_by_group : dict of int to tuple of ndarray
+        The bin means and counts (`edge_stream_sums`) of the difference
+        ending at each group index.
+    xy, xx : ndarray, shape (2, nbins)
+        Profile sums added over the differences.
+    fastaxis, slowaxis : int
+        The readout axis keywords of the exposure.
+
+    Returns
+    -------
+    tuple or None
+        ``(gains, profiles, rms, bin_gains)``: the gain per edge (None
+        for an edge without edge noise), the column profiles, the rms of
+        the removed series per edge in DN per difference and the bin
+        gains the series are weighted with; None when neither edge has
+        noise above white.
+    """
+    if not bins_by_group:
+        return None
+    order = sorted(bins_by_group)
+    bin_gains = detector_edges.edge_bin_gains(xy, xx)
+    stack = np.array([detector_edges.weighted_edge_series(*bins_by_group[j], bin_gains) for j in order])
+    nfft = 1 << int(np.ceil(np.log2(2 * stack.shape[-1])))
+    edge_gains = [detector_edges.edge_stream_gain(stack[:, e], nfft) for e in range(2)]
+    if all(gain is None for gain in edge_gains):
+        return None
+    profiles = detector_edges.edge_profiles(xy, xx)
+    filtered = _filtered_edge_series(stack, edge_gains)
+    rms = np.sqrt(np.mean(filtered.astype(np.float64) ** 2, axis=(0, 2)))
+    det_shape = readout.to_detector_frame(groups[0], fastaxis, slowaxis).shape
+    corrections = edge_correction_image(filtered, profiles, det_shape, fastaxis, slowaxis)
+    running = np.zeros(groups.shape[1:], dtype=np.float32)
+    for j in range(order[0], groups.shape[0]):
+        if j in bins_by_group:
+            running += corrections[order.index(j)]
+        groups[j] -= running
+    return edge_gains, profiles, rms, bin_gains
+
+
+def _log_edge_noise(i, edge_filter):
+    """Log what `remove_edge_noise` found for integration ``i``."""
+    if edge_filter is None:
+        log.info(f"Integration {i + 1}: the physical edges carry no noise of their own above white")
+        return
+    edge_gains, profiles, rms, _bin_gains = edge_filter
+    parts = []
+    for e, name in enumerate(("channel 0", f"channel {readout.NOUTPUTS - 1}")):
+        if edge_gains[e] is None:
+            parts.append(f"none at the edge of {name}")
+            continue
+        below_half = np.nonzero(profiles[e] < 0.5)[0]
+        extent = f"{below_half[0]} columns" if below_half.size else "the whole reach"
+        parts.append(f"{rms[e]:.2f} DN per difference at the edge of {name}, carried at half or more over {extent}")
+    log.info(f"Integration {i + 1}: removed the noise of the physical edges, rms " + "; ".join(parts))
 
 
 def sky_shift_and_change(sky, removed, response=None):
@@ -1522,7 +1845,7 @@ def _checked_background_method(background_method):
     return background_method
 
 
-def prepare_difference(image, mask, *, background_method="mean", flat=None, fixed_background=None):
+def prepare_difference(image, mask, *, background_method="mean", flat=None, fixed_background=None, outlier_sigma=None):
     """Mask NaNs and remove the background, in the raw DN of the difference.
 
     This is the part of ``_clean_one_image`` in the jwst step that comes
@@ -1560,6 +1883,14 @@ def prepare_difference(image, mask, *, background_method="mean", flat=None, fixe
     fixed_background : ndarray or float or None
         Background to subtract instead of fitting one, in DN per group
         difference (flat-fielded units when ``flat`` is given).
+    outlier_sigma : float or None
+        With a value, background pixels whose residual is further than this
+        many robust sigma (of the background residuals) from zero, and
+        their four neighbours, are set to False in ``mask``: unflagged
+        cosmic rays, pixels recovering from saturation, which would
+        otherwise spread along a few hundred clocks of their readout row.
+        At 10 sigma noise never trips it, so the mask stays the same from
+        one difference to the next except at such pixels.
 
     Returns
     -------
@@ -1598,6 +1929,11 @@ def prepare_difference(image, mask, *, background_method="mean", flat=None, fixe
     if flat is not None and method is not None:
         background = np.asarray(background, dtype=np.float32) * np.where(flat_ok, flat, 0.0)
     bkg_sub = image - background
+    if outlier_sigma is not None:
+        sigma = mad_std(bkg_sub[mask])
+        gross = mask & (np.abs(bkg_sub) > outlier_sigma * sigma)
+        if gross.any():
+            mask &= ~ndimage.binary_dilation(gross, structure=ndimage.generate_binary_structure(2, 1))
     return bkg_sub, background, nan_pix
 
 
@@ -1798,12 +2134,15 @@ def estimate_channel_gains(
     clean_first_group=False,
     flat=None,
     first_direction=1,
+    layout=None,
     max_lag=65536,
     fixed_backgrounds=None,
     first_group_reference=None,
     first_group_scale=1.0,
     min_period=None,
     notch_period=None,
+    outlier_sigma=None,
+    edge_coupling=False,
 ):
     """First pass of the ``wiener`` method: the noise spectrum and gain of every channel.
 
@@ -1837,6 +2176,8 @@ def estimate_channel_gains(
         Flat field matching the images.
     first_direction : int
         Readout direction of channel 0 in the detector frame, 1 or -1.
+    layout : `~snowblind.readout.RowLayout` or None
+        Clock layout of a channel row (IRS2 or traditional); the traditional one when None.
     max_lag : int
         Requested autocorrelation length in clocks; capped at a quarter of
         the stream length.
@@ -1853,6 +2194,15 @@ def estimate_channel_gains(
         `channel_gain`).
     notch_period : float or None
         Period in clocks at which the gain is notched (see `channel_gain`).
+    outlier_sigma : float or None
+        Per-difference guard against gross outliers in the background (see
+        `prepare_difference`); None switches it off.
+    edge_coupling : bool
+        Also measure, per integration and channel, how much of the
+        channel's noise each column carries
+        (`snowblind.detector_edges.coupling_profiles`), under the key
+        ``coupling`` of the channel's dict: a profile over the channel's
+        columns, or None where it is 1 everywhere.
 
     Returns
     -------
@@ -1864,8 +2214,11 @@ def estimate_channel_gains(
     nints = data.shape[0]
     det_shape = readout.to_detector_frame(data[0, 0], fastaxis, slowaxis).shape
     slices = readout.channel_slices(det_shape[-1])
-    lag_default = min(max_lag, readout.stream_length(det_shape[0], readout.channel_width(det_shape[-1])) // 4)
+    width = readout.channel_width(det_shape[-1])
+    layout = layout or readout.RowLayout.traditional(width)
+    lag_default = min(max_lag, layout.stream_length(det_shape[0]) // 4)
     per_integration = [[[] for _ in slices] for _ in range(nints)]
+    coupling_sums = [None] * nints
     freq = None
 
     for i, j, image, mask in iterate_differences(
@@ -1877,15 +2230,19 @@ def estimate_channel_gains(
             background_method=background_method,
             flat=flat,
             fixed_background=_fixed_for(fixed_backgrounds, i, j, first_group_scale),
+            outlier_sigma=outlier_sigma,
         )
         if bkg_sub is None:
             continue
         image_det = readout.to_detector_frame(bkg_sub, fastaxis, slowaxis)
         mask_det = readout.to_detector_frame(mask, fastaxis, slowaxis)
-        freq, spectra = channel_spectra(image_det, mask_det, first_direction, max_lag)
+        freq, spectra = channel_spectra(image_det, mask_det, first_direction, max_lag, layout=layout)
         for k, spectrum in enumerate(spectra):
             if spectrum is not None:
                 per_integration[i][k].append(spectrum)
+        if edge_coupling:
+            xy, xx = detector_edges.coupling_sums(image_det, mask_det)
+            coupling_sums[i] = (xy, xx) if coupling_sums[i] is None else (coupling_sums[i][0] + xy, coupling_sums[i][1] + xx)
 
     results = []
     for i in range(nints):
@@ -1900,8 +2257,27 @@ def estimate_channel_gains(
                 continue
             median = np.median(per_integration[i][k], axis=0)
             channels.append(channel_gain(freq, median, min_period=min_period, notch_period=notch_period))
+        if coupling_sums[i] is not None:
+            profiles = detector_edges.coupling_profiles(*coupling_sums[i], width)
+            for k, profile in enumerate(profiles):
+                channels[k]["coupling"] = profile
+                if profile is not None:
+                    log.info(
+                        f"Integration {i + 1}: the columns near the physical edge of channel {k} carry its 1/f noise at "
+                        f"{_coupling_summary(k, profile)}"
+                    )
+            if all(profile is None for profile in profiles):
+                log.info(f"Integration {i + 1}: every column of every channel carries the channel's 1/f noise alike")
         results.append(channels)
     return results
+
+
+def _coupling_summary(channel, profile):
+    """Describe a coupling profile: its value at the physical edge and where it comes within 5 percent of 1."""
+    from_edge = profile if channel < readout.NOUTPUTS // 2 else profile[::-1]
+    within = np.nonzero(np.abs(from_edge - 1.0) <= detector_edges.COUPLING_TOLERANCE)[0]
+    reach = f"within 5 percent of the interior from {within[0]} columns in" if within.size else "below the interior throughout"
+    return f"{from_edge[0]:.2f} of the interior at the edge, {reach}"
 
 
 def zero_gain(max_lag):
@@ -1931,6 +2307,7 @@ def zero_gain(max_lag):
         "alpha": float("nan"),
         "white": 0.0,
         "corner_period": float("nan"),
+        "coupling": None,
     }
 
 
@@ -1998,6 +2375,7 @@ def channel_gain(freq, spectrum, alpha_bounds=(0.5, 1.5), fixed_alpha=None, min_
         "alpha": float(alpha),
         "white": float(white),
         "corner_period": corner_period,
+        "coupling": None,
     }
 
 
@@ -2036,6 +2414,7 @@ def write_spectra(path, spectra, detector, first_direction, max_lag):
                         "alpha": ch["alpha"],
                         "white": ch["white"],
                         "corner_period": ch["corner_period"],
+                        "coupling": ch.get("coupling"),
                     }
                     for ch in integration
                 ]
@@ -2057,12 +2436,15 @@ def clean_difference(
     background_method="mean",
     flat=None,
     first_direction=1,
+    layout=None,
     channel_gains=None,
+    channel_couplings=None,
     fixed_background=None,
     even_odd_columns=False,
     column_offsets=False,
     anchor_mean=False,
     min_density=0.2,
+    outlier_sigma=None,
 ):
     """Clean one group-difference image.
 
@@ -2095,9 +2477,13 @@ def clean_difference(
         Flat field matching ``image``.
     first_direction : int
         Readout direction of channel 0 in the detector frame.
+    layout : `~snowblind.readout.RowLayout` or None
+        Clock layout of a channel row (IRS2 or traditional); the traditional one when None.
     channel_gains : list of tuple or None
         For the ``wiener`` method, the ``(freq, gain)`` of each channel from
         `channel_gain`; None for the other methods.
+    channel_couplings : list of ndarray or None
+        Per-channel coupling profiles (see `estimate_noise`).
     fixed_background : ndarray or None
         Background to subtract instead of fitting one to this image.
     even_odd_columns : bool
@@ -2110,6 +2496,9 @@ def clean_difference(
     min_density : float
         Local background fraction below which the ``wiener`` estimate blends
         toward the row median.
+    outlier_sigma : float or None
+        Per-difference guard against gross outliers in the background (see
+        `prepare_difference`); None switches it off.
 
     Returns
     -------
@@ -2119,7 +2508,8 @@ def clean_difference(
         The background that was removed and restored.
     """
     bkg_sub, background, nan_pix = prepare_difference(
-        image, mask, background_method=background_method, flat=flat, fixed_background=fixed_background
+        image, mask, background_method=background_method, flat=flat, fixed_background=fixed_background,
+        outlier_sigma=outlier_sigma,
     )
     if bkg_sub is None:
         return None, None
@@ -2127,7 +2517,7 @@ def clean_difference(
     noise = estimate_noise(
         bkg_sub, mask, fastaxis, slowaxis, fit_method, first_direction, channel_gains,
         even_odd_columns=even_odd_columns, column_offsets=column_offsets, anchor_mean=anchor_mean,
-        min_density=min_density,
+        min_density=min_density, layout=layout, channel_couplings=channel_couplings,
     )
 
     cleaned = bkg_sub - noise + background
@@ -2208,6 +2598,8 @@ def estimate_noise(
     column_offsets=False,
     anchor_mean=False,
     min_density=0.2,
+    layout=None,
+    channel_couplings=None,
 ):
     """Estimate the 1/f noise of a background-subtracted image, channel by channel.
 
@@ -2228,6 +2620,8 @@ def estimate_noise(
         Key into `snowblind.stream_filters.FILTERS`, or ``'none'`` for no stream estimate (the offsets only).
     first_direction : int
         Readout direction of channel 0 in the detector frame.
+    layout : `~snowblind.readout.RowLayout` or None
+        Clock layout of a channel row (IRS2 or traditional); the traditional one when None.
     channel_gains : list of tuple or None
         For the ``wiener`` method, the ``(freq, gain)`` of each channel from
         `channel_gain`; None for the other methods.
@@ -2250,6 +2644,13 @@ def estimate_noise(
     min_density : float
         Local background fraction below which the ``wiener`` estimate blends
         toward the row median.
+    layout : `~snowblind.readout.RowLayout` or None
+        Clock layout of a channel row (IRS2 or traditional); the traditional one when None.
+    channel_couplings : list of ndarray or None
+        Per channel, the coupling of each of its columns to its noise
+        (`snowblind.detector_edges.coupling_profiles`), or None for 1
+        everywhere: the stream estimate of a column is scaled by it
+        (``wiener`` through the weighted filter, ``row_median`` directly).
 
     Returns
     -------
@@ -2264,6 +2665,7 @@ def estimate_noise(
     noise_det = np.zeros(image_det.shape, dtype=np.float32)
     for channel, columns in enumerate(readout.channel_slices(image_det.shape[-1])):
         direction = readout.channel_direction(channel, first_direction)
+        coupling = None if channel_couplings is None else channel_couplings[channel]
         block = np.ascontiguousarray(image_det[:, columns])
         block_mask = np.ascontiguousarray(mask_det[:, columns])
         alternating = even_odd_pattern(block, block_mask) if even_odd_columns else 0.0
@@ -2274,9 +2676,13 @@ def estimate_noise(
             estimate = np.zeros(residual.shape, dtype=np.float32)
         elif fit_method == "row_median":
             estimate = row_median_noise(residual, block_mask, direction)
+            if coupling is not None:
+                estimate = estimate * np.asarray(coupling, dtype=np.float32)[np.newaxis, :]
         else:
             gain = None if channel_gains is None else channel_gains[channel]
-            estimate = wiener_noise(residual, block_mask, direction, min_density=min_density, gain=gain)
+            estimate = wiener_noise(
+                residual, block_mask, direction, min_density=min_density, gain=gain, layout=layout, coupling=coupling
+            )
         if anchor_mean and fit_method != "none" and np.any(block_mask):
             estimate = estimate + (np.mean((block - fixed)[block_mask]) - np.mean(estimate[block_mask]))
         noise_det[:, columns] = fixed + estimate

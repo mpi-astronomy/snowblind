@@ -9,6 +9,7 @@ from stdatamodels.jwst.datamodels import dqflags
 
 from snowblind import StreamCleanStep, readout
 from snowblind.stream_clean import (
+    _unsupported_reason,
     background_structure,
     clean_difference,
     clipped_median_background,
@@ -1443,3 +1444,143 @@ def test_mean_slope_per_group_is_nan_without_a_warning_where_no_group_is_usable(
 
     assert np.isnan(slope[0, 0])
     assert abs(slope[1, 1] - 1.0) < 1e-6
+
+
+def make_nirspec_ramp_model(detector="NRS1", readpatt="NRSRAPID"):
+    """Small full-frame-like NIRSpec dark ramp (fast axis along science columns) with zero data and good DQ."""
+    model = make_ramp_model(fastaxis=2 if detector == "NRS1" else -2, slowaxis=1 if detector == "NRS1" else -1)
+    model.meta.instrument.name = "NIRSPEC"
+    model.meta.instrument.detector = detector
+    model.meta.exposure.type = "NRS_DARK"
+    model.meta.exposure.readpatt = readpatt
+    model.meta.filename = f"jw00000000000_00000_00000_{detector.lower()}_jump.fits"
+    return model
+
+
+@pytest.mark.parametrize("exposure_type", ["NRS_MSASPEC", "NRS_IFU", "NRS_FIXEDSLIT", "NRS_BRIGHTOBJ"])
+def test_trace_geometry_nirspec_spectroscopy_is_along_columns_masked(exposure_type):
+    """trace_geometry on a NIRSpec ramp of the given spectroscopic exposure type returns 'along_columns_masked'."""
+    model = make_nirspec_ramp_model()
+    model.meta.exposure.type = exposure_type
+
+    assert trace_geometry(model) == "along_columns_masked"
+
+
+def test_trace_geometry_nirspec_dark_is_other():
+    """trace_geometry on a NRS_DARK ramp returns 'other'."""
+    assert trace_geometry(make_nirspec_ramp_model()) == "other"
+
+
+def test_resolve_options_nirspec_spectroscopy_turns_off_column_offsets_only():
+    """StreamCleanStep()._resolve_options for 'along_columns_masked' gives wiener, column offsets off, even-odd on."""
+    assert StreamCleanStep()._resolve_options("along_columns_masked", None) == ("wiener", False, True)
+
+
+def test_resolve_options_nirspec_spectroscopy_column_offsets_true_overrides():
+    """StreamCleanStep(column_offsets=True)._resolve_options for 'along_columns_masked' keeps the column offsets on."""
+    assert StreamCleanStep(column_offsets=True)._resolve_options("along_columns_masked", None) == ("wiener", True, True)
+
+
+def test_resolve_min_period_default_is_300_on_nircam():
+    """StreamCleanStep()._resolve_min_period('NIRCAM') returns 300."""
+    assert StreamCleanStep()._resolve_min_period("NIRCAM") == 300
+
+
+def test_resolve_min_period_default_is_600_on_nirspec_irs2():
+    """StreamCleanStep()._resolve_min_period('NIRSPEC', 'NRSIRS2RAPID') returns 600."""
+    assert StreamCleanStep()._resolve_min_period("NIRSPEC", "NRSIRS2RAPID") == 600
+
+
+def test_resolve_min_period_default_is_442_on_nirspec_traditional_readout():
+    """StreamCleanStep()._resolve_min_period('NIRSPEC', 'NRSRAPID') returns 442."""
+    assert StreamCleanStep()._resolve_min_period("NIRSPEC", "NRSRAPID") == 442
+
+
+def test_resolve_min_period_given_value_overrides_the_instrument_default():
+    """StreamCleanStep(min_period=200)._resolve_min_period('NIRSPEC', 'NRSIRS2') returns 200."""
+    assert StreamCleanStep(min_period=200)._resolve_min_period("NIRSPEC", "NRSIRS2") == 200
+
+
+def test_resolve_min_period_zero_means_no_cut():
+    """StreamCleanStep(min_period=0)._resolve_min_period('NIRCAM') returns None."""
+    assert StreamCleanStep(min_period=0)._resolve_min_period("NIRCAM") is None
+
+
+def test_step_rejects_negative_min_period():
+    """StreamCleanStep(min_period=-1).run on a NIRSpec dark raises ValueError."""
+    with pytest.raises(ValueError, match="min_period"):
+        StreamCleanStep(min_period=-1).run(make_nirspec_ramp_model())
+
+
+def test_step_cleans_nirspec_dark(tmp_path):
+    """StreamCleanStep.call on a NIRSpec NRSRAPID dark sets COMPLETE."""
+    model = make_nirspec_ramp_model()
+    mask_path = write_mask(tmp_path, np.ones((NY, NX), dtype=bool))
+
+    result = StreamCleanStep.call(model, apply_flat_field=False, fit_method="row_median", user_mask=mask_path)
+
+    assert result.meta.cal_step.stream_clean == "COMPLETE"
+
+
+def test_step_skips_irs2_with_interleaved_reference_pixels():
+    """StreamCleanStep.call on NRSIRS2 data wider than 2048 (refpix not yet run) sets SKIPPED."""
+    model = datamodels.RampModel((1, 4, 3200, 2048))
+    model.meta.instrument.name = "NIRSPEC"
+    model.meta.instrument.detector = "NRS1"
+    model.meta.exposure.type = "NRS_DARK"
+    model.meta.exposure.readpatt = "NRSIRS2"
+    model.meta.subarray.name = "FULL"
+    model.meta.subarray.fastaxis = 2
+    model.meta.subarray.slowaxis = 1
+
+    assert _unsupported_reason(model) is not None
+
+
+def test_step_uses_irs2_layout_for_nrsirs2(tmp_path):
+    """StreamCleanStep on NRSIRS2RAPID data lays the channels out on the IRS2 clock grid."""
+    model = make_nirspec_ramp_model("NRS2", "NRSIRS2RAPID")
+    model.meta.exposure.nrs_normal = 16
+    model.meta.exposure.nrs_reference = 4
+    mask_path = write_mask(tmp_path, np.ones((NY, NX), dtype=bool))
+    step = StreamCleanStep(apply_flat_field=False, fit_method="row_median", user_mask=mask_path)
+
+    step.run(model)
+
+    assert step._layout == readout.RowLayout.irs2(NX // 4)
+
+
+def test_prepare_difference_outlier_sigma_drops_a_gross_outlier_and_its_neighbours():
+    """prepare_difference with outlier_sigma=10 and one pixel at -1000 in unit noise masks that pixel and its four neighbours."""
+    rng = np.random.default_rng(6)
+    image = rng.normal(0.0, 1.0, (NY, NX)).astype(np.float32)
+    image[20, 30] = -1000.0
+    mask = np.ones((NY, NX), dtype=bool)
+
+    prepare_difference(image, mask, background_method="mean", outlier_sigma=10.0)
+
+    expected = np.ones((NY, NX), dtype=bool)
+    expected[20, 30] = expected[19, 30] = expected[21, 30] = expected[20, 29] = expected[20, 31] = False
+    np.testing.assert_array_equal(mask, expected)
+
+
+def test_prepare_difference_without_outlier_sigma_keeps_the_mask():
+    """prepare_difference without outlier_sigma leaves a pixel at -1000 in the mask."""
+    rng = np.random.default_rng(7)
+    image = rng.normal(0.0, 1.0, (NY, NX)).astype(np.float32)
+    image[20, 30] = -1000.0
+    mask = np.ones((NY, NX), dtype=bool)
+
+    prepare_difference(image, mask, background_method="mean")
+
+    assert mask.all()
+
+
+def test_prepare_difference_outlier_sigma_leaves_noise_alone():
+    """prepare_difference with outlier_sigma=10 on unit noise keeps every pixel in the mask."""
+    rng = np.random.default_rng(8)
+    image = rng.normal(0.0, 1.0, (NY, NX)).astype(np.float32)
+    mask = np.ones((NY, NX), dtype=bool)
+
+    prepare_difference(image, mask, background_method="mean", outlier_sigma=10.0)
+
+    assert mask.all()

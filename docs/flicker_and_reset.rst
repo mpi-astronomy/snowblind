@@ -1,8 +1,8 @@
 1/f cleaning along the readout stream and reset-anchored ramp fitting
 =====================================================================
 
-This page describes the two group-level steps of snowblind for NIRCam and
-NIRISS: ``StreamCleanStep`` (``stream_clean``), which removes 1/f
+This page describes the two group-level steps of snowblind for NIRCam,
+NIRISS and NIRSpec: ``StreamCleanStep`` (``stream_clean``), which removes 1/f
 (flicker) noise from the ramp, and ``ResetRampFitStep``
 (``reset_rampfit``), which fits the ramp with the reset level as an extra
 point. It covers what data they take, how to run them, how to choose
@@ -35,10 +35,11 @@ Both work on group data after the jump step and want the reference-pixel
 step run with the SIRS algorithm, which ``snowblind_detector1`` does; in the
 jwst pipeline, whose reference-pixel step defaults to a running median, give
 ``--steps.refpix.refpix_algorithm=sirs``.
-The stream clean takes full-frame NIRCam and NIRISS exposures and marks
-anything else SKIPPED. The reset-anchored fit needs a calibration of the detector's
-reset level; one is packaged for each of the ten NIRCam detectors and for
-NIRISS, and ``snowblind-reset-calib`` makes one from dark ramps.
+The stream clean takes full-frame NIRCam, NIRISS and NIRSpec exposures
+(see `NIRSpec`_) and marks anything else SKIPPED. The reset-anchored fit
+needs a calibration of the detector's reset level; one is packaged for
+each of the ten NIRCam detectors and for NIRISS, none yet for NIRSpec, and
+``snowblind-reset-calib`` makes one from dark ramps.
 
 Running the steps
 -----------------
@@ -203,6 +204,12 @@ Crowded fields and bright stars
    to wings at the cost of some banding left in; ``mask_dilation`` grows
    the masked regions into the wings.
 
+NIRSpec spectroscopy
+   The defaults work; the slits or slices are masked from the WCS on top
+   of the scene mask, the column offsets are off unless ``column_offsets``
+   is set, and a MOS exposure needs its MSA metafile next to the input.
+   See `NIRSpec`_.
+
 Dispersed (WFSS) exposures
    The step switches itself to ``background_method='crds_background'``
    and, unless ``column_offsets`` and ``even_odd_columns`` are set, turns
@@ -240,10 +247,13 @@ the stream), and 12 pixel times of overhead separate the end of one row
 from the start of the next, so a full-frame row takes 524 pixel times,
 5.24 ms. Channel 0 reads toward increasing detector column
 (``first_direction=1``), which was checked on darks of NIRCam short- and
-long-wavelength detectors and of NIRISS through the correlation of
-samples that straddle a row boundary. NIRCam reads along science rows and
-NIRISS along science columns, so on NIRISS the banding is vertical and
-the outputs are horizontal bands of the science frame.
+long-wavelength detectors, of NIRISS and of both NIRSpec detectors through
+the correlation of samples that straddle a row boundary. NIRCam reads
+along science rows, NIRISS and NIRSpec along science columns, so on those
+two the banding is vertical and the outputs are horizontal bands of the
+science frame. NIRSpec's IRS2 read patterns interleave reference reads
+with the pixels, which lengthens a row to 712 pixel times and leaves gaps
+in it (see `NIRSpec`_); the stream is laid out on that grid.
 
 The noise
 ~~~~~~~~~
@@ -340,11 +350,19 @@ the background model subtracted, leaves out the masked samples, and
 estimates the noise autocorrelation out to ``max_lag`` pixel times
 (65536, 0.66 s). From it comes the Wiener gain: at each period, the share
 of the power that is 1/f noise rather than the white floor. The gain is
-zero at periods shorter than ``min_period``, 300 pixel times (3 ms, about
-half a row), so the filter leaves alone anything that changes within a
-few hundred pixels along the stream, such as compact sources and the
-cores and near wings of stars; without the cutoff, injected faint
-sources lost about 12 percent of their flux. The masked samples are
+zero at periods shorter than ``min_period``, by default 300 pixel times
+(3 ms, about half a row) on NIRCam and NIRISS, so the filter leaves alone
+anything that changes within a few hundred pixels along the stream, such
+as compact sources and the cores and near wings of stars; without the
+cutoff, injected faint sources lost about 12 percent of their flux. On
+NIRSpec IRS2 exposures the default is 600 pixel times, 431 pixels or most
+of a channel row, since IRS2 spreads the 512 pixels of a row over 712
+clocks: the spectra there are masked from the WCS, and the estimate under
+a slice or shutter spectrum is carried across from the pixels between the
+traces, which cannot measure anything shorter (see below). On the other
+NIRSpec read patterns it is 442 pixel times, the same 431 pixels of
+stream on their 524-clock rows, derived from the IRS2 result rather than
+measured. A value of 0 removes the cutoff. The masked samples are
 bridged from the samples either side, and where the local fraction of
 background pixels is below ``min_density`` (0.2) the estimate tapers off.
 ``anchor_mean`` (on by default) sets each channel's mean removed noise to
@@ -458,6 +476,22 @@ reference, the flat reference and the group flags; the flat's own DQ
 matters where it is the only one that marks a defect, such as the
 occulting spots of NIRISS. ``mask_dilation`` grows the masked regions and
 ``user_mask`` replaces the mask.
+
+Two guards cover what the morphology misses. A single pixel far from the
+tiled sky, a hot pixel or one whose slope is strongly negative after a
+bad reset or a saturating event, is too small for the erosion to keep,
+yet its charge would spread along a few hundred pixel times of its
+readout row; every pixel more than 10 pixel sigma from the sky, in either
+direction, is left out with its four neighbors. And within each group
+difference, a background pixel further than ``outlier_sigma`` (default
+10) robust sigma from the background of that difference, an unflagged
+cosmic ray or a pixel recovering from saturation, is left out of that
+difference's fit with its four neighbors. At 10 sigma the noise never
+trips it, so the mask stays the same from one difference to the next
+except at such pixels, and the random walk that a 2 or 3 sigma clip per
+difference produces (see `The noise`_) does not arise. The step logs how
+many pixels per difference the guard dropped; ``outlier_sigma=None``
+switches it off.
 
 .. figure:: figures/flux_bias.png
    :width: 100%
@@ -701,6 +735,114 @@ removes it as slow noise; the same goes for scattered light that the
 reference does not hold. The traces are unaffected, as above, but the
 background level of the cleaned rate is then that of the reference.
 
+NIRSpec
+-------
+
+NIRSpec reads out like NIRISS, along science columns, and its full-frame
+science exposures almost all use the IRS2 read patterns (``NRSIRS2`` and
+``NRSIRS2RAPID``), in which the detector reads four reference pixels after
+every sixteen pixels of a row. The reference-pixel step uses them to
+remove most of the correlated noise and strips them from the data, so the
+stream clean sees a 2048 by 2048 frame as on the other instruments, but
+the clock grid of a row is different: 712 pixel times instead of 524,
+with the reference reads as gaps. The step reads the pattern from the
+header (``READPATT``, ``NRS_NORM`` and ``NRS_REF``) and lays the stream
+out on that grid; the measured spectra then peak at the row period, as
+they must. Data given to the step before the reference-pixel step, still
+3200 pixels wide, are refused with a message. The traditional read
+patterns (``NRSRAPID`` and ``NRS``) use the same grid as NIRCam and
+NIRISS. After the IRS2 correction the remaining 1/f noise is a small
+fraction of what the traditional patterns show, and the Wiener gain,
+which follows the measured spectrum, removes correspondingly less; the
+step is useful on both.
+
+On a MOS, IFU, fixed-slit or bright-object exposure the spectra cover a
+large part of the detector in traces that run across the readout stream,
+and the mask built from the image alone would catch only their bright
+parts. The step therefore assigns a WCS to the draft rate image, as the
+jwst ``clean_flicker_noise`` step does, and leaves out everything inside
+the slit or slice footprints, the failed-open shutters and the fixed-slit
+area of the detector, in addition to what the scene mask finds. On an IFU
+exposure that is more than half of the detector; the remaining pixels,
+between the slices and beyond them, are enough for a filter that works
+at periods above 600 pixel times. A MOS exposure needs its MSA metafile
+next to the input, as the later pipeline stages do; without it the step
+warns and masks only what the scene mask finds. The row-period notch of
+WFSS exposures is not applied, and neither it nor growing the mask did
+better than the defaults on the IFU exposure tested.
+
+The Wiener gain reaches down to periods of 600 pixel times on NIRSpec
+IRS2 exposures, 431 pixels along the stream or most of a channel row,
+against the 300 of the imaging instruments. A shorter cut takes more of
+the drift within a readout row out of the background: on the fully
+sampled NRS2 darks a cut of 100 brings the outer row bands to the white
+floor. On a science exposure that gain is not available, because under a
+slice or shutter spectrum the estimate is carried across from the pixels
+between the traces. With the cut at 100 the structure it puts there at
+scales of 8 to 64 rows is 1.7 times what the background shows and about
+as large as the noise it removes at those scales, which in a 30-row IFU
+extraction is 29 percent more noise in quadrature; at 300 it is 5
+percent and at 600 half a percent, while the noise coherent over a
+readout row and beyond, the bulk of the banding, is removed as fully as
+at 100 and the background keeps 10 to 20 percent more of its row-to-row
+scatter. A cut longer than a row (1200 pixel times) cannot follow the
+settling at the start of each row and leaves the bottom rows of a MOS
+exposure worse than uncleaned.
+
+The outer 200 rows at the top and bottom of NRS2, the science rows next
+to the two physical edges of the detector, carry their channel's 1/f
+noise at only part of the interior's amplitude, about half at the edge
+itself, and they carry a noise of their own, common along a readout row
+and shared by the two edges, that the rest of the detector does not have.
+A filter that treats every pixel of a readout row alike over-subtracts the
+first and leaves the second, and the cleaned rate keeps a column-wise
+residual several times the interior's in those rows. With
+``edge_coupling`` (on by default) the step measures both per exposure and
+corrects for both. The coupling of every column bin of a channel to the
+channel's noise is the regression of the bin's readout-row means on those
+of the half of the channel away from the edge, over the group differences
+of an integration; the filter then weights each pixel by its coupling, so
+that the estimate is the full noise everywhere and a pixel gets its own
+share of it. The same coupling, measured on the draft rate, goes into the
+destriping of the detection image for the scene mask, which would
+otherwise leave half of the strongest stripes in those rows and flag them
+as sources. The edge noise is measured per readout row from the cleaned
+residual of the 256 columns next to each edge: first its column profile,
+by regressing each 16-column bin on the mean over the outer 96 columns,
+then the series itself as the mean of the bins weighted by that profile,
+which is the combination with the best signal to noise and makes the
+extent of the edge a measured quantity. The series is Wiener-filtered
+along the readout rows with a gain from its own spectrum and subtracted
+with the profile; it has to hold at least twice the white power at the
+lowest frequencies, or it is left alone (the NRS2 darks show six to
+seven times, the NRS1 darks one, an IFU exposure on NRS2 1.2 to 1.8,
+where the filter has nothing to gain). On NRS1 the edges couple at 0.85 to
+0.9 and carry no edge noise the filter can act on, so the treatment
+changes the NRS1 edge rows by under a tenth of their residual; on a
+detector whose edges carry the noise like the interior the coupling
+measures 1 and nothing changes. The jwst ``picture_frame`` step does not
+touch either effect.
+
+The column offsets are off on these exposures. A detector column is a
+science row on NIRSpec, so a column's offset would be a constant along
+the length of a spectrum, measured from the few pixels of that column
+that lie outside the slits or slices; inside the slices of an IFU
+exposure those are too few to measure it, and the result was a row by
+row modulation of the spectra of 10 to 25 percent of the sky level. The
+offsets are real on NIRSpec, a few times 1e-4 DN/s per column, and they
+stay in the spectra, as after the jwst step; ``column_offsets=True``
+removes them anyway. The even-odd offset is one number per channel from
+all its background rows and stays on.
+
+``snowblind_detector1`` has no reset calibration for the NIRSpec
+detectors yet; run it with ``--reset_fit=False``, which gives the jwst
+ramp fit on the cleaned ramp, or run ``StreamCleanStep`` as a post-hook of
+the jump step in ``calwebb_detector1``. On the darks and the IFU exposure
+tested the stream clean brought the banding of the background to its
+white-noise floor, where the jwst step's median left part of it and grew
+with the number of groups, and NSClean left a near-constant fraction; the
+numbers are in the PLAN entries of 2026-11-14.
+
 Limitations
 -----------
 
@@ -716,7 +858,20 @@ Limitations
   as by any method that works on one exposure.
 * The faintest compact sources lose a few tenths of a percent of their
   flux. Extended-source photometry has not been tested.
-* The stream clean takes full-frame NIRCam and NIRISS data only.
+* The stream clean takes full-frame NIRCam, NIRISS and NIRSpec data only;
+  NIRSpec subarrays and the other modes with subarrays are not covered.
+* On NIRSpec, the slits and slices are masked from the WCS, and on the
+  IFU exposure tested the cleaning takes no flux out of them: pixels
+  selected by one half of the ramp change by the same small amount in
+  the other half whatever their brightness. Two things remain. The level
+  inside the footprints moves by about 1e-4 DN/s (under 0.02 DN per
+  group difference; NSClean and the jwst median move it by as much the
+  other way), which a nod or master-background subtraction from the same
+  cleaned data cancels. And the brightest pixels of a trace gain a few
+  tenths of a percent from the wing light in the gaps next to it, which
+  the filter's sidelobes turn into a negative estimate inside the trace;
+  ``mask_dilation=8`` removes that at the cost of most of the background.
+  MOS exposures and extracted spectra have not been compared yet.
 * On faint, short ramps the likelihood fit, with or without the reset
   point, can differ from OLS_C by a few tenths of a percent on the sky,
   and on frame-averaged ramps where most groups are flagged by more per
