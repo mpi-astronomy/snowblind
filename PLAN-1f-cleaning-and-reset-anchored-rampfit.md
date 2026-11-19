@@ -6595,3 +6595,14 @@ run_picture_frame_chain.py there).
     interior's banding at every cut above 100 (the edge coupling and
     row-start settling, as on the IRS2 darks, with no edge stream
     triggered). FITS rates per cut next to the npz files.
+
+- 2026-11-19: the outlier guard on a long dark ramp (does leaving outliers
+  out per difference bring back the random walk of the 2026-11-09 median
+  clip?). 8758 NRCA2 dark, 1 integration x 50 groups to jump, StreamCleanStep
+  with outlier_sigma 10 (default) and None, OLS_C; per-channel row-mean
+  scatter / white floor (channel_rows.py of the 2026-11-09 test): uncleaned
+  0.00165/0.00032 (5.2), guard 0.000279/0.000282 (0.99), no guard
+  0.000279/0.000286 (0.98); the median clip gave 3.05 on the same test. The
+  guard dropped 94 pixels per difference; guard minus no guard: largest pixel
+  change 0.0075 DN/s, row-mean scatter 0.000008 (40x below the floor). No
+  random walk: results/2026-11-19_outlier_guard_dark/ (npz, run.log, script).

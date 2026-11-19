@@ -77,19 +77,21 @@ META_SCHEMA = {
                 },
                 "reset_offset": {
                     "type": "array",
-                    "items": {"type": "number"},
-                    "title": "Offset of the reset level over the prior, per output channel (or one for all)",
+                    "items": {"type": "array", "items": {"type": "number"}},
+                    "title": "Offset of the reset level over the prior, per integration and output channel",
                     "description": (
-                        "Added to the prior of the reset level (the detector's mean pedestal map, or zero) in each "
-                        "output channel."
+                        "One list per integration, added to the prior of the reset level (the detector's mean "
+                        "pedestal map, or zero) in each output channel; a list holds one value when the fit used "
+                        "one offset for all channels."
                     ),
                 },
                 "reset_offset_origin": {
                     "type": "string",
                     "title": "Where reset_offset came from",
                     "description": (
-                        "sky: anchored to this exposure's sky pixels, keeping the prior's value in a channel "
-                        "with too few; prior: the reset calibration and the step's reset_offset."
+                        "sky: anchored to each integration's sky pixels; a channel with too few takes the median "
+                        "of the integration's other channels, and an integration in which no channel has enough "
+                        "keeps the prior's values; prior: the reset calibration and the step's reset_offset."
                     ),
                 },
                 "first_read_time_scale": {

@@ -9,6 +9,7 @@ from stdatamodels.jwst import datamodels
 from snowblind import ResetRampFitStep, StreamCleanStep, __version__, readout
 from snowblind.reset_calib import default_calibration, update_timing, write_calibration
 from snowblind.reset_rampfit import (
+    _sky_offsets_per_integration,
     calibrated_pedestal_map,
     highpass_prior,
     log_new_jumps,
@@ -47,9 +48,12 @@ def set_subarray(model):
     model.meta.instrument.detector = "NRCA1"
 
 
-def make_ramp(ngroups=5):
-    """Linear ramp of RATE DN/s, one frame per group, first read one frame time after reset."""
-    model = datamodels.RampModel((1, ngroups, NY, NX))
+def make_ramp(ngroups=5, offsets=(0.0,)):
+    """Linear ramp of RATE DN/s, one frame per group, first read one frame time after reset.
+
+    One integration per entry of ``offsets``, each shifted by its offset in DN.
+    """
+    model = datamodels.RampModel((len(offsets), ngroups, NY, NX))
     set_subarray(model)
     model.meta.exposure.type = "NRC_IMAGE"
     model.meta.exposure.nframes = 1
@@ -57,10 +61,11 @@ def make_ramp(ngroups=5):
     model.meta.exposure.frame_time = FRAME_TIME
     model.meta.exposure.group_time = FRAME_TIME
     model.meta.exposure.ngroups = ngroups
-    model.meta.exposure.nints = 1
+    model.meta.exposure.nints = len(offsets)
     model.meta.filename = "jw00000000000_00000_00000_nrca1_jump.fits"
     t = FRAME_TIME * np.arange(1, ngroups + 1)
-    model.data[0] = (RATE * t)[:, None, None]
+    for integration, offset in enumerate(offsets):
+        model.data[integration] = (offset + RATE * t)[:, None, None]
     return model
 
 
@@ -481,6 +486,55 @@ def test_call_without_anchoring_is_biased_by_a_wrong_offset(tmp_path):
     assert rate.data[4, 4] == pytest.approx(RATE + 7.0 / FRAME_TIME, rel=1e-4)
 
 
+def test_call_anchors_each_integrations_reset_offset(tmp_path):
+    """ResetRampFitStep.call on a 3-integration ramp shifted by +7, -5 and 0 DN gives a pixel saturated from group 2 the
+    rate RATE in every integration."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp(offsets=(7.0, -5.0, 0.0))
+    model.groupdq[:, 1:, 4, 4] = SAT
+
+    _rate, rateints = ResetRampFitStep.call(
+        model, sigma_b=15.0, anchor_max_signal=1e9, anchor_min_pixels=10, override_readnoise=rn, override_gain=gain,
+        override_superbias=bias,
+    )
+
+    np.testing.assert_allclose(rateints.data[:, 4, 4], RATE, rtol=1e-4)
+
+
+def test_sky_offsets_per_integration_recovers_each_integrations_offset():
+    """_sky_offsets_per_integration on a 3-integration ramp shifted by +5, -5 and 0 DN returns those offsets in every
+    channel."""
+    model = make_ramp(offsets=(5.0, -5.0, 0.0))
+    blocks = readout.channel_blocks((NY, NX), -1, 2)
+
+    table = _sky_offsets_per_integration(model, 0.0, [1.0] * 4, blocks, False, 1e9, 10, [0.0] * 4)
+
+    np.testing.assert_allclose(table, [[5.0] * 4, [-5.0] * 4, [0.0] * 4], atol=1e-4)
+
+
+def test_sky_offsets_per_integration_fills_a_channel_without_sky_from_the_others():
+    """_sky_offsets_per_integration on a ramp shifted by 4 DN, one channel all DO_NOT_USE, gives that channel 4 DN, the
+    median of the other channels, not the file's 0."""
+    model = make_ramp(offsets=(4.0,))
+    blocks = readout.channel_blocks((NY, NX), -1, 2)
+    rows, cols = blocks[2]
+    model.pixeldq[rows, cols] = DO_NOT_USE
+
+    table = _sky_offsets_per_integration(model, 0.0, [1.0] * 4, blocks, False, 1e9, 10, [0.0] * 4)
+
+    assert table[0, 2] == pytest.approx(4.0, abs=1e-4)
+
+
+def test_sky_offsets_per_integration_keeps_the_file_offsets_without_sky():
+    """_sky_offsets_per_integration with min_pixels above every channel's pixel count returns the file's offsets."""
+    model = make_ramp(offsets=(4.0,))
+    blocks = readout.channel_blocks((NY, NX), -1, 2)
+
+    table = _sky_offsets_per_integration(model, 0.0, [1.0] * 4, blocks, False, 1e9, 1000, [1.0, 2.0, 3.0, 4.0])
+
+    np.testing.assert_array_equal(table, [[1.0, 2.0, 3.0, 4.0]])
+
+
 def test_star_anchored_scales_recovers_a_short_first_read():
     """star_anchored_scales on ramps whose first read holds 80 percent of its nominal signal returns 0.8 per channel."""
     model = make_ramp()
@@ -622,8 +676,23 @@ def test_call_records_the_reset_offset_as_anchored_to_the_sky(tmp_path):
     assert out.meta.snowblind.reset_rampfit.reset_offset_origin == "sky"
 
 
+def test_call_records_one_reset_offset_row_per_integration(tmp_path):
+    """ResetRampFitStep.call on a 3-integration ramp shifted by +7, -5 and 0 DN records those offsets, one row of four
+    channels per integration."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp(offsets=(7.0, -5.0, 0.0))
+
+    out, _ints = ResetRampFitStep.call(
+        model, sigma_b=15.0, anchor_max_signal=1e9, anchor_min_pixels=10, override_readnoise=rn, override_gain=gain,
+        override_superbias=bias,
+    )
+
+    rows = [list(row) for row in out.meta.snowblind.reset_rampfit.reset_offset]
+    np.testing.assert_allclose(rows, [[7.0] * 4, [-5.0] * 4, [0.0] * 4], atol=1e-3)
+
+
 def test_call_without_anchoring_records_the_steps_reset_offset(tmp_path):
-    """ResetRampFitStep.call with sigma_b=15, reset_offset=3 and anchor_offset_to_sky off records reset_offset [3.0]."""
+    """ResetRampFitStep.call with sigma_b=15, reset_offset=3 and anchor_offset_to_sky off records reset_offset [[3.0]]."""
     rn, gain, bias = reference_files(tmp_path)
     model = make_ramp()
 
@@ -632,7 +701,7 @@ def test_call_without_anchoring_records_the_steps_reset_offset(tmp_path):
         override_superbias=bias,
     )
 
-    assert list(out.meta.snowblind.reset_rampfit.reset_offset) == [3.0]
+    assert [list(row) for row in out.meta.snowblind.reset_rampfit.reset_offset] == [[3.0]]
 
 
 def test_call_as_hook_returns_the_rate_image_alone(tmp_path):
@@ -683,13 +752,16 @@ def test_reset_prior_keeps_channel_offsets_with_a_t1_scale_override(tmp_path):
 
 
 def test_write_resetfit_records_the_channel_timing(tmp_path):
-    """write_resetfit with per-channel scales and offsets stores them and folds the mean offset into the level median."""
+    """write_resetfit with per-channel scales and one integration's offsets stores them and folds the mean offset into
+    the level median."""
     integ_info = {"used_reset": np.ones((1, 4, 4), dtype=bool), "d0_resid": np.zeros((1, 4, 4), dtype=np.float32)}
     path = tmp_path / "x_resetfit.asdf"
 
-    write_resetfit(str(path), integ_info, 15.0, 0.9, "NRCA1", reset_level=2.0, t1_scales=[0.9, 0.91], reset_offsets=[1.0, 3.0])
+    write_resetfit(
+        str(path), integ_info, 15.0, 0.9, "NRCA1", reset_level=2.0, t1_scales=[0.9, 0.91], reset_offsets=[[1.0, 3.0]]
+    )
 
     with asdf.open(str(path)) as handle:
         assert handle.tree["t1_scale_channels"] == [0.9, 0.91]
-        assert handle.tree["reset_offset_channels"] == [1.0, 3.0]
+        assert handle.tree["reset_offset_channels"] == [[1.0, 3.0]]
         assert handle.tree["reset_level_median"] == 4.0
