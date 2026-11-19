@@ -350,11 +350,19 @@ the background model subtracted, leaves out the masked samples, and
 estimates the noise autocorrelation out to ``max_lag`` pixel times
 (65536, 0.66 s). From it comes the Wiener gain: at each period, the share
 of the power that is 1/f noise rather than the white floor. The gain is
-zero at periods shorter than ``min_period``, 300 pixel times (3 ms, about
-half a row), so the filter leaves alone anything that changes within a
-few hundred pixels along the stream, such as compact sources and the
-cores and near wings of stars; without the cutoff, injected faint
-sources lost about 12 percent of their flux. The masked samples are
+zero at periods shorter than ``min_period``, by default 300 pixel times
+(3 ms, about half a row) on NIRCam and NIRISS, so the filter leaves alone
+anything that changes within a few hundred pixels along the stream, such
+as compact sources and the cores and near wings of stars; without the
+cutoff, injected faint sources lost about 12 percent of their flux. On
+NIRSpec IRS2 exposures the default is 600 pixel times, 431 pixels or most
+of a channel row, since IRS2 spreads the 512 pixels of a row over 712
+clocks: the spectra there are masked from the WCS, and the estimate under
+a slice or shutter spectrum is carried across from the pixels between the
+traces, which cannot measure anything shorter (see below). On the other
+NIRSpec read patterns it is 442 pixel times, the same 431 pixels of
+stream on their 524-clock rows, derived from the IRS2 result rather than
+measured. A value of 0 removes the cutoff. The masked samples are
 bridged from the samples either side, and where the local fraction of
 background pixels is below ``min_density`` (0.2) the estimate tapers off.
 ``anchor_mean`` (on by default) sets each channel's mean removed noise to
@@ -757,11 +765,63 @@ the slit or slice footprints, the failed-open shutters and the fixed-slit
 area of the detector, in addition to what the scene mask finds. On an IFU
 exposure that is more than half of the detector; the remaining pixels,
 between the slices and beyond them, are enough for a filter that works
-at periods above 300 pixel times. A MOS exposure needs its MSA metafile
+at periods above 600 pixel times. A MOS exposure needs its MSA metafile
 next to the input, as the later pipeline stages do; without it the step
 warns and masks only what the scene mask finds. The row-period notch of
 WFSS exposures is not applied, and neither it nor growing the mask did
 better than the defaults on the IFU exposure tested.
+
+The Wiener gain reaches down to periods of 600 pixel times on NIRSpec
+IRS2 exposures, 431 pixels along the stream or most of a channel row,
+against the 300 of the imaging instruments. A shorter cut takes more of
+the drift within a readout row out of the background: on the fully
+sampled NRS2 darks a cut of 100 brings the outer row bands to the white
+floor. On a science exposure that gain is not available, because under a
+slice or shutter spectrum the estimate is carried across from the pixels
+between the traces. With the cut at 100 the structure it puts there at
+scales of 8 to 64 rows is 1.7 times what the background shows and about
+as large as the noise it removes at those scales, which in a 30-row IFU
+extraction is 29 percent more noise in quadrature; at 300 it is 5
+percent and at 600 half a percent, while the noise coherent over a
+readout row and beyond, the bulk of the banding, is removed as fully as
+at 100 and the background keeps 10 to 20 percent more of its row-to-row
+scatter. A cut longer than a row (1200 pixel times) cannot follow the
+settling at the start of each row and leaves the bottom rows of a MOS
+exposure worse than uncleaned.
+
+The outer 200 rows at the top and bottom of NRS2, the science rows next
+to the two physical edges of the detector, carry their channel's 1/f
+noise at only part of the interior's amplitude, about half at the edge
+itself, and they carry a noise of their own, common along a readout row
+and shared by the two edges, that the rest of the detector does not have.
+A filter that treats every pixel of a readout row alike over-subtracts the
+first and leaves the second, and the cleaned rate keeps a column-wise
+residual several times the interior's in those rows. With
+``edge_coupling`` (on by default) the step measures both per exposure and
+corrects for both. The coupling of every column bin of a channel to the
+channel's noise is the regression of the bin's readout-row means on those
+of the half of the channel away from the edge, over the group differences
+of an integration; the filter then weights each pixel by its coupling, so
+that the estimate is the full noise everywhere and a pixel gets its own
+share of it. The same coupling, measured on the draft rate, goes into the
+destriping of the detection image for the scene mask, which would
+otherwise leave half of the strongest stripes in those rows and flag them
+as sources. The edge noise is measured per readout row from the cleaned
+residual of the 256 columns next to each edge: first its column profile,
+by regressing each 16-column bin on the mean over the outer 96 columns,
+then the series itself as the mean of the bins weighted by that profile,
+which is the combination with the best signal to noise and makes the
+extent of the edge a measured quantity. The series is Wiener-filtered
+along the readout rows with a gain from its own spectrum and subtracted
+with the profile; it has to hold at least twice the white power at the
+lowest frequencies, or it is left alone (the NRS2 darks show six to
+seven times, the NRS1 darks one, an IFU exposure on NRS2 1.2 to 1.8,
+where the filter has nothing to gain). On NRS1 the edges couple at 0.85 to
+0.9 and carry no edge noise the filter can act on, so the treatment
+changes the NRS1 edge rows by under a tenth of their residual; on a
+detector whose edges carry the noise like the interior the coupling
+measures 1 and nothing changes. The jwst ``picture_frame`` step does not
+touch either effect.
 
 The column offsets are off on these exposures. A detector column is a
 science row on NIRSpec, so a column's offset would be a constant along

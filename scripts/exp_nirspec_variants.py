@@ -12,7 +12,20 @@ subset):
 * ``dilate4`` and ``dilate8``: the scene mask grown by that many pixels;
 * ``no_offsets``: column and even-odd offsets off;
 * ``column_offsets``: column offsets on (the NIRSpec default is off);
-* ``notch_dilate4``: both.
+* ``notch_dilate4``: both;
+* ``min_period300``, ``min_period150`` and ``min_period100``: the Wiener
+  gain kept down to periods of 300, 150 or 100 clocks; the NIRSpec default
+  was 300 until 2026-11-18 and is 100 since, set with these runs against
+  the short-period drifts left at the top and bottom of NRS2;
+* ``min_period442``, ``min_period600`` and ``min_period1200``: longer
+  cuts, for the trade between the noise removed and the structure put
+  under the slices from the few pixels between them (600 is the IRS2
+  default since 2026-11-19, 442 the same length of stream on the
+  traditional readout);
+* ``edges`` and ``no_edges``: the measured edge coupling and edge noise
+  treatment of the NRS2 physical edges on (the default since 2026-11-18)
+  or off; ``no_edges`` with the current defaults is what ``min_period100``
+  was before the option existed.
 
 ``metrics.json`` holds, per variant, the background banding metrics and
 the change inside the slit or slice footprints, overall and binned by the
@@ -58,13 +71,24 @@ VARIANTS = {
     "no_offsets": (StreamCleanStep, {"column_offsets": False, "even_odd_columns": False}),
     "column_offsets": (StreamCleanStep, {"column_offsets": True}),
     "notch_dilate4": (NotchedStreamCleanStep, {"mask_dilation": 4}),
+    "min_period300": (StreamCleanStep, {"min_period": 300}),
+    "min_period150": (StreamCleanStep, {"min_period": 150}),
+    "min_period100": (StreamCleanStep, {"min_period": 100}),
+    "min_period442": (StreamCleanStep, {"min_period": 442}),
+    "min_period600": (StreamCleanStep, {"min_period": 600}),
+    "min_period1200": (StreamCleanStep, {"min_period": 1200}),
+    "edges": (StreamCleanStep, {"edge_coupling": True}),
+    "no_edges": (StreamCleanStep, {"edge_coupling": False}),
 }
 
 
 def binned_change(rate, reference, inside):
     """Median change in bins of the uncleaned signal's quantiles inside the regions."""
     signal = reference[inside]
-    edges = np.quantile(signal[np.isfinite(signal)], BINS)
+    signal = signal[np.isfinite(signal)]
+    if signal.size == 0:
+        return []
+    edges = np.quantile(signal, BINS)
     rows = []
     for lo, hi in zip(edges[:-1], edges[1:]):
         sel = inside & (reference >= lo) & (reference < hi)
@@ -149,12 +173,16 @@ def main():
         with open(metrics_path, "w") as handle:
             json.dump(metrics, handle, indent=2)
         b, r = metrics[name]["background"], metrics[name]["change_in_regions"]
-        top = metrics[name]["binned_change_in_regions"][-1]
+        bins = metrics[name]["binned_change_in_regions"]
+        brightest = "no regions"
+        if bins:
+            top = bins[-1]
+            brightest = (f"brightest 0.1%: {top['change_median']:+.5f} on {top['signal_median']:.3f} "
+                         f"({100 * top['change_median'] / top['signal_median']:+.2f}%)")
         print(
             f"{name:14s} bkg {100 * metrics[name]['background_fraction']:.1f}% columns {b['column_mean_scatter']:.5f} "
-            f"(floor {b['column_mean_white_floor']:.5f}) rows {b['row_mean_scatter']:.5f} | in regions mean {r['mean']:+.6f} "
-            f"slope {r['slope_vs_signal']:+.5f} | brightest 0.1%: {top['change_median']:+.5f} on {top['signal_median']:.3f} "
-            f"({100 * top['change_median'] / top['signal_median']:+.2f}%)"
+            f"(floor {b['column_mean_white_floor']:.5f}) rows {b['row_mean_scatter']:.5f} | in regions mean "
+            f"{r.get('mean', float('nan')):+.6f} slope {r.get('slope_vs_signal', float('nan')):+.5f} | {brightest}"
         )
     print(f"wrote {out_dir}")
 

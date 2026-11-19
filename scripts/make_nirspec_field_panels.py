@@ -39,6 +39,7 @@ import warnings
 import numpy as np
 from astropy.io import fits
 from jwst.clean_flicker_noise import CleanFlickerNoiseStep
+from jwst.assign_wcs.util import NoDataOnDetectorError
 from jwst.clean_flicker_noise.clean_flicker_noise import create_mask
 from jwst.ramp_fitting import RampFitStep
 
@@ -57,7 +58,11 @@ def save_rate(path, rate_model):
 
 def science_regions(jump, input_dir):
     """Boolean image, True inside the slit or slice footprints, the failed-open shutters and the fixed-slit area."""
-    draft = make_processed_rate_image(jump, True, input_dir, jump.meta.exposure.type, True, None, "mean")
+    try:
+        draft = make_processed_rate_image(jump, True, input_dir, jump.meta.exposure.type, True, None, "mean")
+    except NoDataOnDetectorError:
+        # a grating and filter whose spectra all fall on the other detector: no footprints here
+        return np.zeros(jump.data.shape[-2:], dtype=bool)
     background = np.asarray(create_mask(draft, mask_science_regions=True, n_sigma=0, single_mask=True))
     draft.close()
     return ~background
