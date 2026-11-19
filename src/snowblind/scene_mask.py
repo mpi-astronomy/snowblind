@@ -90,6 +90,7 @@ def chisel_mask(
     coarse_sky_box=256,
     coarse_max_grow=4,
     stripe_axes=(1, 0),
+    stripe_gain=None,
 ):
     """Background mask (True where background) that follows source wings.
 
@@ -168,6 +169,8 @@ def chisel_mask(
         a dispersed exposure leave out the axis the traces run along, or a
         trace over more than half a column sets that column's median and
         vanishes from the detection image.
+    stripe_gain : tuple of (int, ndarray) or None
+        Gain image for the medians along one axis (`remove_stripes`).
 
     Returns
     -------
@@ -178,18 +181,19 @@ def chisel_mask(
     finite = np.isfinite(rate)
     if background is not None:
         return _chisel_pass(rate, finite, np.broadcast_to(background, rate.shape), kernel_fwhm, qthresh, erode, opening,
-                            snquant, detgrowquant, max_hole, max_grow, stripe_axes)
+                            snquant, detgrowquant, max_hole, max_grow, stripe_axes, stripe_gain)
     mask = finite.copy()
     for _ in range(max(passes, 1)):
         sky = tiled_sky(rate, mask, sky_box)
         mask = _chisel_pass(
-            rate, finite, sky, kernel_fwhm, qthresh, erode, opening, snquant, detgrowquant, max_hole, max_grow, stripe_axes
+            rate, finite, sky, kernel_fwhm, qthresh, erode, opening, snquant, detgrowquant, max_hole, max_grow,
+            stripe_axes, stripe_gain,
         )
     if coarse_fwhm:
         sky = tiled_sky(rate, mask, coarse_sky_box)
         coarse = _chisel_pass(
             rate, finite, sky, coarse_fwhm, coarse_qthresh, coarse_erode, opening, snquant, detgrowquant, max_hole,
-            coarse_max_grow, stripe_axes,
+            coarse_max_grow, stripe_axes, stripe_gain,
         )
         mask &= coarse
     return mask
@@ -273,7 +277,7 @@ def outlier_pixel_mask(rate, background_mask, nsigma=10.0, box=32):
     return ndimage.binary_dilation(outlying, structure=ndimage.generate_binary_structure(2, 1))
 
 
-def remove_stripes(image, finite, axes=(1, 0), clip=3.0):
+def remove_stripes(image, finite, axes=(1, 0), clip=3.0, gain=None):
     """Subtract the per-row and then per-column clipped medians of the finite pixels.
 
     The draft rate image carries the 1/f banding that the cleaner exists to
@@ -297,6 +301,12 @@ def remove_stripes(image, finite, axes=(1, 0), clip=3.0):
     clip : float or None
         Pixels more than this many robust sigmas (MAD) from zero stay out
         of the medians; None uses every finite pixel.
+    gain : tuple of (int, ndarray) or None
+        ``(axis, image)``: the medians along that axis are multiplied by
+        ``image`` (shape of ``image`` above) before they are subtracted,
+        for pixels that carry only part of their stripe (the columns near
+        the physical edges of NRS2, see `snowblind.detector_edges`); None
+        subtracts the medians as they are.
 
     Returns
     -------
@@ -315,13 +325,16 @@ def remove_stripes(image, finite, axes=(1, 0), clip=3.0):
         warnings.filterwarnings("ignore", "All-NaN slice", RuntimeWarning)
         for axis in axes:
             medians = np.nanmedian(np.where(use, work, np.nan), axis=axis, keepdims=True)
-            work = work - np.where(np.isfinite(medians), medians, 0.0)
+            medians = np.where(np.isfinite(medians), medians, 0.0)
+            if gain is not None and gain[0] == axis:
+                medians = medians * gain[1]
+            work = work - medians
     return np.where(finite, work, 0.0)
 
 
 def _chisel_pass(
     rate, finite, background, kernel_fwhm, qthresh, erode, opening, snquant, detgrowquant, max_hole, max_grow,
-    stripe_axes=(1, 0),
+    stripe_axes=(1, 0), stripe_gain=None,
 ):
     """One NoiseChisel-style detection pass against a given background: True where background.
 
@@ -362,13 +375,15 @@ def _chisel_pass(
         Maximum number of one-pixel growth iterations.
     stripe_axes : tuple of int
         Axes of the medians `remove_stripes` takes out first.
+    stripe_gain : tuple of (int, ndarray) or None
+        Gain image for the medians along one axis (`remove_stripes`).
 
     Returns
     -------
     ndarray of bool, shape (nrows, ncols)
         True for background pixels: finite and not part of a grown detection.
     """
-    image = remove_stripes(np.where(finite, rate - background, 0.0), finite, axes=stripe_axes)
+    image = remove_stripes(np.where(finite, rate - background, 0.0), finite, axes=stripe_axes, gain=stripe_gain)
 
     sigma_kernel = kernel_fwhm / 2.3548
     convolved = ndimage.gaussian_filter(image, sigma_kernel, truncate=2.5 * kernel_fwhm / sigma_kernel)

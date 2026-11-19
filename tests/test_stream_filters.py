@@ -111,3 +111,32 @@ def test_boxcar_window_longer_than_stream_is_clamped():
         noise = boxcar_noise(image, mask, direction=1, window_length=4096, min_density=0.2)
 
     np.testing.assert_allclose(noise, 3.0, atol=1e-4)
+
+
+def test_boxcar_with_coupling_scales_the_estimate_at_the_coupled_columns():
+    """normalized_stream_filter with a coupling of 0.5 over the first 64 columns, on a slow pattern those columns carry
+    at 0.5, returns 0.5 times the pattern there and the pattern elsewhere, to 0.05 rms."""
+    rng = np.random.default_rng(11)
+    pattern = slow_pattern(NROWS, WIDTH, 1)
+    coupling = np.ones(WIDTH)
+    coupling[:64] = 0.5
+    image = pattern * coupling[np.newaxis, :] + rng.normal(size=pattern.shape).astype(np.float32)
+    mask = np.ones(pattern.shape, dtype=bool)
+
+    noise = normalized_stream_filter(image, mask, 1, boxcar_response(2048), 0.2, coupling=coupling)
+
+    inner = slice(8, NROWS - 8)
+    expected = pattern * coupling[np.newaxis, :]
+    assert np.sqrt(np.mean((noise[inner] - expected[inner]) ** 2)) < 0.05
+
+
+def test_boxcar_with_unit_coupling_matches_no_coupling():
+    """normalized_stream_filter with a coupling of 1 everywhere returns the same estimate as without coupling, to 1e-5."""
+    rng = np.random.default_rng(12)
+    image = slow_pattern(NROWS, WIDTH, 1) + rng.normal(size=(NROWS, WIDTH)).astype(np.float32)
+    mask = rng.uniform(size=image.shape) > 0.1
+
+    plain = normalized_stream_filter(image, mask, 1, boxcar_response(2048), 0.2)
+    coupled = normalized_stream_filter(image, mask, 1, boxcar_response(2048), 0.2, coupling=np.ones(WIDTH))
+
+    assert np.allclose(plain, coupled, atol=1e-5)

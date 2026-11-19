@@ -1481,6 +1481,37 @@ def test_resolve_options_nirspec_spectroscopy_column_offsets_true_overrides():
     assert StreamCleanStep(column_offsets=True)._resolve_options("along_columns_masked", None) == ("wiener", True, True)
 
 
+def test_resolve_min_period_default_is_300_on_nircam():
+    """StreamCleanStep()._resolve_min_period('NIRCAM') returns 300."""
+    assert StreamCleanStep()._resolve_min_period("NIRCAM") == 300
+
+
+def test_resolve_min_period_default_is_600_on_nirspec_irs2():
+    """StreamCleanStep()._resolve_min_period('NIRSPEC', 'NRSIRS2RAPID') returns 600."""
+    assert StreamCleanStep()._resolve_min_period("NIRSPEC", "NRSIRS2RAPID") == 600
+
+
+def test_resolve_min_period_default_is_442_on_nirspec_traditional_readout():
+    """StreamCleanStep()._resolve_min_period('NIRSPEC', 'NRSRAPID') returns 442."""
+    assert StreamCleanStep()._resolve_min_period("NIRSPEC", "NRSRAPID") == 442
+
+
+def test_resolve_min_period_given_value_overrides_the_instrument_default():
+    """StreamCleanStep(min_period=200)._resolve_min_period('NIRSPEC', 'NRSIRS2') returns 200."""
+    assert StreamCleanStep(min_period=200)._resolve_min_period("NIRSPEC", "NRSIRS2") == 200
+
+
+def test_resolve_min_period_zero_means_no_cut():
+    """StreamCleanStep(min_period=0)._resolve_min_period('NIRCAM') returns None."""
+    assert StreamCleanStep(min_period=0)._resolve_min_period("NIRCAM") is None
+
+
+def test_step_rejects_negative_min_period():
+    """StreamCleanStep(min_period=-1).run on a NIRSpec dark raises ValueError."""
+    with pytest.raises(ValueError, match="min_period"):
+        StreamCleanStep(min_period=-1).run(make_nirspec_ramp_model())
+
+
 def test_step_cleans_nirspec_dark(tmp_path):
     """StreamCleanStep.call on a NIRSpec NRSRAPID dark sets COMPLETE."""
     model = make_nirspec_ramp_model()

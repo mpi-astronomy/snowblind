@@ -307,3 +307,30 @@ def test_outlier_pixel_mask_marks_a_strongly_negative_pixel():
 
     assert hot[30, 40]
     assert hot.sum() == 5
+
+
+def test_remove_stripes_with_a_gain_image_takes_half_stripes_out_of_the_edge_rows():
+    """remove_stripes with gain=(0, image) of 0.5 over the first 8 rows, on column stripes those rows carry at half,
+    returns zeros everywhere."""
+    rng = np.random.default_rng(13)
+    stripes = rng.uniform(-1, 1, size=(1, 64))
+    image = np.repeat(stripes, 64, axis=0)
+    image[:8] *= 0.5
+    gain = np.ones(image.shape)
+    gain[:8] = 0.5
+
+    out = remove_stripes(image, np.isfinite(image), axes=(0,), clip=None, gain=(0, gain))
+
+    assert np.abs(out).max() < 1e-9
+
+
+def test_remove_stripes_gain_on_another_axis_is_ignored():
+    """remove_stripes with gain=(1, image) and axes=(0,) returns the same as without a gain."""
+    rng = np.random.default_rng(14)
+    image = rng.normal(size=(64, 64))
+    gain = np.full(image.shape, 0.5)
+
+    plain = remove_stripes(image, np.isfinite(image), axes=(0,))
+    with_gain = remove_stripes(image, np.isfinite(image), axes=(0,), gain=(1, gain))
+
+    assert np.array_equal(plain, with_gain)

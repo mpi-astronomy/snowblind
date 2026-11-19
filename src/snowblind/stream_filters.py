@@ -46,7 +46,7 @@ def row_median_noise(channel_image, channel_mask, direction=1):
     return np.repeat(stripes[:, np.newaxis], channel_image.shape[1], axis=1).astype(np.float32)
 
 
-def normalized_stream_filter(channel_image, channel_mask, direction, response, min_density, layout=None):
+def normalized_stream_filter(channel_image, channel_mask, direction, response, min_density, layout=None, coupling=None):
     """Filter the masked readout stream of a channel with a given frequency response.
 
     The estimate on the full clock grid is the normalized masked convolution
@@ -55,6 +55,13 @@ def normalized_stream_filter(channel_image, channel_mask, direction, response, m
     The denominator is the local density of background samples after
     filtering.  Where it falls below ``min_density`` the ratio is not trusted
     and the estimate is blended toward the per-row masked median.
+
+    With a ``coupling`` profile ``g`` (columns that carry the channel's
+    noise at a fraction of its amplitude, see `snowblind.detector_edges`)
+    the convolution is ``irfft(G rfft(m g d)) / irfft(G rfft(m g^2))``,
+    whose expectation is the full-amplitude noise when a pixel's
+    expectation is ``g`` times it, and the estimate for a pixel is ``g``
+    times that.  Where ``g`` is 1 this is the plain filter.
 
     Parameters
     ----------
@@ -73,6 +80,9 @@ def normalized_stream_filter(channel_image, channel_mask, direction, response, m
         or negative returns the ratio without any blending.
     layout : `~snowblind.readout.RowLayout` or None
         Clock layout of a channel row; the traditional one when None.
+    coupling : ndarray or None, shape (width,)
+        Per-column coupling of the channel's pixels to its noise, in
+        detector column order; None for 1 everywhere.
 
     Returns
     -------
@@ -83,8 +93,13 @@ def normalized_stream_filter(channel_image, channel_mask, direction, response, m
     layout = layout or readout.RowLayout.traditional(width)
     mask = channel_mask & np.isfinite(channel_image)
     data = np.where(mask, channel_image, 0.0).astype(np.float64)
+    weights = mask.astype(np.float64)
+    if coupling is not None:
+        g = np.asarray(coupling, dtype=np.float64)[np.newaxis, :]
+        data = data * g
+        weights = weights * g**2
     stream = layout.to_stream(data, direction)
-    weights = layout.to_stream(mask.astype(np.float64), direction)
+    weights = layout.to_stream(weights, direction)
     nfft = 1 << int(np.ceil(np.log2(2 * stream.size)))
     gain = response(nfft)
     numerator = np.fft.irfft(gain * np.fft.rfft(stream, nfft), nfft)[: stream.size]
@@ -92,14 +107,20 @@ def normalized_stream_filter(channel_image, channel_mask, direction, response, m
     with np.errstate(invalid="ignore", divide="ignore"):
         ratio = np.where(density > 0, numerator / density, 0.0)
     estimate = layout.from_stream(ratio, nrows, direction)
+    fallback = row_median_noise(channel_image, channel_mask)
+    if coupling is not None:
+        estimate = estimate * g
+        fallback = fallback * g
+        # the blend wants the density of background samples, not of the weights
+        coverage = layout.to_stream(mask.astype(np.float64), direction)
+        density = np.fft.irfft(gain * np.fft.rfft(coverage, nfft), nfft)[: stream.size]
     if min_density <= 0:
         return estimate.astype(np.float32)
     blend = layout.from_stream(np.clip(density / min_density, 0.0, 1.0), nrows, direction)
-    fallback = row_median_noise(channel_image, channel_mask)
     return (blend * estimate + (1.0 - blend) * fallback).astype(np.float32)
 
 
-def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain=None, layout=None):
+def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain=None, layout=None, coupling=None):
     """Estimate the noise with a Wiener gain derived from the channel's own spectrum.
 
     Parameters
@@ -119,6 +140,9 @@ def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain
         convolution is well defined.
     layout : `~snowblind.readout.RowLayout` or None
         Clock layout of a channel row; the traditional one when None.
+    coupling : ndarray or None, shape (width,)
+        Per-column coupling of the channel's pixels to its noise (see
+        `normalized_stream_filter`); None for 1 everywhere.
 
     Returns
     -------
@@ -149,7 +173,9 @@ def wiener_noise(channel_image, channel_mask, direction=1, min_density=0.2, gain
         """
         return interpolate_gain(freq, values, nfft)
 
-    estimate = normalized_stream_filter(channel_image, channel_mask, direction, response, min_density, layout=layout)
+    estimate = normalized_stream_filter(
+        channel_image, channel_mask, direction, response, min_density, layout=layout, coupling=coupling
+    )
     return estimate.astype(np.float32)
 
 
