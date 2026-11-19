@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: publish-${{ github.ref }}
+  # a newer push replaces a pull request build, but a release always runs to the end
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Releases come from the upstream repository only.  The guard on every job
 # means a tag pushed to a fork runs nothing: no build, no contact with PyPI.
 jobs:
@@ -88,11 +93,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: >-
-          gh release view '${{ github.ref_name }}' --repo '${{ github.repository }}' > /dev/null 2>&1
-          || gh release create '${{ github.ref_name }}' --repo '${{ github.repository }}'
-          --title '${{ github.ref_name }}' --notes-file release_notes.md
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1
+          || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
+          --title "$GITHUB_REF_NAME" --notes-file release_notes.md
       - name: Upload the dists to the GitHub release
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: >-
-          gh release upload '${{ github.ref_name }}' dist/** --repo '${{ github.repository }}'
+          gh release upload "$GITHUB_REF_NAME" dist/** --repo "$GITHUB_REPOSITORY"

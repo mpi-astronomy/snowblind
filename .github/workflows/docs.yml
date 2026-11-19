@@ -44,8 +44,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      pages: write
-      id-token: write
+      pages: write  # mandatory for deploying to GitHub Pages
+      id-token: write  # deploy-pages uses it to prove the deployment comes from this workflow
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
