@@ -6606,3 +6606,108 @@ run_picture_frame_chain.py there).
   guard dropped 94 pixels per difference; guard minus no guard: largest pixel
   change 0.0075 DN/s, row-mean scatter 0.000008 (40x below the floor). No
   random walk: results/2026-11-19_outlier_guard_dark/ (npz, run.log, script).
+
+### 2026-11-24: how much banding the cleaning removes where it is not fitted
+
+Question: how much of the 1/f banding does msaexp's column median on the
+`_rate` file remove on NIRSpec MOS and IFU exposures, against the stream
+clean? On the way it turned out that every banding number so far was
+measured on the background pixels the cleaning was fitted on, which
+flatters any cleaning. The general result is in the docs section "How much
+banding is removed" of docs/flicker_and_reset.rst.
+
+The rate-file correction is grizli's `exposure_oneoverf_correction`
+(grizli 754cb05), as msaexp (db7e985) calls it: on IFU from
+`ifu.detector_corrections` (axis 0, `deg_pix=2048` so only the overall
+level is kept, manual mask = outside msaexp's s-flat slice mask grown by 4
+pixels, above -10 sigma), on MOS from `pipeline.exposure_oneoverf` (axis
+0, `deg_pix=256`, no slit mask). Reimplemented as `grizli_oneoverf` in
+scripts/exp_nirspec_rate_median.py, with photutils' SExtractor background
+in place of `sep`; the WCS footprints stand in for msaexp's s-flat mask.
+The CRDS server returned 504 for most of the day: all ramp fits used
+CRDS_CONTEXT=jwst_1584.pmap (operational that day) with CRDS_MODE=local.
+
+1. Held-out test on the science exposures (scripts/exp_nirspec_rate_median.py,
+   results/2026-11-24_nirspec_rate_median/). IFU jw01335004001_03101_00002
+   (G140H/F100LP, NRSIRS2, 16 groups) and MOS jw01345061001_07101_00003
+   (G395M/F290LP, NRSIRS2, 14 groups), NRS1 and NRS2, from the jump ramps of
+   results/2026-11-14_nirspec_workshop and 2026-11-16_nirspec_mos. The
+   background (outside the WCS footprints and the stream clean's scene mask)
+   is cut into 32-row blocks; each correction is fitted without the held-out
+   blocks and measured on them. Share of the column-mean banding above the
+   docs floor removed (IFU NRS1, IFU NRS2, MOS NRS1, MOS NRS2), half held out:
+   - msaexp as it runs (IFU recipe with growth 4; MOS recipe): 29, 57, 30, 18
+   - stream clean, defaults (min_period 600): 37, 55, 48, 72
+   - the same median with the WCS footprints not grown: 44, 65, 47, 72
+   One block in four held out (--sets 4, metrics_4sets.json): stream clean
+   44, 57, 46, 71; median 43, 61, 45, 72; msaexp as it runs 33, 56, 29, 17.
+   The stream clean gains with more fit pixels, the median does not.
+   IFU stream clean variants, half held out: min_period 1200 42, 56;
+   fit_method row_median -12, 25; footprints grown by 4 pixels in its fit
+   (fit pixels per readout row ~70 -> ~40) 2, 36. Background pixels per
+   readout row (of 512): IFU ~150, MOS ~200, in runs of 5-6 pixels between
+   gaps of 2-4. A 32-row block-mean metric was also tried and dropped.
+2. Floor check (scripts/check_banding_floor.py, floor_check.json in each
+   folder of 1.). White noise per pixel from the first-minus-last 16-row
+   half-block differences, robust sigma across columns: 51.3/49.8/57.1/60.5
+   (1e-4 DN/s) against the robust pixel sigma 45.9/45.5/52.3/54.5 (ratio
+   1.09-1.12) and the plain std 48.7/49.2/55.4/58.6: neighboring pixels share
+   noise along a column, so the docs floor is about 10 percent low.
+   Uncleaned banding above the measured floor, whole columns
+   6.0/10.2/6.6/15.8, single-amplifier 512-row segments 7.0/11.8/8.0/17.2:
+   each amplifier's own part is 36/35/43/21 percent of the segment variance.
+3. Darks with the footprints laid over (scripts/exp_nirspec_dark_footprints.py,
+   results/2026-11-24_nirspec_dark_footprints/). jw01121136001_02101_00001
+   NRS1/NRS2 (NRSIRS2RAPID, 20 groups, jump ramps of
+   results/2026-11-18_nirspec_irs2_dark), the IFU and MOS footprints of 1.;
+   stream clean with column_offsets=False (its spectroscopy setting), fitted
+   outside the footprints, measured inside against the measured floor.
+   Share removed inside, whole column / amplifier segment (IFU on NRS1, MOS
+   on NRS1, IFU on NRS2, MOS on NRS2):
+   - stream clean: 67/49, 60/42, 74/53, 71/51
+   - median, footprints not grown: 65/44, 61/43, 71/57, 72/55
+   - msaexp IFU recipe, growth 4: 53/38, 56/40, 61/50, 70/54
+   On the fitted pixels outside: stream clean 100/100 (92 whole on NRS2
+   IFU); the median 100 whole but only 47-64 per amplifier. Left inside per
+   amplifier: stream clean 1.9-2.4 times the floor, uncleaned 3.4-4.4.
+4. NIRCam and NIRISS darks with field masks laid over
+   (scripts/exp_dark_scene_masks.py, results/2026-11-24_dark_scene_masks/).
+   jw08758003001_05201_00001 NRCA1 and NRCALONG, jw09279002001_02201_00001
+   NIS; integration 1, 20 groups, cut through a memory map, Detector1 to
+   jump with SIRS (peak 2.3-4.4 GB). Masks: the stream_clean_mask.fits of
+   Omega Cen NRCA1 (2026-10-21_field_panels_v4), NEXUS NRCA1
+   (2026-10-23_coarse_mask), CEERS NRCALONG (2026-10-22_ceers_all), GRISMC
+   5398 NRCALONG (2026-10-27_nircam_wfss_panels_v5), F200W 3807
+   (2026-10-26_niriss_field_v3), GR150C 3383 (2026-10-27_wfss_panels_v5),
+   GR150R 4681 (2026-10-26_wfss_panels). Stream clean with the field type's
+   settings forced; grizli with its defaults (deg_pix 64, mask erosion on
+   imaging). Share removed inside, whole rows (columns) / amplifier:
+   - Omega Cen (28 percent masked): stream clean 73/57, grizli 38/28
+   - NEXUS (6): 48/40, 25/18
+   - CEERS (8): 65/51, 31/19
+   - GRISMC (15): 72/56, 42/22
+   - F200W (8): 53/39, 31/20
+   - GR150C (12): 60/48, 33/20
+   - GR150R (16): 0/0 (no stream filter by default), 37/21
+   Stream clean on its fitted pixels: 92-100. Left inside by the stream
+   clean: 1.3-2.0 times the floor over whole rows, uncleaned 2.4-5.3.
+   Uncleaned, inside and outside agree within 5 percent for Omega Cen,
+   CEERS and GRISMC, but inside is 10-20 percent higher for NEXUS and the
+   NIRISS masks: with few, unevenly spread pixels per row the floor is too
+   low there, so those shares are lower bounds for both.
+
+What it means: where nothing is fitted, about half of the banding a source
+or spectrum sees (one amplifier) stays after the stream clean; the "at the
+white floor" results of the docs figures and of the 2026-11-14 to 11-19
+NIRSpec entries are fitted-pixel numbers. On NIRSpec IFU and MOS the stream
+clean does no better than a whole-column median of the rate image with the
+footprints masked: its per-amplifier estimate could remove what the median
+cannot, but the estimate carried across the traces costs as much, and it
+depends steeply on the number of background pixels per readout row. On
+NIRCam and NIRISS imaging and GR150C/GRISMC it removes about twice what
+grizli's default removes. GR150R (and so GRISMR) keeps all its banding.
+
+Open: grizli with deg_pix 2048 on the NIRCam/NIRISS darks (is grizli's
+shortfall its 64-row smooth fit?); a floor that allows for uneven pixel
+counts per row; extracted spectra; the held-out test on NRSRAPID data; an
+option for GR150R/GRISMR.

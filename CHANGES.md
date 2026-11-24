@@ -48,6 +48,11 @@
   slopes, which the mask's erosion dropped before. On the NIRSpec darks
   such pixels made dark streaks along their readout rows in the cleaned
   rate.
+- The 1/f documentation has a new section on how much banding
+  `StreamCleanStep` removes under the masked sources, traces and spectra,
+  where it is not fitted, for each kind of exposure. The earlier
+  statements that it brings the banding to the white floor hold only on
+  the background pixels it is fitted on.
 
 ### Fixed
 
