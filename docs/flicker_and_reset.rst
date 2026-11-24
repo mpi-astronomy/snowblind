@@ -870,58 +870,47 @@ On the background pixels it is fitted on, the stream clean leaves no
 banding above the white floor, which is what the dark figures above
 show; under the mask it leaves more.
 
-The banding is the scatter of the means along the readout rows (row
-means on NIRCam, column means on NIRISS and NIRSpec) above the white
-floor, the scatter that pixel noise alone gives, measured from the data.
-It is given over whole rows and over the 512 pixels of a row that one
-output channel reads. The second is what a source or a spectrum sees:
-part of the banding belongs to each output alone, and a mean over the
-whole row averages it down.
+The measure is the row-mean scatter on NIRCam and the column-mean
+scatter on NIRISS and NIRSpec, the means taken along the readout rows,
+inside the mask. The table gives the share of the banding above the white
+floor that the stream clean removes, over whole rows or columns and over
+single-amplifier segments, the 512 pixels of a row that one amplifier
+reads. A source or a spectrum lies within one amplifier, so the
+single-amplifier segments are what it sees: part of the banding belongs
+to each amplifier alone, and a mean over the whole row or column averages
+it down. The even-odd and column offsets, which the stream clean also
+removes, are not part of this measure.
 
-.. list-table:: Banding under the mask. Removed: the share of the banding above the white floor. Left and uncleaned: the scatter over one output's part of a row, in units of the white floor.
+.. list-table:: Share of the banding above the white floor removed under the mask
    :header-rows: 1
-   :widths: 40 15 15 15 15
+   :widths: 50 25 25
 
    * - Data
-     - Removed, whole rows
-     - Removed, one output
-     - Left, one output
-     - Uncleaned, one output
+     - Whole rows or columns
+     - Single-amplifier segments
    * - NIRCam and NIRISS imaging
      - 48-73%
      - 39-57%
-     - 1.2-1.8
-     - 1.7-3.3
    * - WFSS dispersing across the readout stream (NIRISS GR150C, NIRCam
        GRISMC)
      - 60-72%
      - 48-56%
-     - 1.4-1.6
-     - 2.2-2.6
    * - WFSS dispersing along the readout stream (NIRISS GR150R, NIRCam
        GRISMR)
-     - none
-     - none
-     - 3.3
-     - 3.3
+     - 0% (even-odd and column offsets only)
+     - 0% (even-odd and column offsets only)
    * - NIRSpec IFU and MOS, IRS2 read patterns
      - 60-74%
      - 42-53%
-     - 1.9-2.4
-     - 3.0-4.7
 
 * The estimate under a masked area is carried across from the background
   pixels along the same readout rows, so the stream clean does best where
   many of them lie between the masked areas and least where few do, as
   between the slices of an IFU exposure.
 * On WFSS that disperses along the readout stream the stream filter is
-  off by default, so the banding stays (see `Dispersed exposures`_). Only
-  GR150R was measured.
-* The last two columns depend on how strong the darks' banding is
-  against their read noise, which varies with the read pattern and the
-  number of groups; the shares depend on it less. The NIRSpec darks were
-  read with one frame per group, so their banding stands higher above the
-  floor than in science exposures, which average several.
+  off by default; the step removes only the even-odd and column offsets
+  there, so the banding along the readout rows stays (see `Dispersed
+  exposures`_). Only GR150R was measured.
 * Where a mask covers only a few pixels of a row, as in sparse fields,
   the floor of those rows is underestimated, so the shares there are
   lower bounds.
