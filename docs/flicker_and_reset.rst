@@ -6,11 +6,10 @@ NIRISS and NIRSpec: ``StreamCleanStep`` (``stream_clean``), which removes 1/f
 (flicker) noise from the ramp, and ``ResetRampFitStep``
 (``reset_rampfit``), which fits the ramp with the reset level as an extra
 point. It covers what data they take, how to run them, how to choose
-their settings, how they work and where they are limited. The
-measurements behind the defaults, on darks and on a range of public
-imaging and WFSS fields, are recorded in the dated entries of
-``PLAN-1f-cleaning-and-reset-anchored-rampfit.md`` (section D) in the
-repository, and the scripts under ``scripts/`` regenerate them.
+their settings, how they work and where they are limited. The defaults
+rest on measurements on darks and on a range of public imaging, WFSS and
+NIRSpec exposures, which the scripts under ``scripts/`` in the repository
+regenerate.
 
 Summary
 -------
@@ -22,7 +21,9 @@ Summary
   per-difference medians, it adds no noise along the ramp, and it does
   better the more groups there are. It also removes the per-read
   even-odd column offsets and a per-column offset that drifts during the
-  integration.
+  integration. How much of the banding it removes under the masked
+  sources, traces and spectra, where it is not fitted, is in `How much
+  banding is removed`_.
 * ``ResetRampFitStep`` runs the stcal likelihood ramp fit with the
   superbias-subtracted reset level prepended as an extra resultant, with
   its own calibrated uncertainty and timing, so that pixels with a single
@@ -217,7 +218,8 @@ Dispersed (WFSS) exposures
    GRISMC); see `Dispersed exposures`_. Grisms that disperse along the
    readout stream (NIRISS GR150R, NIRCam GRISMR) get no stream filter
    (``fit_method='auto'`` is ``'none'`` there, only the offsets) unless
-   ``fit_method`` names ``'wiener'`` or ``'row_median'``.
+   ``fit_method`` names ``'wiener'`` or ``'row_median'``, so their banding
+   stays (see `How much banding is removed`_).
 
 Detectors or epochs the packaged calibration does not cover
    Measure your own reset calibration from dark ramps of the detector
@@ -280,8 +282,10 @@ clean removes what is left, within and between the output channels.
    about 30 at one row (5.24 ms) and 1000 at a second. After the clean
    (orange) the power at every period longer than the 3 ms cutoff is two
    to four orders of magnitude below the read-noise level: the row
-   banding and everything slower is removed. Below the cutoff the two
-   curves coincide by construction.
+   banding and everything slower is removed from the pixels the filter
+   was fitted on, which on a dark are all of them. Under masked sources,
+   where it is not fitted, part of it stays (see `How much banding is
+   removed`_). Below the cutoff the two curves coincide by construction.
 
 Why cleaning group differences can add noise
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -328,8 +332,9 @@ its clip leaves out stay in the mask the noise is fitted on.
    every group difference, yet the rate image keeps about as
    much row structure as with SIRS alone: over 20 groups the
    per-difference medians accumulate into as much as they removed. The
-   stream clean leaves the read noise, and its even-odd and column offset
-   corrections take out the column-to-column structure.
+   stream clean, fitted on every pixel of the dark, leaves the read noise
+   there, and its even-odd and column offset corrections take out the
+   column-to-column structure.
 
 .. figure:: figures/noise_vs_groups.png
    :width: 100%
@@ -340,7 +345,8 @@ its clip leaves out stay in the mask the noise is fitted on.
    halves the banding at 3 groups, crosses SIRS at about 12 groups and is
    5 times worse at 100, which is the turnover the JWST documentation on
    1/f noise reports for ``clean_flicker_noise``. The stream clean stays
-   below SIRS by about a factor of 2 at every length.
+   below SIRS by about a factor of 2 at every length. All three are
+   measured on the pixels the cleaning was fitted on.
 
 The filter
 ~~~~~~~~~~
@@ -769,11 +775,11 @@ parts. The step therefore assigns a WCS to the draft rate image, as the
 jwst ``clean_flicker_noise`` step does, and leaves out everything inside
 the slit or slice footprints, the failed-open shutters and the fixed-slit
 area of the detector, in addition to what the scene mask finds. On an IFU
-exposure that is more than half of the detector; the remaining pixels,
-between the slices and beyond them, are enough for a filter that works
-at periods above 600 pixel times. A MOS exposure needs its MSA metafile
-next to the input, as the later pipeline stages do; without it the step
-warns and masks only what the scene mask finds. The row-period notch of
+exposure that is more than half of the detector, and the estimate under
+the slices is carried across from the pixels between them and beyond
+them (see `How much banding is removed`_). A MOS exposure
+needs its MSA metafile next to the input, as the later pipeline stages
+do; without it the step warns and masks only what the scene mask finds. The row-period notch of
 WFSS exposures is not applied, and neither it nor growing the mask did
 better than the defaults on the IFU exposure tested.
 
@@ -782,16 +788,17 @@ IRS2 exposures, 431 pixels along the stream or most of a channel row,
 against the 300 of the imaging instruments. A shorter cut takes more of
 the drift within a readout row out of the background: on the fully
 sampled NRS2 darks a cut of 100 brings the outer row bands to the white
-floor. On a science exposure that gain is not available, because under a
-slice or shutter spectrum the estimate is carried across from the pixels
-between the traces. With the cut at 100 the structure it puts there at
+floor on the pixels it is fitted on. On a science exposure that gain is
+not available, because under a slice or shutter spectrum the estimate is
+carried across from the pixels between the traces. With the cut at 100
+the structure it puts there at
 scales of 8 to 64 rows is 1.7 times what the background shows and about
 as large as the noise it removes at those scales, which in a 30-row IFU
 extraction is 29 percent more noise in quadrature; at 300 it is 5
-percent and at 600 half a percent, while the noise coherent over a
-readout row and beyond, the bulk of the banding, is removed as fully as
-at 100 and the background keeps 10 to 20 percent more of its row-to-row
-scatter. A cut longer than a row (1200 pixel times) cannot follow the
+percent and at 600 half a percent, while on the background pixels the
+noise coherent over a readout row and beyond, the bulk of the banding, is
+removed as fully as at 100 and the background keeps 10 to 20 percent more
+of its row-to-row scatter. A cut longer than a row (1200 pixel times) cannot follow the
 settling at the start of each row and leaves the bottom rows of a MOS
 exposure worse than uncleaned.
 
@@ -843,14 +850,80 @@ all its background rows and stays on.
 ``snowblind_detector1`` has no reset calibration for the NIRSpec
 detectors yet; run it with ``--reset_fit=False``, which gives the jwst
 ramp fit on the cleaned ramp, or run ``StreamCleanStep`` as a post-hook of
-the jump step in ``calwebb_detector1``. On the darks and the IFU exposure
-tested the stream clean brought the banding of the background to its
-white-noise floor, where the jwst step's median left part of it and grew
-with the number of groups, and NSClean left a near-constant fraction; the
-numbers are in the PLAN entries of 2026-11-14.
+the jump step in ``calwebb_detector1``. On the background pixels it is
+fitted on, the stream clean brought the banding of the darks and of the
+IFU exposure tested to the white floor, where the jwst step's median left
+part of it and grew with the number of groups, and NSClean left a
+near-constant fraction. Under the slices and shutters, where nothing is
+fitted, part of the banding stays; see `How much banding is removed`_.
+
+How much banding is removed
+---------------------------
+
+The stream clean is never fitted under the masked sources, traces and
+spectra, and that is where the banding matters, so that is where it was
+measured: the scene masks of imaging and WFSS fields, and the slit and
+slice footprints of NIRSpec IFU and MOS exposures, were laid over darks
+of the same detector, the stream clean was fitted on the dark outside the
+mask, and the banding was measured inside it, where a dark has no signal.
+On the background pixels it is fitted on, the stream clean leaves no
+banding above the white floor, which is what the dark figures above
+show; under the mask it leaves more.
+
+The measure is the row-mean scatter on NIRCam and the column-mean
+scatter on NIRISS and NIRSpec, the means taken along the readout rows,
+inside the mask. The table gives the share of the banding above the white
+floor that the stream clean removes, over whole rows or columns and over
+single-amplifier segments, the 512 pixels of a row that one amplifier
+reads. A source or a spectrum lies within one amplifier, so the
+single-amplifier segments are what it sees: part of the banding belongs
+to each amplifier alone, and a mean over the whole row or column averages
+it down. The even-odd and column offsets, which the stream clean also
+removes, are not part of this measure.
+
+.. list-table:: Share of the banding above the white floor removed under the mask
+   :header-rows: 1
+   :widths: 50 25 25
+
+   * - Data
+     - Whole rows or columns
+     - Single-amplifier segments
+   * - NIRCam and NIRISS imaging
+     - 48-73%
+     - 39-57%
+   * - WFSS dispersing across the readout stream (NIRISS GR150C, NIRCam
+       GRISMC)
+     - 60-72%
+     - 48-56%
+   * - WFSS dispersing along the readout stream (NIRISS GR150R, NIRCam
+       GRISMR)
+     - 0% (even-odd and column offsets only)
+     - 0% (even-odd and column offsets only)
+   * - NIRSpec IFU and MOS, IRS2 read patterns
+     - 60-74%
+     - 42-53%
+
+* The estimate under a masked area is carried across from the background
+  pixels along the same readout rows, so the stream clean does best where
+  many of them lie between the masked areas and least where few do, as
+  between the slices of an IFU exposure.
+* On WFSS that disperses along the readout stream the stream filter is
+  off by default; the step removes only the even-odd and column offsets
+  there, so the banding along the readout rows stays (see `Dispersed
+  exposures`_). Only GR150R was measured.
+* Where a mask covers only a few pixels of a row, as in sparse fields,
+  the floor of those rows is underestimated, so the shares there are
+  lower bounds.
+* Extracted spectra and source photometry were not measured.
 
 Limitations
 -----------
+
+* Under masked sources, traces and spectra, where it is not fitted, the
+  stream clean removes only part of the banding: least where few
+  background pixels lie between the traces, and on WFSS that disperses
+  along the readout stream none by default. See `How much banding is
+  removed`_.
 
 * One exposure cannot tell extended emission from slow 1/f noise. The
   box background keeps structure above its box at the cost of the slow
