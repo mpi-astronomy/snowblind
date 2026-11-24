@@ -353,21 +353,78 @@ def test_d0_resid_has_unit_scatter():
 
 
 def test_too_few_groups_raises():
-    """likely_ramp_fit_reset with two groups raises ValueError."""
-    ramp_data, readnoise, gain = blank_ramp_data(2)
+    """likely_ramp_fit_reset with one group raises ValueError."""
+    ramp_data, readnoise, gain = blank_ramp_data(1)
 
-    with pytest.raises(ValueError, match="at least 3 groups"):
+    with pytest.raises(ValueError, match="at least 2 groups"):
         likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
 
 
-def test_three_groups_are_enough():
-    """likely_ramp_fit_reset fits a three-group ramp, which stcal alone would refuse."""
-    ramp_data, readnoise, gain = blank_ramp_data(3)
+def test_two_groups_are_enough():
+    """likely_ramp_fit_reset on a noiseless two-group ramp of 20 DN/s returns 20 DN/s."""
+    ramp_data, readnoise, gain = blank_ramp_data(2)
     linear_ramp(ramp_data, 20.0)
 
     image_info, _, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
 
     assert image_info["slope"][0, 0] == pytest.approx(20.0, rel=1e-6)
+
+
+def test_three_single_read_groups_search_for_jumps():
+    """likely_ramp_fit_reset on a three-group, one-read-per-group ramp with a 500 DN jump at group 2 flags JUMP_DET."""
+    ramp_data, readnoise, gain = blank_ramp_data(3)
+    linear_ramp(ramp_data, 20.0)
+    ramp_data.data[0, 2:, 0, 0] += 500.0
+
+    image_info, _, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert image_info["dq"][0, 0] & JUMP
+
+
+def test_three_groups_of_two_reads_skip_the_jump_search():
+    """likely_ramp_fit_reset on a three-group ramp of two reads per group with a 500 DN jump at group 2 flags no
+    JUMP_DET: with several reads per group the search needs four groups."""
+    ramp_data, readnoise, gain = blank_ramp_data(3, nframes=2)
+    linear_ramp(ramp_data, 20.0)
+    ramp_data.data[0, 2:, 0, 0] += 500.0
+
+    image_info, _, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert not image_info["dq"][0, 0] & JUMP
+
+
+def test_four_groups_of_two_reads_search_for_jumps():
+    """likely_ramp_fit_reset on a four-group ramp of two reads per group with a 500 DN jump at group 3 flags JUMP_DET."""
+    ramp_data, readnoise, gain = blank_ramp_data(4, nframes=2)
+    linear_ramp(ramp_data, 20.0)
+    ramp_data.data[0, 3:, 0, 0] += 500.0
+
+    image_info, _, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert image_info["dq"][0, 0] & JUMP
+
+
+def test_zero_read_noise_gives_no_rate_and_do_not_use():
+    """likely_ramp_fit_reset on a pixel with zero read noise returns a NaN slope flagged DO_NOT_USE."""
+    ramp_data, readnoise, gain = blank_ramp_data(5, ncols=2)
+    linear_ramp(ramp_data, 20.0)
+    readnoise[0, 1] = 0.0
+
+    image_info, _, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert np.isnan(image_info["slope"][0, 1])
+    assert image_info["dq"][0, 1] & DNU
+
+
+def test_no_usable_difference_gives_do_not_use():
+    """likely_ramp_fit_reset on a two-group ramp with both groups flagged JUMP_DET returns DO_NOT_USE for that pixel."""
+    ramp_data, readnoise, gain = blank_ramp_data(2)
+    linear_ramp(ramp_data, 20.0)
+    ramp_data.groupdq[0, :, 0, 0] = JUMP
+
+    image_info, _, _ = likely_ramp_fit_reset(ramp_data, readnoise, gain, SIGMA_B)
+
+    assert image_info["dq"][0, 0] & DNU
 
 
 def test_two_differences_are_both_kept_even_when_they_disagree():
