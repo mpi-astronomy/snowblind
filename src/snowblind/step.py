@@ -91,7 +91,8 @@ META_SCHEMA = {
                     "description": (
                         "sky: anchored to each integration's sky pixels; a channel with too few takes the median "
                         "of the integration's other channels, and an integration in which no channel has enough "
-                        "keeps the prior's values; prior: the reset calibration and the step's reset_offset."
+                        "takes the median of the other integrations, or the prior's values when none has; "
+                        "prior: the reset calibration and the step's reset_offset."
                     ),
                 },
                 "first_read_time_scale": {
@@ -230,10 +231,10 @@ class Step(JwstStep):
             Model to update.
         **values
             Each measurement by its name in `META_SCHEMA` for this step: a string,
-            a number or a list of numbers.  One with a ``fits_keyword`` there is
-            also written to that card of the primary header, through
-            ``model.extra_fits``, with the entry's ``fits_comment``, or else its
-            ``title``, as the comment.
+            a number, a list of numbers or a list of such lists.  One with a
+            ``fits_keyword`` there is also written to that card of the primary
+            header, through ``model.extra_fits``, with the entry's
+            ``fits_comment``, or else its ``title``, as the comment.
 
         Raises
         ------

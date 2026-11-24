@@ -60,7 +60,9 @@
   and used it for all of them, but the reset level moves between the
   integrations of an exposure, so the rates of the later integrations
   were biased. The step now measures the offset in each integration from
-  that integration's own sky pixels.
+  that integration's own sky pixels. The `reset_offset` record, and
+  `reset_offset_channels` in the `_resetfit.asdf` file, now hold one list
+  of channel offsets per integration.
 
 ## [1.4.1] - 2026-11-11
 

@@ -289,6 +289,28 @@ def test_call_uses_per_channel_timing_from_file(tmp_path):
     assert rate.data[y, x] == pytest.approx((model.data[0, 0, y, x] + 2.0) / (0.8 * FRAME_TIME), rel=1e-5)
 
 
+def test_call_without_anchoring_uses_the_files_channel_offsets_in_every_integration(tmp_path):
+    """ResetRampFitStep.call with anchor_offset_to_sky off on a 2-integration ramp gives a one-group pixel in the channel
+    with the file's -2 DN offset and 0.8 scale that channel's rate in both integrations."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp(offsets=(0.0, 0.0))
+    blocks = readout.channel_blocks((NY, NX), -1, 2)
+    y, x = 3, blocks[2][1].start
+    model.groupdq[:, 1:, y, x] = SAT
+    sigma_b = np.full((NY, NX), 12.0, dtype=np.float32)
+    calib = tmp_path / "nrca1_reset_calib.asdf"
+    write_calibration(calib, sigma_b, np.zeros_like(sigma_b), np.full((NY, NX), 10, dtype=np.int32), "NRCA1", [])
+    update_timing(calib, 0.9, -1.0, t1_scale_channels=[1.0, 1.0, 0.8, 1.0], reset_offset_channels=[0.0, 0.0, -2.0, 0.0])
+
+    _rate, rateints = ResetRampFitStep.call(
+        model, reset_calib=str(calib), anchor_offset_to_sky=False, override_readnoise=rn, override_gain=gain,
+        override_superbias=bias,
+    )
+
+    expected = (model.data[0, 0, y, x] + 2.0) / (0.8 * FRAME_TIME)
+    np.testing.assert_allclose(rateints.data[:, y, x], [expected, expected], rtol=1e-5)
+
+
 def test_call_t1_scale_override_disables_per_channel_timing(tmp_path):
     """ResetRampFitStep.call with an explicit t1_scale ignores the file's per-channel scales."""
     rn, gain, bias = reference_files(tmp_path)
@@ -513,16 +535,30 @@ def test_sky_offsets_per_integration_recovers_each_integrations_offset():
 
 
 def test_sky_offsets_per_integration_fills_a_channel_without_sky_from_the_others():
-    """_sky_offsets_per_integration on a ramp shifted by 4 DN, one channel all DO_NOT_USE, gives that channel 4 DN, the
-    median of the other channels, not the file's 0."""
-    model = make_ramp(offsets=(4.0,))
+    """_sky_offsets_per_integration on a ramp whose channels are shifted by 1, 2, 3 and 6 DN, channel 3 all DO_NOT_USE,
+    gives channel 3 the median of the other channels, 2 DN, not the file's 5."""
+    model = make_ramp()
     blocks = readout.channel_blocks((NY, NX), -1, 2)
+    for (rows, cols), offset in zip(blocks, [1.0, 2.0, 3.0, 6.0]):
+        model.data[0, :, rows, cols] += offset
     rows, cols = blocks[2]
     model.pixeldq[rows, cols] = DO_NOT_USE
 
+    table = _sky_offsets_per_integration(model, 0.0, [1.0] * 4, blocks, False, 1e9, 10, [0.0, 0.0, 5.0, 0.0])
+
+    assert table[0, 2] == pytest.approx(2.0, abs=1e-4)
+
+
+def test_sky_offsets_per_integration_fills_an_integration_without_sky_from_the_others():
+    """_sky_offsets_per_integration on a 3-integration ramp shifted by +4, +6 and 0 DN, every pixel of integration 3
+    flagged JUMP_DET, gives integration 3 the median of the other two, 5 DN, not the file's 0."""
+    model = make_ramp(offsets=(4.0, 6.0, 0.0))
+    model.groupdq[2, 1] = JUMP
+    blocks = readout.channel_blocks((NY, NX), -1, 2)
+
     table = _sky_offsets_per_integration(model, 0.0, [1.0] * 4, blocks, False, 1e9, 10, [0.0] * 4)
 
-    assert table[0, 2] == pytest.approx(4.0, abs=1e-4)
+    np.testing.assert_allclose(table[2], [5.0] * 4, atol=1e-4)
 
 
 def test_sky_offsets_per_integration_keeps_the_file_offsets_without_sky():
