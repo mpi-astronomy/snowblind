@@ -678,6 +678,14 @@ this search (4 sigma) made more false jumps than it caught real ones: a
 false jump splits a ramp into two segments, and where read noise
 dominates a split in the middle nearly doubles the pixel's noise.
 
+The fit takes ramps of two groups or more. Its own jump search needs
+three groups, or four when each group averages several reads, the reset
+point counting as one of the resultants the search needs; on shorter
+ramps the fit runs without it and the step warns. On two groups nothing
+flags jumps at all, since the jwst jump step does not search two-group
+ramps either. Pixels with zero read noise, or with no usable difference
+left to fit, get no rate and are flagged DO_NOT_USE.
+
 Dispersed exposures
 -------------------
 

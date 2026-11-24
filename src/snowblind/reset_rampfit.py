@@ -24,7 +24,7 @@ from stcal.ramp_fitting.ramp_fit import create_ramp_fit_class
 from stdatamodels.jwst.datamodels import dqflags
 
 from . import readout
-from .likely_fit_reset import MIN_NGROUPS, likely_ramp_fit_reset, likely_ramp_fit_reset_blocks
+from .likely_fit_reset import MIN_NGROUPS, likely_ramp_fit_reset, likely_ramp_fit_reset_blocks, searches_jumps
 from .reset_calib import (  # noqa: F401  superbias_difference is re-exported
     add_history,
     default_calibration,
@@ -125,7 +125,7 @@ class ResetRampFitStep(Step):
     the first-read scale per output channel, from the exposure itself;
     ``save_opt`` writes the
     ``used_reset`` and ``d0_resid`` diagnostics.  Fewer than ``MIN_NGROUPS``
-    groups gives no rate products, as in the jwst step.
+    (2) groups gives no rate products, as in the jwst step.
     """
 
     class_alias = "reset_rampfit"
@@ -180,7 +180,7 @@ class ResetRampFitStep(Step):
             this model is returned and the ``_rateints`` product is written.
         int_model : `~stdatamodels.jwst.datamodels.CubeModel` or None
             The per-integration rate product in DN/s.  Both are None when
-            the ramp has fewer than ``MIN_NGROUPS`` groups.
+            the ramp has fewer than ``MIN_NGROUPS`` (2) groups.
         """
         result = self.prepare_output(step_input, open_as_type=datamodels.RampModel)
 
@@ -189,6 +189,16 @@ class ResetRampFitStep(Step):
             # Like the jwst ramp_fit step when no fit is possible: no rate products.
             log.warning(f"ngroups = {ngroups} is below the minimum of {MIN_NGROUPS}; no fit done")
             return None, None
+        nframes = int(result.meta.exposure.nframes or 1)
+        if not searches_jumps(ngroups, nframes):
+            if ngroups == 2:
+                # the jwst jump step skips ramps of two groups
+                log.warning("Two groups are too few for any jump search: neither the jump step nor this fit flags jumps")
+            else:
+                log.warning(
+                    f"{ngroups} groups of {nframes} reads are too few for the fit's own jump search; "
+                    "only the jump step's flags are used"
+                )
 
         subtracted = superbias_basename(result.meta.ref_file.superbias.name)
         try:
@@ -233,7 +243,7 @@ class ResetRampFitStep(Step):
         )
         blocks = readout.channel_blocks(result.data.shape[-2:], result.meta.subarray.fastaxis, result.meta.subarray.slowaxis)
         nints = result.data.shape[0]
-        anchored = self.anchor_offset_to_sky and result.data.shape[1] >= 3
+        anchored = self.anchor_offset_to_sky
         # the prior without any scalar offset: the map (or zero); the offsets below are whole on top of it
         base = np.asarray(reset_level, dtype=np.float32) - np.float32(self._scalar_offset)
         if anchored:
@@ -643,7 +653,8 @@ def _first_resultant(model, use_zeroframe, integration=0):
         Pixels with no group flag, no DO_NOT_USE pixel flag, a usable
         first resultant and finite values.
     rest : ndarray of float64, shape (nrows, ncols)
-        Slope of groups 1 onwards in DN/s.
+        Slope of groups 1 onwards in DN/s, or of both groups of a two-group
+        ramp.
     t1 : float
         Mean time since reset of the first group in seconds.
     """
@@ -662,7 +673,9 @@ def _first_resultant(model, use_zeroframe, integration=0):
         first = np.asarray(data[0], dtype=np.float64)
         t_first = t1
         usable = np.ones(first.shape, dtype=bool)
-    rest = slope_per_group(data[1:], groupdq[1:]) / float(exposure.group_time)
+    # groups 1 onwards hold no difference of their own on a two-group ramp
+    later = slice(1, None) if data.shape[0] > 2 else slice(None)
+    rest = slope_per_group(data[later], groupdq[later]) / float(exposure.group_time)
     clean = np.all(groupdq == 0, axis=0) & ((model.pixeldq & dqflags.pixel["DO_NOT_USE"]) == 0) & usable
     clean &= np.isfinite(rest) & np.isfinite(first)
     return first, t_first, clean, rest, t1

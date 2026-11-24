@@ -53,6 +53,14 @@
   where it is not fitted, for each kind of exposure. The earlier
   statements that it brings the banding to the white floor hold only on
   the background pixels it is fitted on.
+- `ResetRampFitStep` fits ramps of two groups; it needed three (#47). The
+  reset offset is anchored to the sky on them too. Nothing searches a
+  two-group ramp for jumps, neither the jwst jump step nor the fit, and the
+  step warns. The fit's own jump search runs from three groups, or four
+  when each group averages several reads.
+- `ResetRampFitStep` gives pixels with zero read noise, or with no usable
+  difference left to fit, no rate and flags them DO_NOT_USE. It needs
+  stcal 1.21 or later.
 
 ### Fixed
 

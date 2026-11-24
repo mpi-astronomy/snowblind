@@ -202,10 +202,10 @@ def test_call_requires_sigma_b_for_a_detector_without_packaged_calibration(tmp_p
         ResetRampFitStep.call(model, override_readnoise=rn, override_gain=gain, override_superbias=bias)
 
 
-def test_call_skips_two_groups(tmp_path):
-    """ResetRampFitStep.call on a two-group ramp returns (None, None), as the jwst step does when it cannot fit."""
+def test_call_skips_one_group(tmp_path):
+    """ResetRampFitStep.call on a one-group ramp returns (None, None), as the jwst step does when it cannot fit."""
     rn, gain, bias = reference_files(tmp_path)
-    model = make_ramp(ngroups=2)
+    model = make_ramp(ngroups=1)
 
     rate, rateints = ResetRampFitStep.call(
         model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias
@@ -213,6 +213,43 @@ def test_call_skips_two_groups(tmp_path):
 
     assert rate is None
     assert rateints is None
+
+
+def test_call_fits_two_groups(tmp_path):
+    """ResetRampFitStep.call on a two-group ramp of RATE DN/s gives RATE everywhere."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp(ngroups=2)
+
+    rate, _ = ResetRampFitStep.call(
+        model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias
+    )
+
+    np.testing.assert_allclose(rate.data, RATE, rtol=1e-4)
+
+
+def test_call_anchors_the_reset_offset_on_two_groups(tmp_path):
+    """ResetRampFitStep.call on a two-group ramp shifted by +7 DN gives a pixel saturated in group 2 the rate RATE."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp(ngroups=2, offsets=(7.0,))
+    model.groupdq[0, 1, 4, 4] = SAT
+
+    rate, _ = ResetRampFitStep.call(
+        model, sigma_b=15.0, anchor_max_signal=1e9, anchor_min_pixels=10, override_readnoise=rn, override_gain=gain,
+        override_superbias=bias,
+    )
+
+    assert rate.data[4, 4] == pytest.approx(RATE, rel=1e-4)
+
+
+def test_call_warns_that_two_groups_get_no_jump_search(tmp_path, caplog):
+    """ResetRampFitStep.call on a two-group ramp logs a warning that nothing searches it for jumps."""
+    rn, gain, bias = reference_files(tmp_path)
+    model = make_ramp(ngroups=2)
+
+    with caplog.at_level(logging.WARNING, logger="snowblind.reset_rampfit"):
+        ResetRampFitStep.call(model, sigma_b=15.0, override_readnoise=rn, override_gain=gain, override_superbias=bias)
+
+    assert any("too few for any jump search" in record.getMessage() for record in caplog.records)
 
 
 def test_call_rejects_zero_sigma_b(tmp_path):
