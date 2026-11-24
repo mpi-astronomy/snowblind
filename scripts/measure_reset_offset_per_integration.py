@@ -66,6 +66,10 @@ def _offsets(ramp, t1_scales):
     for (r, c), k, offset in zip(blocks, t1_scales, offsets):
         signal = rest[r, c] * (t_first - (1.0 - k) * t1)
         faint = clean[r, c] & (signal < 50.0) & (signal > -20.0)
+        if not np.isfinite(offset):
+            # too few sky pixels for the step to measure this channel
+            out.append({"offset": None, "half_difference": None, "sky_pixels": int(faint.sum())})
+            continue
         residual = first[r, c] - signal
         halves = [np.median(residual[faint & checker[r, c]]), np.median(residual[faint & ~checker[r, c]])]
         out.append({
@@ -120,7 +124,10 @@ def main():
         summary["integrations"].append({"integration": number, "groups_used": groups, "t1_scales": scales, "channels": channels})
         del ramp
         os.remove(copy)
-        values = "  ".join(f"{c['offset']:+.2f} (+-{c['half_difference']:.2f})" for c in channels)
+        values = "  ".join(
+            "too few sky pixels" if c["offset"] is None else f"{c['offset']:+.2f} (+-{c['half_difference']:.2f})"
+            for c in channels
+        )
         print(f"{name} int {number}: {values}", flush=True)
         with open(os.path.join(out_dir, f"{name}.json"), "w") as handle:
             json.dump(summary, handle, indent=2)

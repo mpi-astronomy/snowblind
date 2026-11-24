@@ -24,7 +24,7 @@ from stcal.ramp_fitting.ramp_fit import create_ramp_fit_class
 from stdatamodels.jwst.datamodels import dqflags
 
 from . import readout
-from .likely_fit_reset import MIN_NGROUPS, likely_ramp_fit_reset, likely_ramp_fit_reset_blocks
+from .likely_fit_reset import MIN_NGROUPS, likely_ramp_fit_reset, likely_ramp_fit_reset_blocks, searches_jumps
 from .reset_calib import (  # noqa: F401  superbias_difference is re-exported
     add_history,
     default_calibration,
@@ -125,7 +125,7 @@ class ResetRampFitStep(Step):
     the first-read scale per output channel, from the exposure itself;
     ``save_opt`` writes the
     ``used_reset`` and ``d0_resid`` diagnostics.  Fewer than ``MIN_NGROUPS``
-    groups gives no rate products, as in the jwst step.
+    (2) groups gives no rate products, as in the jwst step.
     """
 
     class_alias = "reset_rampfit"
@@ -142,7 +142,7 @@ class ResetRampFitStep(Step):
         reset_offset = float(default=0.0)  # DN added to the prior mean of the reset level, on top of the file's or the anchored value
         anchor_offset_to_sky = boolean(default=True)  # measure the reset offset per channel in each integration from its own faint pixels instead of using the file's
         anchor_max_signal = float(default=50.0)  # DN; pixels whose first-resultant signal is below this count as sky for the anchor
-        anchor_min_pixels = integer(default=1000)  # a channel with fewer sky pixels than this in an integration takes the median of that integration's other channels, or the file's offset when none has enough
+        anchor_min_pixels = integer(default=1000)  # a channel with fewer sky pixels than this in an integration takes the median of that integration's other channels; an integration where none has enough takes the median of the other integrations, or the file's offsets when no integration has
         anchor_timing_to_stars = boolean(default=False)  # also fit the first-read scale per channel from this exposure's bright unsaturated pixels (needs many bright pixels)
         anchor_min_bright = integer(default=500)  # fewer bright pixels than this in a channel keeps the file's first-read scale there
         use_zeroframe = boolean(default=True)  # use the zeroframe when present
@@ -180,7 +180,7 @@ class ResetRampFitStep(Step):
             this model is returned and the ``_rateints`` product is written.
         int_model : `~stdatamodels.jwst.datamodels.CubeModel` or None
             The per-integration rate product in DN/s.  Both are None when
-            the ramp has fewer than ``MIN_NGROUPS`` groups.
+            the ramp has fewer than ``MIN_NGROUPS`` (2) groups.
         """
         result = self.prepare_output(step_input, open_as_type=datamodels.RampModel)
 
@@ -189,6 +189,16 @@ class ResetRampFitStep(Step):
             # Like the jwst ramp_fit step when no fit is possible: no rate products.
             log.warning(f"ngroups = {ngroups} is below the minimum of {MIN_NGROUPS}; no fit done")
             return None, None
+        nframes = int(result.meta.exposure.nframes or 1)
+        if not searches_jumps(ngroups, nframes):
+            if ngroups == 2:
+                # the jwst jump step skips ramps of two groups
+                log.warning("Two groups are too few for any jump search: neither the jump step nor this fit flags jumps")
+            else:
+                log.warning(
+                    f"{ngroups} groups of {nframes} reads are too few for the fit's own jump search; "
+                    "only the jump step's flags are used"
+                )
 
         subtracted = superbias_basename(result.meta.ref_file.superbias.name)
         try:
@@ -233,7 +243,7 @@ class ResetRampFitStep(Step):
         )
         blocks = readout.channel_blocks(result.data.shape[-2:], result.meta.subarray.fastaxis, result.meta.subarray.slowaxis)
         nints = result.data.shape[0]
-        anchored = self.anchor_offset_to_sky and result.data.shape[1] >= 3
+        anchored = self.anchor_offset_to_sky
         # the prior without any scalar offset: the map (or zero); the offsets below are whole on top of it
         base = np.asarray(reset_level, dtype=np.float32) - np.float32(self._scalar_offset)
         if anchored:
@@ -643,7 +653,8 @@ def _first_resultant(model, use_zeroframe, integration=0):
         Pixels with no group flag, no DO_NOT_USE pixel flag, a usable
         first resultant and finite values.
     rest : ndarray of float64, shape (nrows, ncols)
-        Slope of groups 1 onwards in DN/s.
+        Slope of groups 1 onwards in DN/s, or of both groups of a two-group
+        ramp.
     t1 : float
         Mean time since reset of the first group in seconds.
     """
@@ -651,7 +662,7 @@ def _first_resultant(model, use_zeroframe, integration=0):
 
     exposure = model.meta.exposure
     t1 = first_group_time(model)
-    data = np.asarray(model.data[integration], dtype=np.float64)
+    data = model.data[integration]
     groupdq = np.asarray(model.groupdq[integration])
     zeroframe = getattr(model, "zeroframe", None)
     if use_zeroframe and zeroframe is not None and np.any(zeroframe[integration] != 0):
@@ -659,10 +670,12 @@ def _first_resultant(model, use_zeroframe, integration=0):
         t_first = float(exposure.frame_time)
         usable = first != 0
     else:
-        first = data[0]
+        first = np.asarray(data[0], dtype=np.float64)
         t_first = t1
         usable = np.ones(first.shape, dtype=bool)
-    rest = slope_per_group(data[1:], groupdq[1:]) / float(exposure.group_time)
+    # groups 1 onwards hold no difference of their own on a two-group ramp
+    later = slice(1, None) if data.shape[0] > 2 else slice(None)
+    rest = slope_per_group(data[later], groupdq[later]) / float(exposure.group_time)
     clean = np.all(groupdq == 0, axis=0) & ((model.pixeldq & dqflags.pixel["DO_NOT_USE"]) == 0) & usable
     clean &= np.isfinite(rest) & np.isfinite(first)
     return first, t_first, clean, rest, t1
@@ -812,8 +825,11 @@ def _sky_offsets_per_integration(
 
     `sky_anchored_offsets` on each integration in turn.  A channel with too
     few sky pixels in an integration takes the median of that integration's
-    other channels, which move with it; when no channel has enough, the
-    integration keeps ``file_offsets``.  One warning sums up each of the two.
+    other channels, which mostly move with it; an integration in which no
+    channel has enough takes the median offsets of the integrations that
+    have, which lie closer than a calibration from another epoch, and
+    ``file_offsets`` serve only when no integration has enough.  One warning
+    sums up each case.
 
     Parameters
     ----------
@@ -832,7 +848,7 @@ def _sky_offsets_per_integration(
     min_pixels : int
         Passed to `sky_anchored_offsets`.
     file_offsets : sequence of float
-        Offset per channel in DN for an integration in which no channel has
+        Offset per channel in DN when no integration has a channel with
         enough sky pixels.
 
     Returns
@@ -842,17 +858,14 @@ def _sky_offsets_per_integration(
     """
     nints = model.data.shape[0]
     table = np.empty((nints, len(blocks)), dtype=np.float64)
-    from_other_channels, from_file = [], []
+    from_other_channels = []
     for integration in range(nints):
         resultant = _first_resultant(model, use_zeroframe, integration)
         row = np.array(sky_anchored_offsets(
             model, base_level, t1_scales, blocks, use_zeroframe, max_signal, min_pixels, resultant=resultant
         ))
         missing = ~np.isfinite(row)
-        if missing.all():
-            row = np.array(file_offsets, dtype=np.float64)
-            from_file.append(integration + 1)
-        elif missing.any():
+        if missing.any() and not missing.all():
             row[missing] = np.median(row[~missing])
             from_other_channels.append(integration + 1)
         table[integration] = row
@@ -862,12 +875,17 @@ def _sky_offsets_per_integration(
             "those channels take the median offset of the integration's other channels"
         )
         log.debug(f"Integrations with channels short of sky pixels: {from_other_channels}")
-    if from_file:
+    without_sky = ~np.isfinite(table[:, 0])
+    if without_sky.all():
+        table[:] = np.asarray(file_offsets, dtype=np.float64)
+        log.warning(f"No channel has {min_pixels} sky pixels in any integration; the calibration's reset offsets are used")
+    elif without_sky.any():
+        table[without_sky] = np.median(table[~without_sky], axis=0)
         log.warning(
-            f"No channel has {min_pixels} sky pixels in {len(from_file)} of {nints} integrations; "
-            "those integrations keep the calibration's reset offsets"
+            f"No channel has {min_pixels} sky pixels in {int(without_sky.sum())} of {nints} integrations; "
+            "those integrations take the median offsets of the other integrations"
         )
-        log.debug(f"Integrations keeping the calibration's offsets: {from_file}")
+        log.debug(f"Integrations without sky pixels: {(np.flatnonzero(without_sky) + 1).tolist()}")
     return table
 
 

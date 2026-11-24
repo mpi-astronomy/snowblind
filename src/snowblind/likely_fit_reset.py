@@ -1,7 +1,7 @@
 """Likelihood ramp fitting with the reset level as an extra resultant.
 
-Forked from ``stcal/src/stcal/ramp_fitting/likely_fit.py`` at stcal 1.19.0
-(commit 6cddca3, 2026-06-23): ``likely_ramp_fit``, ``mask_jumps``,
+Forked from ``stcal/src/stcal/ramp_fitting/likely_fit.py`` at stcal 1.21.0
+(commit 9c82e1a, 2026-11-10): ``likely_ramp_fit``, ``mask_jumps``,
 ``fit_ramps`` and ``compute_alphas_betas``.  Everything else is imported
 from stcal.  Changes, all inside the forked functions (plan section B.2):
 
@@ -33,8 +33,14 @@ from stcal.  Changes, all inside the forked functions (plan section B.2):
    integration.  Their first group is then the whole of group 1, at its own
    read times, rather than group 1 with an unknown first frame taken out.
    A zeroframe that is zero everywhere is ignored, as if there were none.
+8. stcal's minimum number of resultants for its jump search, 4, or 5 when
+   a group averages several reads, counts the reset resultant as one, so
+   the search runs from 3 groups (4 when groups average several reads).
 
-Snowball expansion (``flag_large_events``) is not carried over.
+Snowball expansion (``flag_large_events``) is not carried over, nor is
+stcal's copy of the fit's flags back into ``ramp_data.groupdq``: the
+zeroframe refit and `ResetRampFitStep`'s count of new jumps read the
+input flags from there after the fit.
 """
 import copy
 import logging
@@ -55,6 +61,7 @@ from stcal.ramp_fitting.likely_fit import (
     compute_ThetaDs,
     compute_Thetas,
     compute_thetas,
+    determine_diffs2use,
     get_ramp_result,
     get_readtimes,
     initial_count_rate_guess,
@@ -67,13 +74,32 @@ __all__ = [
     "ResetIntegInfo",
     "MIN_NGROUPS",
     "STCAL_PINNED_COMMIT",
+    "searches_jumps",
 ]
 
 log = logging.getLogger(__name__)
 
-STCAL_PINNED_COMMIT = "6cddca3"
-# stcal needs four resultants; the reset resultant supplies one of them.
-MIN_NGROUPS = 3
+STCAL_PINNED_COMMIT = "9c82e1a"
+# stcal's minimum: one difference between groups, besides the reset difference
+MIN_NGROUPS = 2
+
+
+def searches_jumps(ngroups, nframes):
+    """Whether the fit runs its own jump search on ramps of ``ngroups`` groups of ``nframes`` reads (change 8).
+
+    Parameters
+    ----------
+    ngroups : int
+        Number of groups per integration.
+    nframes : int
+        Number of reads averaged into each group.
+
+    Returns
+    -------
+    bool
+        True from 3 groups of single reads, or 4 groups of several reads.
+    """
+    return ngroups + 1 >= (4 if nframes == 1 else 5)
 
 
 class ResetIntegInfo(IntegInfo):
@@ -214,6 +240,7 @@ def likely_ramp_fit_reset(
         reset_time = 0.5 * first_time
     readtimes.insert(0, np.array([reset_time]))
     covar = Covar(readtimes)
+    search = searches_jumps(ngroups, ramp_data.nframes)
 
     readnoise_cds = np.asarray(readnoise_2d, dtype=float)
     readnoise_2d = readnoise_cds / SQRT2
@@ -260,12 +287,19 @@ def likely_ramp_fit_reset(
         allrateguesses = np.zeros((nrows, ncols))
 
         for row in range(nrows):
-            d2use = np.ones((diff.shape[0], ncols), np.uint8)
-            d2use[gdq[1:, row, :] != 0] = 0
-            d2use[gdq[:-1, row, :] != 0] = 0
+            d2use = determine_diffs2use(diff[:, row, :], gdq[:, row, :])
+            # Pixels without a positive, finite read noise cannot be fit.
+            d2use[:, ~(readnoise_2d[row] > 0)] = 0
             d2use_copy = d2use.copy()
             sb_row = sigma_b[row]
-            if ramp_data.rejection_threshold is not None:
+            if not search:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    result = fit_ramps_reset(
+                        diff[:, row], covar, gain_2d[row], readnoise_2d[row], sigma_b=sb_row, diffs2use=d2use
+                    )
+                countrates = result.countrate
+            elif ramp_data.rejection_threshold is not None:
                 threshold_one_omit = ramp_data.rejection_threshold**2
                 pval = scipy.special.erfc(ramp_data.rejection_threshold / SQRT2)
                 threshold_two_omit = scipy.stats.chi2.isf(pval, 2)
@@ -310,6 +344,8 @@ def likely_ramp_fit_reset(
 
         # The reset plane is not a group: leave it out of the DQ compression.
         pdq = utils.dq_compress_sect(ramp_data, gdq[1:], pdq)
+        # A ramp with no usable differences, the reset difference included, has no measured slope.
+        pdq[np.sum(alldiffs2use, axis=0) == 0] |= ramp_data.flags_do_not_use
         integ_class.dq[integ, :, :] = pdq
         del gdq
 
@@ -561,6 +597,11 @@ def mask_jumps_reset(
         best_dchisq_one = np.amax(dchisq_one * one_omit_ok[:, np.newaxis], axis=0)
         best_dchisq_two = np.amax(dchisq_two * two_omit_ok[:, np.newaxis], axis=0)
 
+        # stcal: dropping one difference needs three to choose from, dropping two needs four
+        num_valid_diffs = np.sum(diffs2use[:, recheck], axis=0)
+        best_dchisq_one[num_valid_diffs < 3] = 0
+        best_dchisq_two[num_valid_diffs < 4] = 0
+
         onedropbetter = best_dchisq_one - threshold_one_omit > best_dchisq_two - threshold_two_omit
 
         best_dchisq = best_dchisq_one * (best_dchisq_one > threshold_one_omit) * onedropbetter
@@ -570,14 +611,6 @@ def mask_jumps_reset(
 
         dropone = (dchisq_one == best_dchisq) & (onedropbetter)
         droptwo = (dchisq_two == best_dchisq) & (~onedropbetter)
-
-        # With only two usable differences (one ordinary difference plus the
-        # reset difference) the one-omit search is degenerate: dropping either
-        # leaves a perfect fit.  stcal never sees this case because such a ramp
-        # has a single difference there.  Keep both and let the weights decide.
-        too_few = np.sum(diffs2use[:, recheck], axis=0) <= 2
-        dropone[:, too_few] = False
-        droptwo[:, too_few] = False
 
         drop = np.any([np.sum(dropone, axis=0), np.sum(droptwo, axis=0)], axis=0)
 
@@ -602,8 +635,6 @@ def mask_jumps_reset(
         dropped[:] = False
         dropped[recheck] = drop
         recheck[:] = dropped
-
-        recheck[np.sum(diffs2use, axis=0) <= 3] = False
 
     return diffs2use, countrate
 
@@ -664,8 +695,14 @@ def fit_ramps_reset(
     if diffs2use is None:
         diffs2use = np.ones(diffs.shape, np.uint8)
 
+    # stcal: a pixel with no usable differences gets a placeholder covariance that keeps the
+    # algebra finite, and NaN results
+    no_diffs = np.sum(diffs2use, axis=0) == 0
+    rnoise = np.where(no_diffs, 1, rnoise)
+
     if count_rate_guess is None:
         count_rate_guess = initial_count_rate_guess(diffs, diffs2use)
+    count_rate_guess = np.where(no_diffs, 0, count_rate_guess)
 
     alpha_tuple, beta_tuple, scale = compute_alphas_betas_reset(
         count_rate_guess, gain, rnoise, covar, rescale, diffs, dn_scale, sigma_b
@@ -694,6 +731,8 @@ def fit_ramps_reset(
     )
 
     result = get_ramp_result(dC, A, B, C, scale, alpha_phnoise, alpha_readnoise, beta_phnoise, beta_readnoise)
+    for attr in ("countrate", "chisq", "uncert", "var_poisson", "var_rnoise"):
+        getattr(result, attr)[no_diffs] = np.nan
 
     # Change 5: normalized residual of the reset difference.
     with np.errstate(invalid="ignore", divide="ignore"):

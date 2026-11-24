@@ -607,15 +607,16 @@ The reset offset
 ~~~~~~~~~~~~~~~~
 
 The mean reset level drifts relative to the superbias, by 10 DN and more
-over months, and it moves as much from one integration of an exposure to
-the next, all output channels together, so the prior mean cannot be a
-calibration constant. The step measures it per output channel in each
-integration from that integration's own sky (``anchor_offset_to_sky``,
-on by default): the pixels whose first-resultant signal is below
-``anchor_max_signal`` (50 DN). A channel with fewer than
-``anchor_min_pixels`` (1000) of them takes the median of the
-integration's other channels, and an integration in which no channel
-has enough keeps the calibration's offsets. This centers the
+over months, and it moves by up to about 10 DN from one integration of
+an exposure to the next, the output channels mostly together, so the
+prior mean cannot be a calibration constant. The step measures it per
+output channel in each integration from that integration's own sky
+(``anchor_offset_to_sky``, on by default): the pixels whose
+first-resultant signal is below ``anchor_max_signal`` (50 DN). A channel
+with fewer than ``anchor_min_pixels`` (1000) of them takes the median of
+the integration's other channels, an integration in which no channel has
+enough takes the median of the other integrations, and the calibration's
+offsets serve only when no integration has enough. This centers the
 first-difference residual, and the reset-anchored fit then agrees with
 the likelihood fit without the reset point to about 0.1 percent at every
 brightness. ``reset_offset`` adds a fixed number of DN on top. On WFSS
@@ -676,6 +677,14 @@ which it found jumps the jump step had not flagged. A lower threshold for
 this search (4 sigma) made more false jumps than it caught real ones: a
 false jump splits a ramp into two segments, and where read noise
 dominates a split in the middle nearly doubles the pixel's noise.
+
+The fit takes ramps of two groups or more. Its own jump search needs
+three groups, or four when each group averages several reads, the reset
+point counting as one of the resultants the search needs; on shorter
+ramps the fit runs without it and the step warns. On two groups nothing
+flags jumps at all, since the jwst jump step does not search two-group
+ramps either. Pixels with zero read noise, or with no usable difference
+left to fit, get no rate and are flagged DO_NOT_USE.
 
 Dispersed exposures
 -------------------

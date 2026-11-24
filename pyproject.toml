@@ -19,7 +19,7 @@ dependencies = [
     "numpy",
     "scikit-image>=0.26.0",
     "scipy",
-    "stcal",
+    "stcal>=1.21.0",
     "stdatamodels",
     "stpipe",
 ]
